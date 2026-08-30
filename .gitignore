@@ -1,0 +1,72 @@
+# Xbox 360 GOD / STFS Package Content Folders
+43430817/
+00000001/
+00007000/
+[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]/
+
+# Raw Binary Images, Decrypted Executables & Game Data
+*.iso
+*.god
+*.stfs
+*.xex
+*.pe
+*.bin
+*.dat
+*.toc
+asura_wrath.iso
+
+# Extracted Game Filesystem & Ghidra Exported Source
+extracted/
+ghidra_exported/
+
+# External Recompilation & Decryption Tool Directories
+tools/360tools/
+tools/extract-xiso/
+tools/*
+!tools/*.py
+!tools/*.java
+
+# Codegen Stamps, Dependency Files & Intermediate Build Objects
+generated/default/codegen.*
+generated/*/codegen.*
+build/
+build_win32/
+build_native/
+dist/
+AppDir/
+*.AppImage
+*.stamp
+*.d
+*.partition.json
+*.o
+*.a
+*.so
+*.dll
+*.exe
+
+# IPS & Binary Patch Files
+*.ips
+*.patch
+
+# Generated Video & Audio Files
+*.mp4
+converted_movies/
+
+# Logs & Temporary Files
+scratch/
+logs/
+*.log
+.DS_Store
+.vscode/
+.idea/
+
+# Converted assets & Cache
+converted_assets/
+extracted_iso/
+exported_ue_viewer/
+BCSAVEDATA
+extracted.zip
+cache/
+
+*.xsh
+*.xpso

@@ -2,6 +2,10 @@
 
 PC port of Asura's Wrath (`default.xex`, Title ID `43430817`) via Xbox 360 static PowerPC recompilation to C++23.
 
+<a href="https://www.youtube.com/watch?v=zMNjPKbaiOw">
+        <img width="1920" height="1080" alt="snapshot" src="https://github.com/user-attachments/assets/c984ac69-c6de-4a2c-8b75-d5107205d016" />
+</a>
+
 ---
 
 ## 1. Requirements

@@ -1,10 +1,14 @@
-# Asura's Wrath Recompiled (`asura_wrath_recomp`)
+# Asura's Wrath Recompiled
 
 PC port of Asura's Wrath (`default.xex`, Title ID `43430817`) via Xbox 360 static PowerPC recompilation to C++23.
 
-<a href="https://www.youtube.com/watch?v=zMNjPKbaiOw">
-        <img width="1920" height="1080" alt="snapshot" src="https://github.com/user-attachments/assets/c984ac69-c6de-4a2c-8b75-d5107205d016" />
+<a href="https://www.youtube.com/playlist?list=PLVyuezqTsTB0">
+        <img width="1280" height="640" alt="cover" src="https://github.com/user-attachments/assets/339f7f1b-85d4-48ac-9b5f-ac4fad276dad" />
 </a>
+
+https://www.youtube.com/playlist?list=PLVyuezqTsTB0
+
+> Original illustration by Satoshi Sakai
 
 ---
 
@@ -52,6 +56,18 @@ cp -r 43430817 extracted/content/0000000000000000/
 ./build/asura_wrath_recomp
 ```
 
+### Combined Example (what currently works best for me)
+```bash
+./build/asura_wrath_recomp \
+    --vulkan_device=1 \
+    --render_target_path_vulkan=fsi \
+    --window_width=1920 \
+    --window_height=1080 \
+    --vulkan_pipeline_creation_threads=6 \
+    --async_shader_compilation=true \
+    --vulkan_async_skip_incomplete_frames=true
+```
+
 ### Example: Custom Resolution
 ```bash
 ./build/asura_wrath_recomp --window_width=1920 --window_height=1080
@@ -94,11 +110,6 @@ Switch back to host framebuffers:
 ./build/asura_wrath_recomp --render_target_path_vulkan=fbo
 ```
 
-### Combined Example
-```bash
-./build/asura_wrath_recomp --vulkan_device=1 --render_target_path_vulkan=fsi --window_width=1920 --window_height=1080
-```
-
 ---
 
 ## 4. Credits
@@ -109,8 +120,7 @@ Switch back to host framebuffers:
 
 ## 5. Issues
 
-- Using fsi, some flashing textures / stutters / artifacts during gameplay, reduces as game loads more
-- For some reason, I cannot run without `--render_target_path_vulkan=fsi`, or it shows a red overlay
+- Had to use FSI over FBO to avoid red artifacts (performance loss / stutters due to on-demand texture / shader compilation - also seen in https://github.com/rexglue/rexglue-sdk/blob/71782a3bc15cd1994381757fae7d616242f22e6a/src/graphics/vulkan/render_target_cache.cpp#L44-L63)
 
 ---
 

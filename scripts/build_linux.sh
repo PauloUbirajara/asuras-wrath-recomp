@@ -2,27 +2,15 @@
 set -e
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-REXSDK_DIR="${REXSDK_DIR:-$REPO_ROOT/tools/rexglue}"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
-
-echo "[+] =========================================="
-echo "[+] Building Asura's Wrath Recompiled (Linux)"
-echo "[+] =========================================="
-
-# 1. Build ReXGlue Engine SDK if missing or requested
-if [ ! -f "$REXSDK_DIR/out/linux-amd64/librexgsl.so" ] && [ ! -f "$REXSDK_DIR/out/linux-amd64/librexglue.so" ]; then
-    echo "[+] Building ReXGlue engine SDK..."
-    mkdir -p "$REXSDK_DIR/build"
-    CC=clang CXX=clang++ cmake -B "$REXSDK_DIR/build" -S "$REXSDK_DIR" -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
-    cmake --build "$REXSDK_DIR/build" --target rexglue --parallel "$(nproc)"
+CMAKE_ARGS=("-DCMAKE_BUILD_TYPE=$BUILD_TYPE")
+if [ -n "$REXSDK_DIR" ]; then
+    CMAKE_ARGS+=("-DREXSDK_DIR=$REXSDK_DIR")
 fi
 
-# 2. Build asura_wrath_recomp Executable
 echo "[+] Building asura_wrath_recomp executable..."
 mkdir -p "$REPO_ROOT/build"
-CC=clang CXX=clang++ cmake -B "$REPO_ROOT/build" -S "$REPO_ROOT" \
-    -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
-    -DREXSDK_DIR="$REXSDK_DIR"
+CC=clang CXX=clang++ cmake -B "$REPO_ROOT/build" -S "$REPO_ROOT" "${CMAKE_ARGS[@]}"
 
 cmake --build "$REPO_ROOT/build" --parallel "$(nproc)"
 

@@ -25,6 +25,7 @@ tools/extract-xiso/
 tools/*
 !tools/*.py
 !tools/*.java
+!tools/rexglue
 
 # Codegen Stamps, Dependency Files & Intermediate Build Objects
 generated/default/codegen.*

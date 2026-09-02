@@ -3,7 +3,7 @@
 PC port of Asura's Wrath (`default.xex`, Title ID `43430817`) via Xbox 360 static PowerPC recompilation to C++23.
 
 <a href="https://www.youtube.com/playlist?list=PLVyuezqTsTB0">
-        <img width="1280" height="640" alt="cover" src="https://github.com/user-attachments/assets/339f7f1b-85d4-48ac-9b5f-ac4fad276dad" />
+        <img alt="cover" src="https://github.com/user-attachments/assets/339f7f1b-85d4-48ac-9b5f-ac4fad276dad" />
 </a>
 
 https://www.youtube.com/playlist?list=PLVyuezqTsTB0
@@ -20,11 +20,12 @@ https://www.youtube.com/playlist?list=PLVyuezqTsTB0
 
 ## 2. Environment Variables
 
-- `REXSDK_DIR`: Path to the ReXGlue SDK directory.
+- `REXSDK_DIR`: Path to the ReXGlue SDK directory (defaults to `tools/rexglue`).
+- `REXGLUE_CXX_FLAGS`: Custom C++ compiler flags when building ReXGlue SDK (defaults to `-mssse3`).
 
 ---
 
-## 3. Build & Run
+## 3. Build
 
 ```bash
 # Clone repo
@@ -32,9 +33,11 @@ git clone https://github.com/PauloUbirajara/asuras-wrath-recomp.git
 cd asuras-wrath-recomp
 
 
+
 # Extract ISO
 mkdir -p extracted/
 extract-xiso -x asura_wrath.iso -d extracted/
+
 
 
 # (Optional) Copy DLC folder to extracted content directory
@@ -45,35 +48,37 @@ mkdir -p extracted/content/0000000000000000/
 cp -r 43430817 extracted/content/0000000000000000/
 
 
+
 # Build
-# export REXSDK_DIR=/path/to/rexglue-sdk
-# If error, maybe try removing the build/ folder inside rexglue-sdk and try again
+# export REXSDK_DIR=/path/to/rexglue-sdk        # If you already have your own fork/build of ReXGlue SDK
+# export REXGLUE_CXX_FLAGS="-mssse3"            # If ReXGlue build fails, check/adjust these flags, remove build/ folder inside rexglue-sdk and try again
 
 ./build.sh
+
 
 
 # Run
 ./build/asura_wrath_recomp
 ```
 
-### Combined Example (what currently works best for me)
+## 4. Run (what currently works best for me)
 ```bash
 ./build/asura_wrath_recomp \
-    --vulkan_device=1 \
-    --render_target_path_vulkan=fsi \
-    --window_width=1920 \
-    --window_height=1080 \
-    --vulkan_pipeline_creation_threads=6 \
     --async_shader_compilation=true \
-    --vulkan_async_skip_incomplete_frames=true
+    --render_target_path_vulkan=fsi \
+    --vulkan_async_skip_incomplete_frames=true \
+    --vulkan_device=1 \
+    --vulkan_pipeline_creation_threads=6 \
+    --window_height=1080 \
+    --window_width=1920
 ```
 
-### Example: Custom Resolution
+#### Custom Resolution
 ```bash
 ./build/asura_wrath_recomp --window_width=1920 --window_height=1080
 ```
 
-### Example: Selecting GPU Device
+#### Selecting GPU Device
 
 List available GPUs and their index numbers on your system:
 ```bash
@@ -95,7 +100,7 @@ Pass `--vulkan_device=<index>` to target a specific GPU (e.g., index `1` for dis
 ./build/asura_wrath_recomp --vulkan_device=1
 ```
 
-### Example: Render Target Path (`fsi` vs `fbo`)
+#### Render Target Path (`fsi` vs `fbo`)
 
 - `fbo`: Host framebuffers (default, higher performance, can produce color artifacts on some GPUs).
 - `fsi`: Fragment Shader Interlock (software EDRAM pixel packing, fixes red overlay artifacts on NVIDIA GPUs).
@@ -112,20 +117,21 @@ Switch back to host framebuffers:
 
 ---
 
-## 4. Credits
+## 5. Credits
 
 - Powered by **ReXGlue**, an open-source static recompilation framework for Xbox 360 software.
 
 ---
 
-## 5. Issues
+## 6. Issues
 
 - Had to use FSI over FBO to avoid red artifacts (performance loss / stutters due to on-demand texture / shader compilation - also seen in https://github.com/rexglue/rexglue-sdk/blob/71782a3bc15cd1994381757fae7d616242f22e6a/src/graphics/vulkan/render_target_cache.cpp#L44-L63)
 
 ---
 
-## 6. TODO
+## 7. TODO
 
 - [ ] Test DLCs
 - [ ] Test for Windows (?)
+- [ ] Make consistent builds
 - [ ] Make it easier to build & run

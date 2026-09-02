@@ -21435,6 +21435,7 @@ DEFINE_REX_FUNC(sub_82991778) {
 	ctx.r1.u32 = ea;
 	// mr r31,r3
 	ctx.r31.u64 = ctx.r3.u64;
+	if (ctx.r31.u32 < 0x10000) { ctx.r1.u32 = ctx.r1.u32 + 176; __restgprlr_21(ctx, base); return; }
 	// lwz r3,48(r3)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r3.u32 + 48);
 	// mr r25,r4
@@ -21567,7 +21568,7 @@ loc_82991854:
 	ctx.r8.u64 = __builtin_rotateleft64(ctx.r22.u32 | (ctx.r22.u64 << 32), 16) & 0x3FFF0000;
 	// stwu r11,4(r3)
 	ea = 4 + ctx.r3.u32;
-	REX_STORE_U32(ea, ctx.r11.u32);
+	if (ea >= 0x10000) REX_STORE_U32(ea, ctx.r11.u32);
 	ctx.r3.u32 = ea;
 	// clrlwi r11,r25,18
 	ctx.r11.u64 = ctx.r25.u32 & 0x3FFF;
@@ -21577,19 +21578,19 @@ loc_82991854:
 	ctx.r9.u64 = ctx.r23.u32 & 0x3FFF;
 	// stwu r10,4(r3)
 	ea = 4 + ctx.r3.u32;
-	REX_STORE_U32(ea, ctx.r10.u32);
+	if (ea >= 0x10000) REX_STORE_U32(ea, ctx.r10.u32);
 	ctx.r3.u32 = ea;
 	// or r9,r8,r9
 	ctx.r9.u64 = ctx.r8.u64 | ctx.r9.u64;
 	// stwu r11,4(r3)
 	ea = 4 + ctx.r3.u32;
-	REX_STORE_U32(ea, ctx.r11.u32);
+	if (ea >= 0x10000) REX_STORE_U32(ea, ctx.r11.u32);
 	ctx.r3.u32 = ea;
 	// mr r11,r3
 	ctx.r11.u64 = ctx.r3.u64;
 	// stwu r9,4(r11)
 	ea = 4 + ctx.r11.u32;
-	REX_STORE_U32(ea, ctx.r9.u32);
+	if (ea >= 0x10000) REX_STORE_U32(ea, ctx.r9.u32);
 	ctx.r11.u32 = ea;
 	// b 0x82991a54
 	goto loc_82991A54;

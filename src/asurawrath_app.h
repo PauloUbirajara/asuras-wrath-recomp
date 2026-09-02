@@ -1,7 +1,8 @@
 #pragma once
 
-#include <rex/rex_app.h>
+#include <rex/cvar.h>
 #include <rex/filesystem.h>
+#include <rex/rex_app.h>
 
 class AsurawrathApp : public rex::ReXApp {
  public:
@@ -30,5 +31,7 @@ class AsurawrathApp : public rex::ReXApp {
     if (config.gpu_plugin.empty()) {
       config.gpu_plugin = "xenos";
     }
+
+    rex::cvar::SetFlagByName("license_mask", "4294967295");
   }
 };

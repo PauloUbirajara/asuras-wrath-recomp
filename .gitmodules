@@ -1,0 +1,4 @@
+[submodule "tools/rexglue"]
+	path = tools/rexglue
+	url = https://github.com/PauloUbirajara/asura-wrath-rexglue-sdk
+

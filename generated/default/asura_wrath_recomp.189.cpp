@@ -18724,6 +18724,7 @@ DEFINE_REX_FUNC(sub_828CEE38) {
 	ctx.r1.u32 = ea;
 	// lis r31,-31960
 	ctx.r31.s64 = -2094530560;
+	if (REX_LOAD_U32(ctx.r31.u32 + 14960) == 0) { ctx.r1.u32 = ctx.r1.u32 + 192; __restgprlr_27(ctx, base); return; }
 	// lwz r5,0(r3)
 	ctx.r5.u64 = REX_LOAD_U32(ctx.r3.u32 + 0);
 	// mr r28,r4
@@ -18736,14 +18737,14 @@ DEFINE_REX_FUNC(sub_828CEE38) {
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 14960);
 	// bl 0x829942f8
 	ctx.lr = 0x828CEE68;
-	sub_829942F8(ctx, base);
+	if (ctx.r3.u32 >= 0x10000) sub_829942F8(ctx, base);
 	// lwz r3,14960(r31)
 	ctx.r3.u64 = REX_LOAD_U32(ctx.r31.u32 + 14960);
 	// lwz r4,0(r28)
 	ctx.r4.u64 = REX_LOAD_U32(ctx.r28.u32 + 0);
 	// bl 0x82994688
 	ctx.lr = 0x828CEE74;
-	sub_82994688(ctx, base);
+	if (ctx.r3.u32 >= 0x10000) sub_82994688(ctx, base);
 	// lis r11,-32248
 	ctx.r11.s64 = -2113404928;
 	// lwz r9,0(r29)

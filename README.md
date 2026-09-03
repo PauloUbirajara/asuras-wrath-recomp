@@ -81,11 +81,20 @@ extract-xiso -x asura_wrath.iso -d extracted/
 # cp -r 43430817 extracted/content/0000000000000000/
 ```
 
-If extracted game is somewhere else, it can also be specified via the `--game_path` argument:
+If extracted game is somewhere else, it can be specified via the `--game_data_root` argument:
 
 ```bash
-./out/build/linux-amd64-release/asura_wrath_recomp --game_path=/path/to/extracted/game
+./out/build/linux-amd64-release/asura_wrath_recomp --game_data_root=/path/to/extracted/game
 ```
+
+Available ReXGlue Path Configuration Flags:
+| Flag | Description | Default |
+| - | - | - |
+| `--game_data_root` | Root directory containing extracted game files. | `extracted` (if exists) or current directory |
+| `--user_data_root` | Directory for user save games and profile data. | `~/.local/share/asura_wrath_recomp` (Linux) / `%APPDATA%\asura_wrath_recomp` (Windows) |
+| `--cache_root` | Directory for compiled Vulkan pipeline and shader storage. | `cache` |
+| `--update_data_root` | Directory containing game update / DLC patches. | `(empty)` |
+| `--metadata_root` | Directory for game metadata. | `(empty)` |
 
 ---
 

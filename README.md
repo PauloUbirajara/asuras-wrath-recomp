@@ -15,55 +15,141 @@ https://www.youtube.com/playlist?list=PLVyuezqTsTB0
 ## 1. Requirements
 
 - A copy of the Xbox 360 game ISO (`Asura's Wrath.iso`).
-- `extract-xiso` tool to extract .iso game contents into `extracted/` (https://github.com/XboxDev/extract-xiso).
-- `ReXGlue SDK` (https://github.com/rexglue/rexglue-sdk)
+- [extract-xiso](https://github.com/XboxDev/extract-xiso) tool to extract `.iso` contents.
+- CMake 3.25+ and Clang / Ninja compiler toolchain.
 
-## 2. Environment Variables
+---
 
-- `REXSDK_DIR`: Path to the ReXGlue SDK directory (defaults to `tools/rexglue`).
-- `REXGLUE_CXX_FLAGS`: Custom C++ compiler flags when building ReXGlue SDK (defaults to `-mssse3`).
+## 2. Setup
+
+### Clone Repository
+```bash
+git clone --recursive https://github.com/PauloUbirajara/asuras-wrath-recomp.git
+cd asuras-wrath-recomp
+```
 
 ---
 
 ## 3. Build
 
+> Requires the .iso contents in extracted/ to build.
+
+### Option A: Using CMake Presets (Linux & Windows)
+
+#### Linux
 ```bash
-# Clone repo
-git clone https://github.com/PauloUbirajara/asuras-wrath-recomp.git
-cd asuras-wrath-recomp
+cmake --preset linux-amd64-release
+cmake --build out/build/linux-amd64-release --parallel
+```
 
+#### Windows
+```cmd
+cmake --preset win-amd64-release
+cmake --build out/build/win-amd64-release --parallel
+```
 
+---
 
-# Extract ISO
+### Option B: Using Build Scripts
+
+#### Linux
+```bash
+# Build binary
+./build.sh
+
+# Build binary and create release zip archive in out/ directory
+./build.sh --package
+
+# out/
+# ├── build
+# │   └── linux-amd64-release
+# └── dist
+#     ├── asura_wrath_recomp_linux_x86_64
+#     └── asura_wrath_recomp_linux_x86_64.zip
+```
+
+#### Windows
+```ps1
+# Build binary
+build.bat
+
+# Build binary and create release zip archive in out/ directory
+build.bat --package
+
+# out/
+# ├── build
+# │   └── win-amd64-release
+# └── dist
+#     ├── asura_wrath_recomp_win_amd64.exe
+#     └── asura_wrath_recomp_win_amd64.zip
+```
+
+---
+
+## 4. Game Setup
+
+In the same directory as the executable, run the following:
+
+```bash
+# Extract Game ISO
 mkdir -p extracted/
 extract-xiso -x asura_wrath.iso -d extracted/
 
-
-
-# (Optional) Copy DLC folder to extracted content directory
-# No need to re-build if added after building
-mkdir -p extracted/content/0000000000000000/
-
-# cp -r <path_to_DLC_folder> extracted/content/0000000000000000/
-cp -r 43430817 extracted/content/0000000000000000/
-
-
-
-# Build
-# export REXSDK_DIR=/path/to/rexglue-sdk        # If you already have your own fork/build of ReXGlue SDK
-# export REXGLUE_CXX_FLAGS="-mssse3"            # If ReXGlue build fails, check/adjust these flags, remove build/ folder inside rexglue-sdk and try again
-
-./build.sh
-
-
-
-# Run
-./build/asura_wrath_recomp
+# (Optional) Install DLC Content (Not supported/tested yet)
 ```
 
-## 4. Run (what currently works best for me)
+If extracted game is somewhere else, it can be specified via the `--game_data_root` argument:
+
 ```bash
-./build/asura_wrath_recomp \
+asura_wrath_recomp --game_data_root=/path/to/extracted/game
+```
+
+Available ReXGlue Path Configuration Flags:
+| Flag | Description | Default |
+| - | - | - |
+| `--game_data_root` | Root directory containing extracted game files. | `extracted` (if exists) or current directory |
+| `--user_data_root` | Directory for user save games and profile data. | `~/.local/share/asura_wrath_recomp` (Linux) / `%APPDATA%\asura_wrath_recomp` (Windows) |
+| `--cache_root` | Directory for compiled Vulkan pipeline and shader storage. | `cache` |
+| `--update_data_root` | Directory containing game update / DLC patches. | `(empty)` |
+| `--metadata_root` | Directory for game metadata. | `(empty)` |
+
+---
+
+## 5. Run
+
+### Expected Folder Structure Before Running
+
+#### Linux
+```
+├── asura_wrath_recomp  # Executable
+├── extracted/          # .iso contents 
+├── librexgpu-xenos.so
+├── librexruntime.so
+└── libTracyClient.so
+```
+
+#### Windows
+```
+├── asura_wrath_recomp.exe # Executable
+├── extracted/             # .iso contents 
+├── rexgpu-xenos.dll
+├── rexruntime.dll
+└── TracyClient.dll
+```
+
+### Save Locations
+
+| OS | Location |
+| :--- | :--- |
+| Linux | `~/.local/share/asura_wrath_recomp` |
+| Windows | `%USERPROFILE%\Documents\asura_wrath_recomp\` |
+
+### Linux
+```bash
+asura_wrath_recomp
+
+# Linux (What currently works best for me)
+asura_wrath_recomp \
     --async_shader_compilation=true \
     --render_target_path_vulkan=fsi \
     --vulkan_async_skip_incomplete_frames=true \
@@ -73,9 +159,22 @@ cp -r 43430817 extracted/content/0000000000000000/
     --window_width=1920
 ```
 
+### Windows
+```cmd
+asura_wrath_recomp.exe
+```
+
+## 6. Custom Run Flags
+
+#### Custom Backend
+```cmd
+asura_wrath_recomp.exe --gpu_backend=vulkan
+asura_wrath_recomp.exe --gpu_backend=d3d12
+```
+
 #### Custom Resolution
 ```bash
-./build/asura_wrath_recomp --window_width=1920 --window_height=1080
+asura_wrath_recomp --window_width=1920 --window_height=1080
 ```
 
 #### Selecting GPU Device
@@ -97,7 +196,7 @@ GPU2:
 
 Pass `--vulkan_device=<index>` to target a specific GPU (e.g., index `1` for discrete NVIDIA GPU):
 ```bash
-./build/asura_wrath_recomp --vulkan_device=1
+asura_wrath_recomp --vulkan_device=1
 ```
 
 #### Render Target Path (`fsi` vs `fbo`)
@@ -107,31 +206,32 @@ Pass `--vulkan_device=<index>` to target a specific GPU (e.g., index `1` for dis
 
 Fix red overlay artifact on NVIDIA GPUs:
 ```bash
-./build/asura_wrath_recomp --vulkan_device=1 --render_target_path_vulkan=fsi
+asura_wrath_recomp --vulkan_device=1 --render_target_path_vulkan=fsi
 ```
 
 Switch back to host framebuffers:
 ```bash
-./build/asura_wrath_recomp --render_target_path_vulkan=fbo
+asura_wrath_recomp --render_target_path_vulkan=fbo
 ```
 
 ---
 
-## 5. Credits
+## 7. Credits
 
-- Powered by **ReXGlue**, an open-source static recompilation framework for Xbox 360 software.
+- Powered by **ReXGlue** (https://github.com/rexglue/rexglue-sdk), an open-source static recompilation framework for Xbox 360 software.
 
 ---
 
-## 6. Issues
+## 8. Issues
 
 - Had to use FSI over FBO to avoid red artifacts (performance loss / stutters due to on-demand texture / shader compilation - also seen in https://github.com/rexglue/rexglue-sdk/blob/71782a3bc15cd1994381757fae7d616242f22e6a/src/graphics/vulkan/render_target_cache.cpp#L44-L63)
 
 ---
 
-## 7. TODO
+## 9. TODO
 
-- [ ] Test DLCs
+- [ ] Improve performance
+- [ ] Make DLCs work
 - [ ] Test for Windows (?)
-- [ ] Make consistent builds
-- [ ] Make it easier to build & run
+- [x] Make consistent builds
+- [x] Make it easier to build & run

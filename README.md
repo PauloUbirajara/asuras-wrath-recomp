@@ -107,11 +107,12 @@ asura_wrath_recomp --game_data_root=/path/to/extracted/game
 Available ReXGlue Path Configuration Flags:
 | Flag | Description | Default |
 | - | - | - |
-| `--game_data_root` | Root directory containing extracted game files. | `extracted` (if exists) or current directory |
-| `--user_data_root` | Directory for user save games and profile data. | `~/.local/share/asura_wrath_recomp` (Linux) / `%APPDATA%\asura_wrath_recomp` (Windows) |
 | `--cache_root` | Directory for compiled Vulkan pipeline and shader storage. | `cache` |
-| `--update_data_root` | Directory containing game update / DLC patches. | `(empty)` |
+| `--game_data_root` | Root directory containing extracted game files. | `extracted` (if exists) or current directory |
 | `--metadata_root` | Directory for game metadata. | `(empty)` |
+| `--update_data_root` | Directory containing game update / DLC patches. | `(empty)` |
+| `--user_data_root` | Directory for user save games and profile data. | `%USERPROFILE%\Documents\asura_wrath_recomp` (Windows) |
+| `--user_data_root` | Directory for user save games and profile data. | `~/.local/share/asura_wrath_recomp` (Linux) |
 
 ---
 

@@ -10,6 +10,11 @@ add_compile_options(
     -ffast-math
     -funroll-loops
     -Wno-nan-infinity-disabled
+    -Wno-c++98-compat
+    -Wno-c++98-compat-pedantic
+    -Wno-reserved-identifier
+    -Wno-unsafe-buffer-usage
+    -Wno-global-constructors
     -DREXGLUE_PROFILE_GUEST_FUNCTIONS
 )
 

@@ -9,7 +9,9 @@
             "binaryDir": "${sourceDir}/out/build/${presetName}",
             "cacheVariables": {
                 "CMAKE_C_COMPILER": "clang",
-                "CMAKE_CXX_COMPILER": "clang++"
+                "CMAKE_CXX_COMPILER": "clang++",
+                "REXGLUE_USE_VULKAN": "ON",
+                "REXGLUE_USE_D3D12": "ON"
             },
             "condition": {
                 "type": "equals",

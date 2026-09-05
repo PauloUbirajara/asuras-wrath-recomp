@@ -61,7 +61,11 @@ cmake --build out/build/win-amd64-release --parallel
 
 #### Windows
 ```cmd
+# Build binary
 build.bat
+
+# Build binary and create release zip archive
+build.bat --package
 ```
 
 ---
@@ -117,7 +121,11 @@ Available ReXGlue Path Configuration Flags:
 
 #### Windows
 ```cmd
+# Standard run (D3D12 backend)
 out\build\win-amd64-release\asura_wrath_recomp.exe
+
+# Force Vulkan backend (recommended under Wine / Proton)
+out\build\win-amd64-release\asura_wrath_recomp.exe --gpu_backend=vulkan
 ```
 
 #### Custom Resolution

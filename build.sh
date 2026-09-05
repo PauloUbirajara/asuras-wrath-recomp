@@ -23,15 +23,16 @@ echo "[+] Build completed successfully: $REPO_ROOT/out/build/linux-amd64-release
 
 if [ "$PACKAGE" = true ]; then
     echo "[+] Packaging release bundle..."
-    DIST_DIR="$REPO_ROOT/out/dist/asura_wrath_recomp_linux"
-    ZIP_PATH="$REPO_ROOT/out/dist/asura_wrath_recomp_linux.zip"
+    DIST_NAME=asura_wrath_recomp_linux_$(uname -m)
+    DIST_DIR="$REPO_ROOT/out/dist/$DIST_NAME"
+    ZIP_PATH="$REPO_ROOT/out/dist/${DIST_NAME}.zip"
     rm -rf "$DIST_DIR" "$ZIP_PATH"
     mkdir -p "$DIST_DIR"
 
     cp "$REPO_ROOT/out/build/linux-amd64-release/asura_wrath_recomp" "$DIST_DIR/"
     cp "$REPO_ROOT/tools/rexglue/out/linux-amd64/"*.so "$DIST_DIR/" 2>/dev/null || true
 
-    (cd "$REPO_ROOT/out/dist" && zip -r "asura_wrath_recomp_linux.zip" "asura_wrath_recomp_linux")
+    (cd "$REPO_ROOT/out/dist" && zip -r "${DIST_NAME}.zip" "${DIST_NAME}")
 
     echo "[+] Release bundle created at: $ZIP_PATH"
 fi

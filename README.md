@@ -32,6 +32,8 @@ cd asuras-wrath-recomp
 
 ## 3. Build
 
+> Requires the .iso contents in extracted/ to build.
+
 ### Option A: Using CMake Presets (Linux & Windows)
 
 #### Linux
@@ -55,13 +57,31 @@ cmake --build out/build/win-amd64-release --parallel
 # Build binary
 ./build.sh
 
-# Build binary and create release zip archive
+# Build binary and create release zip archive in out/ directory
 ./build.sh --package
+
+# out/
+# ├── build
+# │   └── linux-amd64-release
+# └── dist
+#     ├── asura_wrath_recomp_linux_x86_64
+#     └── asura_wrath_recomp_linux_x86_64.zip
 ```
 
 #### Windows
-```cmd
+```ps1
+# Build binary
 build.bat
+
+# Build binary and create release zip archive in out/ directory
+build.bat --package
+
+# out/
+# ├── build
+# │   └── win-amd64-release
+# └── dist
+#     ├── asura_wrath_recomp_win_amd64.exe
+#     └── asura_wrath_recomp_win_amd64.zip
 ```
 
 ---
@@ -75,28 +95,61 @@ In the same directory as the executable, run the following:
 mkdir -p extracted/
 extract-xiso -x asura_wrath.iso -d extracted/
 
-# (Optional) Install DLC Content (Not supported yet)
-# Copy DLC title content into the extracted content directory:
-# mkdir -p extracted/content/0000000000000000/
-# cp -r 43430817 extracted/content/0000000000000000/
+# (Optional) Install DLC Content (Not supported/tested yet)
 ```
 
-If extracted game is somewhere else, it can also be specified via the `--game_path` argument:
+If extracted game is somewhere else, it can be specified via the `--game_data_root` argument:
 
 ```bash
-./out/build/linux-amd64-release/asura_wrath_recomp --game_path=/path/to/extracted/game
+asura_wrath_recomp --game_data_root=/path/to/extracted/game
 ```
+
+Available ReXGlue Path Configuration Flags:
+| Flag | Description | Default |
+| - | - | - |
+| `--game_data_root` | Root directory containing extracted game files. | `extracted` (if exists) or current directory |
+| `--user_data_root` | Directory for user save games and profile data. | `~/.local/share/asura_wrath_recomp` (Linux) / `%APPDATA%\asura_wrath_recomp` (Windows) |
+| `--cache_root` | Directory for compiled Vulkan pipeline and shader storage. | `cache` |
+| `--update_data_root` | Directory containing game update / DLC patches. | `(empty)` |
+| `--metadata_root` | Directory for game metadata. | `(empty)` |
 
 ---
 
 ## 5. Run
 
+### Expected Folder Structure Before Running
+
 #### Linux
+```
+├── asura_wrath_recomp  # Executable
+├── extracted/          # .iso contents 
+├── librexgpu-xenos.so
+├── librexruntime.so
+└── libTracyClient.so
+```
+
+#### Windows
+```
+├── asura_wrath_recomp.exe # Executable
+├── extracted/             # .iso contents 
+├── rexgpu-xenos.dll
+├── rexruntime.dll
+└── TracyClient.dll
+```
+
+### Save Locations
+
+| OS | Location |
+| :--- | :--- |
+| Linux | `~/.local/share/asura_wrath_recomp` |
+| Windows | `%USERPROFILE%\Documents\asura_wrath_recomp\` |
+
+### Linux
 ```bash
-./out/build/linux-amd64-release/asura_wrath_recomp
+asura_wrath_recomp
 
 # Linux (What currently works best for me)
-./out/build/linux-amd64-release/asura_wrath_recomp \
+asura_wrath_recomp \
     --async_shader_compilation=true \
     --render_target_path_vulkan=fsi \
     --vulkan_async_skip_incomplete_frames=true \
@@ -106,14 +159,22 @@ If extracted game is somewhere else, it can also be specified via the `--game_pa
     --window_width=1920
 ```
 
-#### Windows
+### Windows
 ```cmd
-out\build\win-amd64-release\asura_wrath_recomp.exe
+asura_wrath_recomp.exe
+```
+
+## 6. Custom Run Flags
+
+#### Custom Backend
+```cmd
+asura_wrath_recomp.exe --gpu_backend=vulkan
+asura_wrath_recomp.exe --gpu_backend=d3d12
 ```
 
 #### Custom Resolution
 ```bash
-./out/build/linux-amd64-release/asura_wrath_recomp --window_width=1920 --window_height=1080
+asura_wrath_recomp --window_width=1920 --window_height=1080
 ```
 
 #### Selecting GPU Device
@@ -135,7 +196,7 @@ GPU2:
 
 Pass `--vulkan_device=<index>` to target a specific GPU (e.g., index `1` for discrete NVIDIA GPU):
 ```bash
-./out/build/linux-amd64-release/asura_wrath_recomp --vulkan_device=1
+asura_wrath_recomp --vulkan_device=1
 ```
 
 #### Render Target Path (`fsi` vs `fbo`)
@@ -145,29 +206,29 @@ Pass `--vulkan_device=<index>` to target a specific GPU (e.g., index `1` for dis
 
 Fix red overlay artifact on NVIDIA GPUs:
 ```bash
-./out/build/linux-amd64-release/asura_wrath_recomp --vulkan_device=1 --render_target_path_vulkan=fsi
+asura_wrath_recomp --vulkan_device=1 --render_target_path_vulkan=fsi
 ```
 
 Switch back to host framebuffers:
 ```bash
-./out/build/linux-amd64-release/asura_wrath_recomp --render_target_path_vulkan=fbo
+asura_wrath_recomp --render_target_path_vulkan=fbo
 ```
 
 ---
 
-## 6. Credits
+## 7. Credits
 
 - Powered by **ReXGlue** (https://github.com/rexglue/rexglue-sdk), an open-source static recompilation framework for Xbox 360 software.
 
 ---
 
-## 7. Issues
+## 8. Issues
 
 - Had to use FSI over FBO to avoid red artifacts (performance loss / stutters due to on-demand texture / shader compilation - also seen in https://github.com/rexglue/rexglue-sdk/blob/71782a3bc15cd1994381757fae7d616242f22e6a/src/graphics/vulkan/render_target_cache.cpp#L44-L63)
 
 ---
 
-## 8. TODO
+## 9. TODO
 
 - [ ] Improve performance
 - [ ] Make DLCs work

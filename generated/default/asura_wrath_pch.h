@@ -122,8 +122,6 @@ extern PPCFuncMapping PPCFuncMappings[];
 #define REX_PHYS_HOST_OFFSET(addr) 0u
 #endif
 
-
-
 #define REX_RAW_ADDR(x) (base + (u32)(x) + REX_PHYS_HOST_OFFSET(x))
 
 #define REX_LOAD_U8(x) (*(volatile u8*)(base + (u32)(x) + REX_PHYS_HOST_OFFSET(x)))

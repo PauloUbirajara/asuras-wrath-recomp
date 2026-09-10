@@ -2,6 +2,8 @@
 
 PC port of Asura's Wrath (`default.xex`, Title ID `43430817`) via Xbox 360 static PowerPC recompilation to C++23.
 
+> Note: Android port is experimental, use on your own risk.
+
 <a href="https://www.youtube.com/playlist?list=PLVyuezqTsTB0">
         <img alt="cover" src="https://github.com/user-attachments/assets/339f7f1b-85d4-48ac-9b5f-ac4fad276dad" />
 </a>
@@ -34,7 +36,7 @@ cd asuras-wrath-recomp
 
 > Requires the .iso contents in extracted/ to build.
 
-### Option A: Using CMake Presets (Linux & Windows)
+### Option A: Using CMake Presets (Linux / Windows / Android)
 
 #### Linux
 ```bash
@@ -46,6 +48,12 @@ cmake --build out/build/linux-amd64-release --parallel
 ```cmd
 cmake --preset win-amd64-release
 cmake --build out/build/win-amd64-release --parallel
+```
+
+#### Android
+```bash
+cmake --preset android-aarch64-release
+cmake --build out/build/android-aarch64-release --parallel
 ```
 
 ---
@@ -155,6 +163,7 @@ Available ReXGlue Path Configuration Flags:
 | :--- | :--- |
 | Linux | `~/.local/share/asura_wrath_recomp` |
 | Windows | `%USERPROFILE%\Documents\asura_wrath_recomp\` |
+| Android | `<user picks the save location>` |
 
 ### Linux
 ```bash
@@ -174,6 +183,15 @@ asura_wrath_recomp \
 ### Windows
 ```cmd
 asura_wrath_recomp.exe
+```
+
+### Android
+```bash
+# Install the game on your phone/emulator
+adb install -r out/dist/asura_wrath_recomp_android.apk
+
+# Run the game
+adb shell am start -n asura_wrath.recomp/.MainActivity
 ```
 
 ## 6. Custom Run Flags
@@ -242,8 +260,10 @@ asura_wrath_recomp --render_target_path_vulkan=fbo
 
 ## 9. TODO
 
+- [ ] Add touch controls for Android (?)
 - [ ] Improve performance
 - [ ] Make DLCs work
+- [ ] Test for Android (?)
 - [ ] Test for Windows (?)
 - [x] Make consistent builds
 - [x] Make it easier to build & run

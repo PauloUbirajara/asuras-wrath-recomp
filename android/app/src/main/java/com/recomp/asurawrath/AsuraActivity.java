@@ -37,19 +37,29 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Locale;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 public class AsuraActivity extends SDLActivity {
     private static final int REQUEST_CODE_STORAGE_PERMISSION = 1000;
     private static final int REQUEST_CODE_PICK_ISO = 1001;
     private static final int REQUEST_CODE_PICK_FOLDER = 1002;
+    private static final int REQUEST_CODE_PICK_DRIVER_ZIP = 1003;
+    private static final int REQUEST_CODE_PICK_DRIVER_FOLDER = 1004;
+
     private static final String PREF_KEY_STORAGE_PERMISSION = "storage_permission";
     private static final String PREF_KEY_CUSTOM_DIR = "custom_game_dir";
     private static final String PREF_KEY_CUSTOM_FLAGS = "custom_cmdline_flags";
+    private static final String PREF_KEY_ADRENO_DRIVER_DIR = "adreno_driver_dir";
+    private static final String PREF_KEY_ADRENO_DRIVER_NAME = "adreno_driver_name";
 
     private boolean mPickerOpened = false;
     private Uri mPendingIsoUri = null;
@@ -58,7 +68,8 @@ public class AsuraActivity extends SDLActivity {
     private TextView mTvPermissionStatus = null;
     private TextView mTvFolderStatus = null;
     private TextView mTvGameStatus = null;
-    private android.widget.EditText mEtFlags = null;
+    private TextView mTvDriverStatus = null;
+    private LinearLayout mFlagsListContainer = null;
     private Button mBtnPlay = null;
     private boolean mGameStarted = false;
     private long mLastBackPressTime = 0;
@@ -93,6 +104,16 @@ public class AsuraActivity extends SDLActivity {
         argsList.add("--cache_root=" + cacheDir.getAbsolutePath());
 
         SharedPreferences prefs = getSharedPreferences("asura_prefs", Context.MODE_PRIVATE);
+
+        // Custom GPU Driver flags
+        String driverDir = prefs.getString(PREF_KEY_ADRENO_DRIVER_DIR, "");
+        String driverName = prefs.getString(PREF_KEY_ADRENO_DRIVER_NAME, "libvulkan_freedreno.so");
+        if (driverDir != null && !driverDir.trim().isEmpty()) {
+            argsList.add("--adreno_driver_path=" + driverDir.trim());
+            argsList.add("--adreno_driver_name=" + driverName.trim());
+        }
+
+        // Custom command-line flags
         String customFlags = prefs.getString(PREF_KEY_CUSTOM_FLAGS, "");
         if (customFlags != null && !customFlags.trim().isEmpty()) {
             String[] userFlags = customFlags.trim().split("\\s+");
@@ -237,7 +258,7 @@ public class AsuraActivity extends SDLActivity {
             return;
         }
         SharedPreferences prefs = getSharedPreferences("asura_prefs", Context.MODE_PRIVATE);
-        prefs.edit().putString(PREF_KEY_CUSTOM_DIR, dir.getAbsolutePath()).apply();
+        prefs.edit().putString(PREF_KEY_CUSTOM_DIR, dir.getAbsolutePath()).commit();
     }
 
     @Override
@@ -357,6 +378,22 @@ public class AsuraActivity extends SDLActivity {
         startActivityForResult(intent, REQUEST_CODE_PICK_FOLDER);
     }
 
+    private void openDriverZipPicker() {
+        Toast.makeText(this, "Select custom Adreno driver .zip package", Toast.LENGTH_SHORT).show();
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        startActivityForResult(intent, REQUEST_CODE_PICK_DRIVER_ZIP);
+    }
+
+    private void openDriverFolderPicker() {
+        Toast.makeText(this, "Select extracted custom driver folder", Toast.LENGTH_SHORT).show();
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        startActivityForResult(intent, REQUEST_CODE_PICK_DRIVER_FOLDER);
+    }
+
     private File getFileFromTreeUri(Uri uri) {
         if (uri == null) {
             return getExternalFilesDir(null);
@@ -431,7 +468,144 @@ public class AsuraActivity extends SDLActivity {
             mPickerOpened = false;
             Toast.makeText(this, "Folder selection canceled.", Toast.LENGTH_SHORT).show();
             updateSplashStatus();
+            return;
         }
+
+        if (requestCode == REQUEST_CODE_PICK_DRIVER_ZIP) {
+            if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
+                extractDriverZipInBackground(data.getData());
+                return;
+            }
+            mPickerOpened = false;
+            Toast.makeText(this, "Driver selection canceled.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        if (requestCode == REQUEST_CODE_PICK_DRIVER_FOLDER) {
+            if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
+                Uri folderUri = data.getData();
+                try {
+                    getContentResolver().takePersistableUriPermission(folderUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                } catch (Exception ignored) {}
+                File targetDir = getFileFromTreeUri(folderUri);
+                File searchFile = findDriverSo(targetDir);
+                String driverName = searchFile != null ? searchFile.getName() : "libvulkan_freedreno.so";
+                File driverDir = searchFile != null ? searchFile.getParentFile() : targetDir;
+
+                SharedPreferences prefs = getSharedPreferences("asura_prefs", Context.MODE_PRIVATE);
+                prefs.edit()
+                    .putString(PREF_KEY_ADRENO_DRIVER_DIR, driverDir.getAbsolutePath())
+                    .putString(PREF_KEY_ADRENO_DRIVER_NAME, driverName)
+                    .commit();
+
+                mPickerOpened = false;
+                Toast.makeText(this, "Custom driver folder set: " + driverDir.getAbsolutePath(), Toast.LENGTH_SHORT).show();
+                updateSplashStatus();
+                return;
+            }
+            mPickerOpened = false;
+            Toast.makeText(this, "Driver folder selection canceled.", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private File findDriverSo(File dir) {
+        if (dir == null || !dir.exists()) return null;
+        File[] files = dir.listFiles();
+        if (files == null) return null;
+        for (File f : files) {
+            if (f.isFile() && f.getName().endsWith(".so")) {
+                return f;
+            }
+        }
+        for (File f : files) {
+            if (f.isDirectory()) {
+                File found = findDriverSo(f);
+                if (found != null) return found;
+            }
+        }
+        return null;
+    }
+
+    private void extractDriverZipInBackground(Uri zipUri) {
+        if (zipUri == null) return;
+        ProgressDialog progressDialog = new ProgressDialog(this);
+        progressDialog.setTitle("Installing GPU Driver");
+        progressDialog.setMessage("Extracting custom driver zip...");
+        progressDialog.setIndeterminate(true);
+        progressDialog.setCancelable(false);
+        progressDialog.show();
+
+        Handler mainHandler = new Handler(Looper.getMainLooper());
+        new Thread(() -> {
+            String errorMsg = null;
+            File targetDir = null;
+            String foundDriverName = "libvulkan_freedreno.so";
+            try {
+                File gameDir = getGameFilesDir();
+                File driversDir = new File(gameDir, "custom_drivers");
+                if (!driversDir.exists()) driversDir.mkdirs();
+
+                String zipName = "driver_" + System.currentTimeMillis();
+                targetDir = new File(driversDir, zipName);
+                if (!targetDir.exists()) targetDir.mkdirs();
+
+                try (InputStream is = getContentResolver().openInputStream(zipUri);
+                     ZipInputStream zis = new ZipInputStream(new BufferedInputStream(is))) {
+                    ZipEntry entry;
+                    byte[] buffer = new byte[8192];
+                    while ((entry = zis.getNextEntry()) != null) {
+                        String entryName = entry.getName();
+                        if (entry.isDirectory()) {
+                            new File(targetDir, entryName).mkdirs();
+                            continue;
+                        }
+                        File destFile = new File(targetDir, entryName);
+                        File parent = destFile.getParentFile();
+                        if (parent != null && !parent.exists()) parent.mkdirs();
+                        try (FileOutputStream fos = new FileOutputStream(destFile);
+                             BufferedOutputStream bos = new BufferedOutputStream(fos, buffer.length)) {
+                            int len;
+                            while ((len = zis.read(buffer)) > 0) {
+                                bos.write(buffer, 0, len);
+                            }
+                            bos.flush();
+                        }
+                        if (entryName.endsWith(".so")) {
+                            foundDriverName = destFile.getName();
+                        }
+                    }
+                }
+
+                File searchFile = findDriverSo(targetDir);
+                if (searchFile != null) {
+                    targetDir = searchFile.getParentFile();
+                    foundDriverName = searchFile.getName();
+                }
+            } catch (Exception e) {
+                e.printStackTrace();
+                errorMsg = e.getMessage();
+            }
+
+            final String err = errorMsg;
+            final File finalTargetDir = targetDir;
+            final String finalDriverName = foundDriverName;
+
+            mainHandler.post(() -> {
+                progressDialog.dismiss();
+                mPickerOpened = false;
+                if (err != null || finalTargetDir == null) {
+                    Toast.makeText(AsuraActivity.this, "Failed to install driver: " + err, Toast.LENGTH_LONG).show();
+                    return;
+                }
+                SharedPreferences prefs = getSharedPreferences("asura_prefs", Context.MODE_PRIVATE);
+                prefs.edit()
+                    .putString(PREF_KEY_ADRENO_DRIVER_DIR, finalTargetDir.getAbsolutePath())
+                    .putString(PREF_KEY_ADRENO_DRIVER_NAME, finalDriverName)
+                    .commit();
+                Toast.makeText(AsuraActivity.this, "Custom driver installed: " + finalDriverName, Toast.LENGTH_SHORT).show();
+                updateSplashStatus();
+            });
+        }).start();
     }
 
     private void copyIsoInBackground(Uri uri, File targetDir) {
@@ -550,9 +724,30 @@ public class AsuraActivity extends SDLActivity {
         ScrollView scrollView = new ScrollView(this);
         scrollView.setFillViewport(true);
 
-        LinearLayout root = new LinearLayout(this);
+        final LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dpToPx(24), dpToPx(16), dpToPx(24), dpToPx(16));
+
+        // Safe Area WindowInsets handling for status bar, notification bar, cutouts
+        root.setOnApplyWindowInsetsListener((v, insets) -> {
+            int top = 0, bottom = 0, left = 0, right = 0;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                android.graphics.Insets sInsets = insets.getInsets(
+                    WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout()
+                );
+                top = sInsets.top;
+                bottom = sInsets.bottom;
+                left = sInsets.left;
+                right = sInsets.right;
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                top = insets.getSystemWindowInsetTop();
+                bottom = insets.getSystemWindowInsetBottom();
+                left = insets.getSystemWindowInsetLeft();
+                right = insets.getSystemWindowInsetRight();
+            }
+            v.setPadding(dpToPx(20) + left, dpToPx(16) + top, dpToPx(20) + right, dpToPx(16) + bottom);
+            return insets;
+        });
 
         GradientDrawable rootBg = new GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,
@@ -589,15 +784,17 @@ public class AsuraActivity extends SDLActivity {
         mTvPermissionStatus = createStatusTextView();
         mTvFolderStatus = createStatusTextView();
         mTvGameStatus = createStatusTextView();
+        mTvDriverStatus = createStatusTextView();
 
         card.addView(mTvPermissionStatus);
         card.addView(mTvFolderStatus);
         card.addView(mTvGameStatus);
+        card.addView(mTvDriverStatus);
 
         // Buttons Bar (3 setup buttons arranged vertically)
         LinearLayout btnBar = new LinearLayout(this);
         btnBar.setOrientation(LinearLayout.VERTICAL);
-        btnBar.setPadding(0, dpToPx(16), 0, dpToPx(16));
+        btnBar.setPadding(0, dpToPx(12), 0, dpToPx(12));
 
         Button btnPermission = createSecondaryButton("1. Grant Storage Permission");
         btnPermission.setOnClickListener(v -> {
@@ -625,47 +822,92 @@ public class AsuraActivity extends SDLActivity {
         btnBar.addView(btnFolder, btnParams);
         btnBar.addView(btnIso, btnParams);
 
-        // Custom Command-Line Flags Card
-        LinearLayout flagsCard = new LinearLayout(this);
-        flagsCard.setOrientation(LinearLayout.VERTICAL);
-        flagsCard.setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10));
+        // Collapsible Advanced Settings & GPU Drivers Section
+        final LinearLayout advContainer = new LinearLayout(this);
+        advContainer.setOrientation(LinearLayout.VERTICAL);
+        advContainer.setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10));
+        advContainer.setVisibility(View.GONE);
 
-        GradientDrawable flagsBg = new GradientDrawable();
-        flagsBg.setColor(0xFF1E293B);
-        flagsBg.setCornerRadius(dpToPx(10));
-        flagsBg.setStroke(dpToPx(1), 0xFF334155);
-        flagsCard.setBackground(flagsBg);
+        GradientDrawable advBg = new GradientDrawable();
+        advBg.setColor(0xFF1E293B);
+        advBg.setCornerRadius(dpToPx(10));
+        advBg.setStroke(dpToPx(1), 0xFF334155);
+        advContainer.setBackground(advBg);
 
-        TextView tvFlagsLabel = new TextView(this);
-        tvFlagsLabel.setText("⚙ Custom Command-Line Flags:");
-        tvFlagsLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        tvFlagsLabel.setTextColor(0xFFE2E8F0);
-        tvFlagsLabel.setTypeface(Typeface.DEFAULT_BOLD);
-        tvFlagsLabel.setPadding(0, 0, 0, dpToPx(6));
+        final Button btnAdvToggle = createSecondaryButton("⚙ Advanced Settings & GPU Drivers  ▼");
+        btnAdvToggle.setOnClickListener(v -> {
+            boolean visible = advContainer.getVisibility() == View.VISIBLE;
+            advContainer.setVisibility(visible ? View.GONE : View.VISIBLE);
+            btnAdvToggle.setText(visible ? "⚙ Advanced Settings & GPU Drivers  ▼" : "⚙ Advanced Settings & GPU Drivers  ▲");
+        });
 
-        mEtFlags = new EditText(this);
-        mEtFlags.setHint("e.g. --enable_fsi=true --video_mode_height=720");
-        mEtFlags.setHintTextColor(0xFF64748B);
-        mEtFlags.setTextColor(0xFFF8FAFC);
-        mEtFlags.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        mEtFlags.setPadding(dpToPx(10), dpToPx(8), dpToPx(10), dpToPx(8));
-        mEtFlags.setSingleLine(false);
-        mEtFlags.setMaxLines(3);
+        // Adreno Tools / Custom Driver Section
+        TextView tvDriverLabel = new TextView(this);
+        tvDriverLabel.setText("🎮 Custom GPU Driver (Adreno Tools):");
+        tvDriverLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        tvDriverLabel.setTextColor(0xFFE2E8F0);
+        tvDriverLabel.setTypeface(Typeface.DEFAULT_BOLD);
+        tvDriverLabel.setPadding(0, 0, 0, dpToPx(6));
 
-        GradientDrawable etBg = new GradientDrawable();
-        etBg.setColor(0xFF0F172A);
-        etBg.setCornerRadius(dpToPx(6));
-        etBg.setStroke(dpToPx(1), 0xFF475569);
-        mEtFlags.setBackground(etBg);
+        Button btnDriverZip = createSecondaryButton("Select Driver (.zip)");
+        btnDriverZip.setOnClickListener(v -> {
+            mPickerOpened = true;
+            openDriverZipPicker();
+        });
 
+        Button btnDriverFolder = createSecondaryButton("Select Driver Folder");
+        btnDriverFolder.setOnClickListener(v -> {
+            mPickerOpened = true;
+            openDriverFolderPicker();
+        });
+
+        Button btnDriverReset = createSecondaryButton("Reset to System Driver");
+        btnDriverReset.setOnClickListener(v -> {
+            SharedPreferences prefs = getSharedPreferences("asura_prefs", Context.MODE_PRIVATE);
+            prefs.edit().remove(PREF_KEY_ADRENO_DRIVER_DIR).remove(PREF_KEY_ADRENO_DRIVER_NAME).commit();
+            Toast.makeText(this, "Reset to system Vulkan driver.", Toast.LENGTH_SHORT).show();
+            updateSplashStatus();
+        });
+
+        LinearLayout.LayoutParams drvBtnParams = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(40));
+        drvBtnParams.setMargins(0, dpToPx(3), 0, dpToPx(3));
+
+        advContainer.addView(tvDriverLabel);
+        advContainer.addView(btnDriverZip, drvBtnParams);
+        advContainer.addView(btnDriverFolder, drvBtnParams);
+        advContainer.addView(btnDriverReset, drvBtnParams);
+
+        // Divider in Advanced Settings
+        View advDiv = new View(this);
+        advDiv.setBackgroundColor(0xFF334155);
+        LinearLayout.LayoutParams advDivParams = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(1));
+        advDivParams.setMargins(0, dpToPx(10), 0, dpToPx(10));
+        advContainer.addView(advDiv, advDivParams);
+
+        // Key-Value Flags UI Header
+        TextView tvFlagsHeader = new TextView(this);
+        tvFlagsHeader.setText("🚩 Command-Line Flags (Key-Value):");
+        tvFlagsHeader.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        tvFlagsHeader.setTextColor(0xFFE2E8F0);
+        tvFlagsHeader.setTypeface(Typeface.DEFAULT_BOLD);
+        tvFlagsHeader.setPadding(0, 0, 0, dpToPx(6));
+
+        mFlagsListContainer = new LinearLayout(this);
+        mFlagsListContainer.setOrientation(LinearLayout.VERTICAL);
+
+        Button btnAddFlag = createSecondaryButton("➕ Add Flag");
+        btnAddFlag.setOnClickListener(v -> addFlagRow("", ""));
+
+        advContainer.addView(tvFlagsHeader);
+        advContainer.addView(mFlagsListContainer);
+        advContainer.addView(btnAddFlag, drvBtnParams);
+
+        // Load saved flags into list UI
         SharedPreferences prefs = getSharedPreferences("asura_prefs", Context.MODE_PRIVATE);
         String savedFlags = prefs.getString(PREF_KEY_CUSTOM_FLAGS, "");
-        if (savedFlags != null) {
-            mEtFlags.setText(savedFlags);
-        }
-
-        flagsCard.addView(tvFlagsLabel);
-        flagsCard.addView(mEtFlags);
+        loadSavedFlagsIntoList(savedFlags);
 
         // Separator / Divider
         View divider = new View(this);
@@ -674,7 +916,7 @@ public class AsuraActivity extends SDLActivity {
             ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(1));
         divParams.setMargins(0, dpToPx(12), 0, dpToPx(16));
 
-        // Play Button (Separated from the top three buttons)
+        // Play Button (Separated from the top setup buttons)
         mBtnPlay = new Button(this);
         mBtnPlay.setText("PLAY GAME");
         mBtnPlay.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
@@ -698,7 +940,8 @@ public class AsuraActivity extends SDLActivity {
         root.addView(subtitle);
         root.addView(card);
         root.addView(btnBar);
-        root.addView(flagsCard);
+        root.addView(btnAdvToggle, btnParams);
+        root.addView(advContainer);
         root.addView(divider, divParams);
         root.addView(mBtnPlay, playParams);
 
@@ -714,6 +957,135 @@ public class AsuraActivity extends SDLActivity {
         }
 
         updateSplashStatus();
+    }
+
+    private void addFlagRow(String key, String value) {
+        if (mFlagsListContainer == null) {
+            return;
+        }
+        final LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dpToPx(4), 0, dpToPx(4));
+
+        EditText etKey = new EditText(this);
+        etKey.setHint("Key (e.g. video_mode_height)");
+        etKey.setHintTextColor(0xFF64748B);
+        etKey.setTextColor(0xFFF8FAFC);
+        etKey.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        etKey.setText(key != null ? key : "");
+        etKey.setSingleLine(true);
+        etKey.setPadding(dpToPx(8), dpToPx(6), dpToPx(8), dpToPx(6));
+
+        GradientDrawable etBg1 = new GradientDrawable();
+        etBg1.setColor(0xFF0F172A);
+        etBg1.setCornerRadius(dpToPx(6));
+        etBg1.setStroke(dpToPx(1), 0xFF475569);
+        etKey.setBackground(etBg1);
+
+        TextView tvEq = new TextView(this);
+        tvEq.setText(" = ");
+        tvEq.setTextColor(0xFF94A3B8);
+        tvEq.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+
+        EditText etVal = new EditText(this);
+        etVal.setHint("Value (e.g. 720)");
+        etVal.setHintTextColor(0xFF64748B);
+        etVal.setTextColor(0xFFF8FAFC);
+        etVal.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        etVal.setText(value != null ? value : "");
+        etVal.setSingleLine(true);
+        etVal.setPadding(dpToPx(8), dpToPx(6), dpToPx(8), dpToPx(6));
+
+        GradientDrawable etBg2 = new GradientDrawable();
+        etBg2.setColor(0xFF0F172A);
+        etBg2.setCornerRadius(dpToPx(6));
+        etBg2.setStroke(dpToPx(1), 0xFF475569);
+        etVal.setBackground(etBg2);
+
+        Button btnRemove = new Button(this);
+        btnRemove.setText("✕");
+        btnRemove.setTextColor(0xFFF87171);
+        btnRemove.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        btnRemove.setTypeface(Typeface.DEFAULT_BOLD);
+
+        GradientDrawable remBg = new GradientDrawable();
+        remBg.setColor(0xFF334155);
+        remBg.setCornerRadius(dpToPx(6));
+        btnRemove.setBackground(remBg);
+        btnRemove.setOnClickListener(v -> mFlagsListContainer.removeView(row));
+
+        LinearLayout.LayoutParams kParams = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
+        LinearLayout.LayoutParams vParams = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
+        LinearLayout.LayoutParams btnParams = new LinearLayout.LayoutParams(dpToPx(36), dpToPx(36));
+        btnParams.setMargins(dpToPx(6), 0, 0, 0);
+
+        row.addView(etKey, kParams);
+        row.addView(tvEq);
+        row.addView(etVal, vParams);
+        row.addView(btnRemove, btnParams);
+
+        mFlagsListContainer.addView(row);
+    }
+
+    private void saveFlagsFromList() {
+        if (mFlagsListContainer == null) {
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        int count = mFlagsListContainer.getChildCount();
+        for (int i = 0; i < count; i++) {
+            View child = mFlagsListContainer.getChildAt(i);
+            if (child instanceof LinearLayout) {
+                LinearLayout row = (LinearLayout) child;
+                if (row.getChildCount() >= 4) {
+                    View vKey = row.getChildAt(0);
+                    View vVal = row.getChildAt(2);
+                    if (vKey instanceof EditText && vVal instanceof EditText) {
+                        String k = ((EditText) vKey).getText().toString().trim();
+                        String v = ((EditText) vVal).getText().toString().trim();
+                        if (!k.isEmpty()) {
+                            if (!k.startsWith("--")) {
+                                k = "--" + k;
+                            }
+                            if (sb.length() > 0) {
+                                sb.append(" ");
+                            }
+                            if (!v.isEmpty()) {
+                                sb.append(k).append("=").append(v);
+                            } else {
+                                sb.append(k);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        SharedPreferences prefs = getSharedPreferences("asura_prefs", Context.MODE_PRIVATE);
+        prefs.edit().putString(PREF_KEY_CUSTOM_FLAGS, sb.toString()).commit();
+    }
+
+    private void loadSavedFlagsIntoList(String savedFlags) {
+        if (mFlagsListContainer == null) {
+            return;
+        }
+        mFlagsListContainer.removeAllViews();
+        if (savedFlags == null || savedFlags.trim().isEmpty()) {
+            return;
+        }
+        String[] tokens = savedFlags.trim().split("\\s+");
+        for (String token : tokens) {
+            if (token.isEmpty()) continue;
+            String cleanToken = token.startsWith("--") ? token.substring(2) : token;
+            int eq = cleanToken.indexOf('=');
+            if (eq != -1) {
+                String k = cleanToken.substring(0, eq);
+                String v = cleanToken.substring(eq + 1);
+                addFlagRow(k, v);
+            } else {
+                addFlagRow(cleanToken, "");
+            }
+        }
     }
 
     private TextView createStatusTextView() {
@@ -775,6 +1147,19 @@ public class AsuraActivity extends SDLActivity {
             }
         }
 
+        if (mTvDriverStatus != null) {
+            SharedPreferences prefs = getSharedPreferences("asura_prefs", Context.MODE_PRIVATE);
+            String driverDir = prefs.getString(PREF_KEY_ADRENO_DRIVER_DIR, null);
+            String driverName = prefs.getString(PREF_KEY_ADRENO_DRIVER_NAME, "libvulkan_freedreno.so");
+            if (driverDir != null && !driverDir.trim().isEmpty()) {
+                mTvDriverStatus.setText("⚡ GPU Driver: Custom (" + driverName + ")");
+                mTvDriverStatus.setTextColor(0xFF38BDF8);
+            } else {
+                mTvDriverStatus.setText("⚡ GPU Driver: System Vulkan (Default)");
+                mTvDriverStatus.setTextColor(0xFF94A3B8);
+            }
+        }
+
         if (mBtnPlay != null) {
             boolean ready = hasPerm && hasFiles;
             mBtnPlay.setAlpha(ready ? 1.0f : 0.6f);
@@ -793,11 +1178,7 @@ public class AsuraActivity extends SDLActivity {
             return;
         }
 
-        if (mEtFlags != null) {
-            String flagsStr = mEtFlags.getText().toString();
-            SharedPreferences prefs = getSharedPreferences("asura_prefs", Context.MODE_PRIVATE);
-            prefs.edit().putString(PREF_KEY_CUSTOM_FLAGS, flagsStr).apply();
-        }
+        saveFlagsFromList();
 
         mGameStarted = true;
         if (mSplashOverlay != null) {

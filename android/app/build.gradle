@@ -1,0 +1,52 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace "com.recomp.asurawrath"
+    compileSdkVersion 34
+    ndkVersion "28.2.13676358"
+
+    defaultConfig {
+        applicationId "com.recomp.asurawrath"
+        minSdkVersion 26
+        targetSdkVersion 34
+        versionCode 1
+        versionName "v0.3"
+
+        externalNativeBuild {
+            cmake {
+                arguments "-DANDROID_PLATFORM=android-26",
+                          "-DANDROID_STL=c++_static",
+                          "-DREXGLUE_USE_VULKAN=ON"
+                if (project.hasProperty('cmakeArgs')) {
+                    arguments project.property('cmakeArgs').split(' ')
+                }
+                abiFilters 'arm64-v8a'
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path '../../CMakeLists.txt'
+            version '3.31.6'
+        }
+    }
+
+    sourceSets {
+        main {
+            java.srcDirs = ['src/main/java', '../../tools/rexglue/thirdparty/sdl3/android-project/app/src/main/java']
+        }
+    }
+}
+
+dependencies {
+}

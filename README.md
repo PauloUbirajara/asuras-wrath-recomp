@@ -84,6 +84,17 @@ build.bat --package
 #     └── asura_wrath_recomp_win_amd64.zip
 ```
 
+#### Android
+```bash
+# Build release APK
+./build_android.sh
+
+# Build debug APK
+./build_android.sh --debug
+
+# out/dist/asura_wrath_recomp_android.apk
+```
+
 ---
 
 ## 4. Game Setup

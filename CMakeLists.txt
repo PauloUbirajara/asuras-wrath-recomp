@@ -54,9 +54,13 @@ set(ASURAWRATH_SOURCES
     src/main.cpp
 )
 
-add_executable(asura_wrath_recomp ${ASURAWRATH_SOURCES})
+if(ANDROID)
+    add_library(asura_wrath_recomp SHARED ${ASURAWRATH_SOURCES})
+else()
+    add_executable(asura_wrath_recomp ${ASURAWRATH_SOURCES})
+endif()
 
-if(UNIX AND NOT APPLE)
+if(UNIX AND NOT APPLE AND NOT ANDROID)
     target_link_options(asura_wrath_recomp PRIVATE "-Wl,-rpath,${REXSDK_DIR}/out/${REX_PLATFORM}:$ORIGIN/../../../tools/rexglue/out/${REX_PLATFORM}:$ORIGIN")
 elseif(APPLE)
     target_link_options(asura_wrath_recomp PRIVATE "-Wl,-rpath,${REXSDK_DIR}/out/${REX_PLATFORM}:@executable_path/../../../tools/rexglue/out/${REX_PLATFORM}:@executable_path")

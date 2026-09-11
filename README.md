@@ -249,6 +249,7 @@ asura_wrath_recomp --render_target_path_vulkan=fbo
 ## 7. Credits
 
 - Powered by **ReXGlue** (https://github.com/rexglue/rexglue-sdk), an open-source static recompilation framework for Xbox 360 software.
+- UI touch controls made possible by using **kenney.nl** Xbox gamepad assets (https://kenney.nl/assets/input-prompts)
 
 ---
 

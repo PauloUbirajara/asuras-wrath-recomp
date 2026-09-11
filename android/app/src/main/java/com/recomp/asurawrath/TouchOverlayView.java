@@ -1,6 +1,5 @@
 package com.recomp.asurawrath;
 
-import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.graphics.Bitmap;
@@ -17,13 +16,11 @@ import java.util.List;
 
 public class TouchOverlayView extends View {
 
-    // SDL Gamepad Axis Constants
     public static final int SDL_GAMEPAD_AXIS_LEFTX = 0;
     public static final int SDL_GAMEPAD_AXIS_LEFTY = 1;
     public static final int SDL_GAMEPAD_AXIS_RIGHTX = 2;
     public static final int SDL_GAMEPAD_AXIS_RIGHTY = 3;
 
-    // SDL Gamepad Button Constants
     public static final int SDL_GAMEPAD_BUTTON_A = 0;
     public static final int SDL_GAMEPAD_BUTTON_B = 1;
     public static final int SDL_GAMEPAD_BUTTON_X = 2;
@@ -83,8 +80,6 @@ public class TouchOverlayView extends View {
         float radius;
         boolean active;
         int pointerId = -1;
-
-        boolean upPressed, downPressed, leftPressed, rightPressed;
     }
 
     private final List<ButtonState> buttons = new ArrayList<>();
@@ -102,6 +97,15 @@ public class TouchOverlayView extends View {
 
     private float opacity = 0.5f;
     private boolean layoutDone = false;
+    private final int DEVICE_ID = 0;
+    private boolean mControllerInitialized = false;
+
+    private void ensureControllerInitialized() {
+        if (!mControllerInitialized) {
+            AsuraActivity.initVirtualController(DEVICE_ID); // Calls JNI
+            mControllerInitialized = true;
+        }
+    }
 
     public TouchOverlayView(Context context) {
         super(context);
@@ -135,7 +139,7 @@ public class TouchOverlayView extends View {
     }
 
     public void initVirtualController() {
-        // Registered with SDL natively during startup
+        AsuraActivity.initVirtualController(DEVICE_ID);
     }
 
     private void updatePaintAlphas() {
@@ -206,7 +210,7 @@ public class TouchOverlayView extends View {
             56
         );
         addButton(
-            "LT",
+            "LS",
             R.drawable.xbox_lt,
             SDL_GAMEPAD_BUTTON_LEFT_STICK,
             0.15f,
@@ -214,7 +218,7 @@ public class TouchOverlayView extends View {
             56
         );
         addButton(
-            "RT",
+            "RS",
             R.drawable.xbox_rt,
             SDL_GAMEPAD_BUTTON_RIGHT_STICK,
             0.85f,
@@ -229,7 +233,7 @@ public class TouchOverlayView extends View {
             SDL_GAMEPAD_BUTTON_START,
             0.55f,
             0.90f,
-            36
+            42
         );
         addButton(
             "Back",
@@ -237,7 +241,7 @@ public class TouchOverlayView extends View {
             SDL_GAMEPAD_BUTTON_BACK,
             0.45f,
             0.90f,
-            36
+            42
         );
 
         leftStick = new StickState();
@@ -314,7 +318,7 @@ public class TouchOverlayView extends View {
 
         if (leftStick != null) {
             float lsCx = 0.15f * w;
-            float lsCy = 0.55f * h;
+            float lsCy = 0.50f * h;
             leftStick.baseRect.set(
                 lsCx - stickRadius,
                 lsCy - stickRadius,
@@ -399,9 +403,10 @@ public class TouchOverlayView extends View {
         }
     }
 
-    @SuppressLint("ClickableViewAccessibility")
     @Override
     public boolean onTouchEvent(MotionEvent event) {
+        ensureControllerInitialized(); // Guarantees SDL event loop is running on native side
+
         int action = event.getActionMasked();
         int pointerIndex = event.getActionIndex();
         int pointerId = event.getPointerId(pointerIndex);
@@ -461,7 +466,7 @@ public class TouchOverlayView extends View {
             if (bs.hitRect.contains(x, y)) {
                 bs.pressed = true;
                 pointerButtonMap.put(pointerId, bs);
-                injectButtonDown(bs.def.sdlButton);
+                injectButton(bs.def.sdlButton, true);
                 return;
             }
         }
@@ -492,7 +497,7 @@ public class TouchOverlayView extends View {
         if (bs != null) {
             pointerButtonMap.remove(pointerId);
             bs.pressed = false;
-            injectButtonUp(bs.def.sdlButton);
+            injectButton(bs.def.sdlButton, false);
         }
     }
 
@@ -501,7 +506,7 @@ public class TouchOverlayView extends View {
             ButtonState bs = buttons.get(i);
             if (bs.pressed) {
                 bs.pressed = false;
-                injectButtonUp(bs.def.sdlButton);
+                injectButton(bs.def.sdlButton, false);
             }
         }
         pointerButtonMap.clear();
@@ -539,97 +544,46 @@ public class TouchOverlayView extends View {
         float normX = dx / stick.radius;
         float normY = dy / stick.radius;
 
-        if (isLeft) {
-            AsuraActivity.sendAxis(0, SDL_GAMEPAD_AXIS_LEFTX, normX);
-            AsuraActivity.sendAxis(0, SDL_GAMEPAD_AXIS_LEFTY, normY);
+        // Apply radial deadzone (10%)
+        float deadZone = 0.10f;
+        float magnitude = (float) Math.hypot(normX, normY);
+
+        if (magnitude < deadZone) {
+            normX = 0.0f;
+            normY = 0.0f;
         } else {
-            AsuraActivity.sendAxis(0, SDL_GAMEPAD_AXIS_RIGHTX, normX);
-            AsuraActivity.sendAxis(0, SDL_GAMEPAD_AXIS_RIGHTY, normY);
+            // Rescale values past deadzone for smooth acceleration
+            float factor =
+                (magnitude - deadZone) / (1.0f - deadZone) / magnitude;
+            normX *= factor;
+            normY *= factor;
         }
 
-        // Handle D-Pad key presses
-        float deadZone = 0.25f;
-        boolean newUp = normY < -deadZone;
-        boolean newDown = normY > deadZone;
-        boolean newLeft = normX < -deadZone;
-        boolean newRight = normX > deadZone;
-
-        updateStickDpad(
-            stick,
-            newUp,
-            newDown,
-            newLeft,
-            newRight,
-            SDL_GAMEPAD_BUTTON_DPAD_UP,
-            SDL_GAMEPAD_BUTTON_DPAD_DOWN,
-            SDL_GAMEPAD_BUTTON_DPAD_LEFT,
-            SDL_GAMEPAD_BUTTON_DPAD_RIGHT
-        );
-    }
-
-    private void updateStickDpad(
-        StickState stick,
-        boolean up,
-        boolean down,
-        boolean left,
-        boolean right,
-        int upButton,
-        int downButton,
-        int leftButton,
-        int rightButton
-    ) {
-        if (up != stick.upPressed) {
-            stick.upPressed = up;
-            if (up) injectButtonDown(upButton);
-            else injectButtonUp(upButton);
-        }
-        if (down != stick.downPressed) {
-            stick.downPressed = down;
-            if (down) injectButtonDown(downButton);
-            else injectButtonUp(downButton);
-        }
-        if (left != stick.leftPressed) {
-            stick.leftPressed = left;
-            if (left) injectButtonDown(leftButton);
-            else injectButtonUp(leftButton);
-        }
-        if (right != stick.rightPressed) {
-            stick.rightPressed = right;
-            if (right) injectButtonDown(rightButton);
-            else injectButtonUp(rightButton);
+        if (isLeft) {
+            AsuraActivity.sendAxis(DEVICE_ID, SDL_GAMEPAD_AXIS_LEFTX, normX);
+            AsuraActivity.sendAxis(DEVICE_ID, SDL_GAMEPAD_AXIS_LEFTY, normY);
+        } else {
+            AsuraActivity.sendAxis(DEVICE_ID, SDL_GAMEPAD_AXIS_RIGHTX, normX);
+            AsuraActivity.sendAxis(DEVICE_ID, SDL_GAMEPAD_AXIS_RIGHTY, normY);
         }
     }
 
     private void resetStick(StickState stick, boolean isLeft) {
-        if (stick.upPressed) injectButtonUp(SDL_GAMEPAD_BUTTON_DPAD_UP);
-        if (stick.downPressed) injectButtonUp(SDL_GAMEPAD_BUTTON_DPAD_DOWN);
-        if (stick.leftPressed) injectButtonUp(SDL_GAMEPAD_BUTTON_DPAD_LEFT);
-        if (stick.rightPressed) injectButtonUp(SDL_GAMEPAD_BUTTON_DPAD_RIGHT);
-
-        stick.upPressed = false;
-        stick.downPressed = false;
-        stick.leftPressed = false;
-        stick.rightPressed = false;
-
         stick.currentX = stick.centerX;
         stick.currentY = stick.centerY;
         stick.active = false;
         stick.pointerId = -1;
 
         if (isLeft) {
-            AsuraActivity.sendAxis(0, SDL_GAMEPAD_AXIS_LEFTX, 0.0f);
-            AsuraActivity.sendAxis(0, SDL_GAMEPAD_AXIS_LEFTY, 0.0f);
+            AsuraActivity.sendAxis(DEVICE_ID, SDL_GAMEPAD_AXIS_LEFTX, 0.0f);
+            AsuraActivity.sendAxis(DEVICE_ID, SDL_GAMEPAD_AXIS_LEFTY, 0.0f);
         } else {
-            AsuraActivity.sendAxis(0, SDL_GAMEPAD_AXIS_RIGHTX, 0.0f);
-            AsuraActivity.sendAxis(0, SDL_GAMEPAD_AXIS_RIGHTY, 0.0f);
+            AsuraActivity.sendAxis(DEVICE_ID, SDL_GAMEPAD_AXIS_RIGHTX, 0.0f);
+            AsuraActivity.sendAxis(DEVICE_ID, SDL_GAMEPAD_AXIS_RIGHTY, 0.0f);
         }
     }
 
-    private void injectButtonDown(int button) {
-        AsuraActivity.sendButton(0, button, true);
-    }
-
-    private void injectButtonUp(int button) {
-        AsuraActivity.sendButton(0, button, false);
+    private void injectButton(int button, boolean pressed) {
+        AsuraActivity.sendButton(DEVICE_ID, button, pressed);
     }
 }

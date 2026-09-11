@@ -9,15 +9,18 @@
 #include <rex/rex_app.h>
 
 #if defined(__ANDROID__)
+#include <SDL3/SDL.h>
 #include <SDL3/SDL_hints.h>
+#include <android/log.h>
 #endif
 
 namespace {
-bool ExtractDiscEntry(rex::filesystem::Entry* entry, const std::filesystem::path& target_path) {
+bool ExtractDiscEntry(rex::filesystem::Entry *entry,
+                      const std::filesystem::path &target_path) {
   std::error_code ec;
   if (entry->attributes() & rex::filesystem::kFileAttributeDirectory) {
     std::filesystem::create_directories(target_path, ec);
-    for (const auto& child : entry->children()) {
+    for (const auto &child : entry->children()) {
       auto child_target = target_path / child->name();
       if (!ExtractDiscEntry(child.get(), child_target)) {
         return false;
@@ -31,7 +34,7 @@ bool ExtractDiscEntry(rex::filesystem::Entry* entry, const std::filesystem::path
     std::filesystem::create_directories(parent_dir, ec);
   }
 
-  auto disc_entry = static_cast<rex::filesystem::DiscImageEntry*>(entry);
+  auto disc_entry = static_cast<rex::filesystem::DiscImageEntry *>(entry);
   if (!disc_entry || !disc_entry->mmap()) {
     return false;
   }
@@ -41,7 +44,8 @@ bool ExtractDiscEntry(rex::filesystem::Entry* entry, const std::filesystem::path
     return false;
   }
 
-  const char* data_ptr = reinterpret_cast<const char*>(disc_entry->mmap()->data() + disc_entry->data_offset());
+  const char *data_ptr = reinterpret_cast<const char *>(
+      disc_entry->mmap()->data() + disc_entry->data_offset());
   size_t data_size = disc_entry->data_size();
   if (data_size > 0) {
     out.write(data_ptr, data_size);
@@ -50,27 +54,31 @@ bool ExtractDiscEntry(rex::filesystem::Entry* entry, const std::filesystem::path
   return out.good();
 }
 
-bool ExtractIsoToDirectory(const std::filesystem::path& iso_path, const std::filesystem::path& dest_dir) {
+bool ExtractIsoToDirectory(const std::filesystem::path &iso_path,
+                           const std::filesystem::path &dest_dir) {
   bool success = false;
   std::error_code ec;
   std::filesystem::create_directories(dest_dir, ec);
-  REXLOG_INFO("Extracting ISO {} to {}...", iso_path.string(), dest_dir.string());
+  REXLOG_INFO("Extracting ISO {} to {}...", iso_path.string(),
+              dest_dir.string());
 
   {
     rex::filesystem::DiscImageDevice device("game:", iso_path);
     if (!device.Initialize()) {
-      REXLOG_ERROR("Failed to initialize DiscImageDevice for ISO extraction: {}", iso_path.string());
+      REXLOG_ERROR(
+          "Failed to initialize DiscImageDevice for ISO extraction: {}",
+          iso_path.string());
       return false;
     }
 
-    const rex::filesystem::Entry* root = device.root();
+    const rex::filesystem::Entry *root = device.root();
     if (!root) {
       REXLOG_ERROR("ISO disc image root entry is null");
       return false;
     }
 
     success = true;
-    for (const auto& child : root->children()) {
+    for (const auto &child : root->children()) {
       auto child_target = dest_dir / child->name();
       if (!ExtractDiscEntry(child.get(), child_target)) {
         REXLOG_ERROR("Failed to extract entry {} from ISO", child->name());
@@ -85,23 +93,94 @@ bool ExtractIsoToDirectory(const std::filesystem::path& iso_path, const std::fil
   }
   return success;
 }
-}  // namespace
+} // namespace
+
+// Global handle referenced by JNI
+#if defined(__ANDROID__)
+extern SDL_JoystickID g_VirtualJoystickID;
+extern SDL_Gamepad *g_VirtualGamepad;
+#endif
 
 class AsurawrathApp : public rex::ReXApp {
- public:
+public:
   using rex::ReXApp::ReXApp;
 
-  static std::unique_ptr<rex::ui::WindowedApp> Create(rex::ui::WindowedAppContext& ctx) {
-    return std::unique_ptr<AsurawrathApp>(new AsurawrathApp(ctx, "asura_wrath_recomp", PPCImageConfig));
+  static std::unique_ptr<rex::ui::WindowedApp>
+  Create(rex::ui::WindowedAppContext &ctx) {
+    return std::unique_ptr<AsurawrathApp>(
+        new AsurawrathApp(ctx, "asura_wrath_recomp", PPCImageConfig));
   }
 
-  void OnConfigurePaths(rex::PathConfig& paths) override {
+#if defined(__ANDROID__)
+  void SetupVirtualGamepad() {
+    if (g_VirtualJoystickID != 0)
+      return;
+
+    if (!SDL_WasInit(SDL_INIT_GAMEPAD)) {
+      SDL_InitSubSystem(SDL_INIT_GAMEPAD);
+    }
+
+    SDL_VirtualJoystickDesc desc;
+    SDL_INIT_INTERFACE(&desc);
+    desc.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+    desc.naxes = 4;
+    desc.nbuttons = 15;
+    desc.name = "Virtual Touch Gamepad";
+
+    g_VirtualJoystickID = SDL_AttachVirtualJoystick(&desc);
+
+    if (g_VirtualJoystickID != 0) {
+      SDL_GUID guid = SDL_GetJoystickGUIDForID(g_VirtualJoystickID);
+      char guidStr[64];
+      SDL_GUIDToString(guid, guidStr, sizeof(guidStr));
+
+      char mapping[512];
+      SDL_snprintf(
+          mapping, sizeof(mapping),
+          "%s,Virtual Touch "
+          "Gamepad,a:b0,b:b1,x:b2,y:b3,back:b7,start:b6,leftshoulder:b4,"
+          "rightshoulder:b5,dpup:b11,dpdown:b12,dpleft:b13,dpright:b14,leftx:"
+          "a0,lefty:a1,rightx:a2,righty:a3,platform:Android,",
+          guidStr);
+
+      int res = SDL_AddGamepadMapping(mapping);
+      g_VirtualGamepad = SDL_OpenGamepad(g_VirtualJoystickID);
+
+      __android_log_print(
+          ANDROID_LOG_INFO, "AsuraInput",
+          "Native Virtual Gamepad Created (ID: %d, Mapping res: %d)",
+          (int)g_VirtualJoystickID, res);
+    } else {
+      __android_log_print(ANDROID_LOG_ERROR, "AsuraInput",
+                          "Failed to register Virtual Gamepad: %s",
+                          SDL_GetError());
+    }
+  }
+#endif
+
+  void OnPreSetup(rex::RuntimeConfig &config) override {
+#if defined(__ANDROID__)
+    SDL_SetHint(SDL_HINT_ANDROID_ALLOW_RECREATE_ACTIVITY, "1");
+#endif
+    if (config.gpu_plugin.empty()) {
+      config.gpu_plugin = "xenos";
+    }
+  }
+
+  void OnPostSetup() override {
+#if defined(__ANDROID__)
+    SetupVirtualGamepad();
+#endif
+  }
+
+  void OnConfigurePaths(rex::PathConfig &paths) override {
     std::error_code ec;
     auto cache_dir = paths.user_data_root / "cache";
     std::filesystem::create_directories(cache_dir, ec);
     paths.cache_root = cache_dir;
 
-    auto resolve_game_dir = [](const std::filesystem::path& dir, std::filesystem::path& out_path) -> bool {
+    auto resolve_game_dir = [](const std::filesystem::path &dir,
+                               std::filesystem::path &out_path) -> bool {
       std::error_code ec;
       if (dir.empty() || !std::filesystem::exists(dir, ec)) {
         return false;
@@ -128,12 +207,14 @@ class AsurawrathApp : public rex::ReXApp {
           out_path = extracted_dir;
           return true;
         }
-        if (std::filesystem::exists(extracted_dir / "BCGame" / "default.xex", ec)) {
+        if (std::filesystem::exists(extracted_dir / "BCGame" / "default.xex",
+                                    ec)) {
           out_path = extracted_dir / "BCGame";
           return true;
         }
         std::filesystem::directory_iterator end_it;
-        for (std::filesystem::directory_iterator entry(extracted_dir, ec); entry != end_it && !ec; entry.increment(ec)) {
+        for (std::filesystem::directory_iterator entry(extracted_dir, ec);
+             entry != end_it && !ec; entry.increment(ec)) {
           if (entry->is_regular_file(ec)) {
             auto ext = entry->path().extension().string();
             std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
@@ -151,7 +232,8 @@ class AsurawrathApp : public rex::ReXApp {
         return true;
       }
       std::filesystem::directory_iterator end_it;
-      for (std::filesystem::directory_iterator entry(dir, ec); entry != end_it && !ec; entry.increment(ec)) {
+      for (std::filesystem::directory_iterator entry(dir, ec);
+           entry != end_it && !ec; entry.increment(ec)) {
         if (entry->is_regular_file(ec)) {
           auto ext = entry->path().extension().string();
           std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
@@ -165,17 +247,15 @@ class AsurawrathApp : public rex::ReXApp {
     };
 
     std::filesystem::path resolved;
-    if (!paths.game_data_root.empty() && resolve_game_dir(paths.game_data_root, resolved)) {
+    if (!paths.game_data_root.empty() &&
+        resolve_game_dir(paths.game_data_root, resolved)) {
       paths.game_data_root = resolved;
     } else {
       auto cwd = std::filesystem::current_path(ec);
       const std::filesystem::path search_dirs[] = {
-          paths.user_data_root,
-          paths.user_data_root.parent_path(),
-          cwd
-      };
+          paths.user_data_root, paths.user_data_root.parent_path(), cwd};
 
-      for (const auto& dir : search_dirs) {
+      for (const auto &dir : search_dirs) {
         if (resolve_game_dir(dir, resolved)) {
           paths.game_data_root = resolved;
           break;
@@ -185,7 +265,8 @@ class AsurawrathApp : public rex::ReXApp {
 
     auto cwd = std::filesystem::current_path(ec);
     if (paths.game_data_root.empty()) {
-      paths.game_data_root = paths.user_data_root.empty() ? cwd : paths.user_data_root;
+      paths.game_data_root =
+          paths.user_data_root.empty() ? cwd : paths.user_data_root;
     }
 
     if (std::filesystem::is_regular_file(paths.game_data_root, ec)) {
@@ -193,13 +274,15 @@ class AsurawrathApp : public rex::ReXApp {
       std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
       if (ext == ".iso" || ext == ".gdfx") {
         auto iso_path = paths.game_data_root;
-        auto dest_dir = paths.user_data_root.empty() ? iso_path.parent_path() / "extracted"
-                                                     : paths.user_data_root / "extracted";
+        auto dest_dir = paths.user_data_root.empty()
+                            ? iso_path.parent_path() / "extracted"
+                            : paths.user_data_root / "extracted";
         if (!std::filesystem::exists(dest_dir / "default.xex", ec) &&
             !std::filesystem::exists(dest_dir / "BCGame" / "default.xex", ec)) {
           if (ExtractIsoToDirectory(iso_path, dest_dir)) {
             std::filesystem::remove(iso_path, ec);
-            std::filesystem::remove(paths.user_data_root / "Asura's Wrath.iso", ec);
+            std::filesystem::remove(paths.user_data_root / "Asura's Wrath.iso",
+                                    ec);
             std::filesystem::remove(dest_dir / "Asura's Wrath.iso", ec);
             std::filesystem::path new_resolved;
             if (resolve_game_dir(dest_dir, new_resolved)) {
@@ -210,7 +293,8 @@ class AsurawrathApp : public rex::ReXApp {
           }
         } else {
           std::filesystem::remove(iso_path, ec);
-          std::filesystem::remove(paths.user_data_root / "Asura's Wrath.iso", ec);
+          std::filesystem::remove(paths.user_data_root / "Asura's Wrath.iso",
+                                  ec);
           std::filesystem::remove(dest_dir / "Asura's Wrath.iso", ec);
           std::filesystem::path new_resolved;
           if (resolve_game_dir(dest_dir, new_resolved)) {
@@ -220,15 +304,6 @@ class AsurawrathApp : public rex::ReXApp {
           }
         }
       }
-    }
-  }
-
-  void OnPreSetup(rex::RuntimeConfig& config) override {
-#if defined(__ANDROID__)
-    SDL_SetHint(SDL_HINT_ANDROID_ALLOW_RECREATE_ACTIVITY, "1");
-#endif
-    if (config.gpu_plugin.empty()) {
-      config.gpu_plugin = "xenos";
     }
   }
 };

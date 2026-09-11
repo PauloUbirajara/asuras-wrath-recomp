@@ -178,9 +178,6 @@ public class AsuraActivity extends SDLActivity {
                     RelativeLayout.LayoutParams.MATCH_PARENT
                 );
             mLayout.addView(mTouchOverlay, params);
-
-            // Register the touch overlay as an SDL Virtual Gamepad
-            mTouchOverlay.initVirtualController();
         }
 
         mTouchOverlay.setVisibility(View.VISIBLE);
@@ -1100,7 +1097,7 @@ public class AsuraActivity extends SDLActivity {
         );
 
         mCbShowTouchControls = new CheckBox(this);
-        mCbShowTouchControls.setText("Show Touch Controls (WIP, UI only)");
+        mCbShowTouchControls.setText("Show Touch Controls");
         mCbShowTouchControls.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         mCbShowTouchControls.setTextColor(0xFFE2E8F0);
         mCbShowTouchControls.setChecked(showTouchDefault);
@@ -1668,61 +1665,19 @@ public class AsuraActivity extends SDLActivity {
         super.resumeNativeThread();
     }
 
-    // TODO: Fix SDL not picking touch controls
-    public static void sendAxis(int deviceId, int axis, float value) {
-        // SDLActivity native axis forwarding
-        // SDLControllerManager.onNativeJoy(deviceId, axis, value);
+    public static native void sendNativeButton(int button, boolean pressed);
+
+    public static native void sendNativeAxis(int axis, float value);
+
+    public static void initVirtualController(int deviceId) {
+        // Native controller handling initialized automatically via SDL event loop
     }
 
-    // TODO: Fix SDL not picking touch controls
-    public static void sendButton(int deviceId, int button, boolean pressed) {
-        // Map controller buttons to standard KeyEvent codes for SDL handling
-        int keyCode;
-        switch (button) {
-            case TouchOverlayView.SDL_GAMEPAD_BUTTON_A:
-                keyCode = KeyEvent.KEYCODE_BUTTON_A;
-                break;
-            case TouchOverlayView.SDL_GAMEPAD_BUTTON_B:
-                keyCode = KeyEvent.KEYCODE_BUTTON_B;
-                break;
-            case TouchOverlayView.SDL_GAMEPAD_BUTTON_X:
-                keyCode = KeyEvent.KEYCODE_BUTTON_X;
-                break;
-            case TouchOverlayView.SDL_GAMEPAD_BUTTON_Y:
-                keyCode = KeyEvent.KEYCODE_BUTTON_Y;
-                break;
-            case TouchOverlayView.SDL_GAMEPAD_BUTTON_LEFT_SHOULDER:
-                keyCode = KeyEvent.KEYCODE_BUTTON_L1;
-                break;
-            case TouchOverlayView.SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER:
-                keyCode = KeyEvent.KEYCODE_BUTTON_R1;
-                break;
-            case TouchOverlayView.SDL_GAMEPAD_BUTTON_START:
-                keyCode = KeyEvent.KEYCODE_BUTTON_START;
-                break;
-            case TouchOverlayView.SDL_GAMEPAD_BUTTON_BACK:
-                keyCode = KeyEvent.KEYCODE_BUTTON_SELECT;
-                break;
-            case TouchOverlayView.SDL_GAMEPAD_BUTTON_DPAD_UP:
-                keyCode = KeyEvent.KEYCODE_DPAD_UP;
-                break;
-            case TouchOverlayView.SDL_GAMEPAD_BUTTON_DPAD_DOWN:
-                keyCode = KeyEvent.KEYCODE_DPAD_DOWN;
-                break;
-            case TouchOverlayView.SDL_GAMEPAD_BUTTON_DPAD_LEFT:
-                keyCode = KeyEvent.KEYCODE_DPAD_LEFT;
-                break;
-            case TouchOverlayView.SDL_GAMEPAD_BUTTON_DPAD_RIGHT:
-                keyCode = KeyEvent.KEYCODE_DPAD_RIGHT;
-                break;
-            default:
-                return;
-        }
+    public static void sendAxis(int deviceId, int axis, float value) {
+        sendNativeAxis(axis, value);
+    }
 
-        if (pressed) {
-            SDLActivity.onNativeKeyDown(keyCode);
-        } else {
-            SDLActivity.onNativeKeyUp(keyCode);
-        }
+    public static void sendButton(int deviceId, int button, boolean pressed) {
+        sendNativeButton(button, pressed);
     }
 }

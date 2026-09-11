@@ -56,6 +56,7 @@ set(ASURAWRATH_SOURCES
 
 if(ANDROID)
     add_library(asura_wrath_recomp SHARED ${ASURAWRATH_SOURCES})
+    target_link_libraries(asura_wrath_recomp PRIVATE log SDL3::SDL3)
 else()
     add_executable(asura_wrath_recomp ${ASURAWRATH_SOURCES})
 endif()
@@ -72,4 +73,3 @@ set(REXGLUE_RECOMP_DEBUG_INFO "none" CACHE STRING "Debug info level" FORCE)
 
 rexglue_setup_target(asura_wrath_recomp GPU_PLUGINS xenos)
 target_include_directories(asura_wrath_recomp PRIVATE ${REXSDK_DIR}/thirdparty/imgui ${CMAKE_CURRENT_SOURCE_DIR}/src)
-

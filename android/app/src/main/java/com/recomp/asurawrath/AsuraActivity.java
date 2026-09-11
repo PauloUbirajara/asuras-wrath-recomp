@@ -1,15 +1,18 @@
 package com.recomp.asurawrath;
 
-import org.libsdl.app.SDLActivity;
-
 import android.Manifest;
 import android.app.Activity;
 import android.app.ProgressDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
 import android.content.pm.PackageManager;
+import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -19,9 +22,6 @@ import android.os.Looper;
 import android.os.ParcelFileDescriptor;
 import android.provider.DocumentsContract;
 import android.provider.Settings;
-import android.graphics.Color;
-import android.graphics.Typeface;
-import android.graphics.drawable.GradientDrawable;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -31,12 +31,13 @@ import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.RelativeLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
-
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.File;
@@ -47,28 +48,40 @@ import java.io.OutputStream;
 import java.util.Locale;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
+import org.libsdl.app.SDLActivity;
+import org.libsdl.app.SDLControllerManager;
 
 public class AsuraActivity extends SDLActivity {
+
     private static final int REQUEST_CODE_STORAGE_PERMISSION = 1000;
     private static final int REQUEST_CODE_PICK_ISO = 1001;
     private static final int REQUEST_CODE_PICK_FOLDER = 1002;
     private static final int REQUEST_CODE_PICK_DRIVER_ZIP = 1003;
     private static final int REQUEST_CODE_PICK_DRIVER_FOLDER = 1004;
 
-    private static final String PREF_KEY_STORAGE_PERMISSION = "storage_permission";
+    private static final String PREF_KEY_STORAGE_PERMISSION =
+        "storage_permission";
     private static final String PREF_KEY_CUSTOM_DIR = "custom_game_dir";
     private static final String PREF_KEY_CUSTOM_FLAGS = "custom_cmdline_flags";
-    private static final String PREF_KEY_ADRENO_DRIVER_DIR = "adreno_driver_dir";
-    private static final String PREF_KEY_ADRENO_DRIVER_NAME = "adreno_driver_name";
+    private static final String PREF_KEY_ADRENO_DRIVER_DIR =
+        "adreno_driver_dir";
+    private static final String PREF_KEY_ADRENO_DRIVER_NAME =
+        "adreno_driver_name";
+    private static final String PREF_KEY_SHOW_TOUCH_CONTROLS =
+        "show_touch_controls";
 
     private boolean mPickerOpened = false;
     private Uri mPendingIsoUri = null;
 
+    private TouchOverlayView mTouchOverlay;
     private View mSplashOverlay = null;
+    private ScrollView mScrollView = null;
+    private LinearLayout mAdvContainer = null;
     private TextView mTvPermissionStatus = null;
     private TextView mTvFolderStatus = null;
     private TextView mTvGameStatus = null;
     private TextView mTvDriverStatus = null;
+    private CheckBox mCbShowTouchControls = null;
     private LinearLayout mFlagsListContainer = null;
     private Button mBtnPlay = null;
     private boolean mGameStarted = false;
@@ -80,11 +93,7 @@ public class AsuraActivity extends SDLActivity {
 
     @Override
     protected String[] getLibraries() {
-        return new String[] {
-            "rexruntime",
-            "rexgpu-xenos",
-            "asura_wrath_recomp"
-        };
+        return new String[] { "asura_wrath_recomp" };
     }
 
     @Override
@@ -92,22 +101,25 @@ public class AsuraActivity extends SDLActivity {
         File dataDir = getGameFilesDir();
         File cacheDir = new File(dataDir, "cache");
         File logsDir = new File(dataDir, "logs");
-        if (!cacheDir.exists()) {
-            cacheDir.mkdirs();
-        }
-        if (!logsDir.exists()) {
-            logsDir.mkdirs();
-        }
+        if (!cacheDir.exists()) cacheDir.mkdirs();
+        if (!logsDir.exists()) logsDir.mkdirs();
+
         java.util.ArrayList<String> argsList = new java.util.ArrayList<>();
         argsList.add("--user_data_root=" + dataDir.getAbsolutePath());
         argsList.add("--game_data_root=" + dataDir.getAbsolutePath());
         argsList.add("--cache_root=" + cacheDir.getAbsolutePath());
 
-        SharedPreferences prefs = getSharedPreferences("asura_prefs", Context.MODE_PRIVATE);
+        SharedPreferences prefs = getSharedPreferences(
+            "asura_prefs",
+            Context.MODE_PRIVATE
+        );
 
         // Custom GPU Driver flags
         String driverDir = prefs.getString(PREF_KEY_ADRENO_DRIVER_DIR, "");
-        String driverName = prefs.getString(PREF_KEY_ADRENO_DRIVER_NAME, "libvulkan_freedreno.so");
+        String driverName = prefs.getString(
+            PREF_KEY_ADRENO_DRIVER_NAME,
+            "libvulkan_freedreno.so"
+        );
         if (driverDir != null && !driverDir.trim().isEmpty()) {
             argsList.add("--adreno_driver_path=" + driverDir.trim());
             argsList.add("--adreno_driver_name=" + driverName.trim());
@@ -129,13 +141,22 @@ public class AsuraActivity extends SDLActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         if (mGameStarted) {
-            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+            setRequestedOrientation(
+                ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            );
         } else {
-            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED);
+            setRequestedOrientation(
+                ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            );
         }
         super.onCreate(savedInstanceState);
-        setFullscreenImmersive();
+
         createSplashUI();
+
+        getWindow().setSoftInputMode(
+            WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE
+        );
+        setFullscreenImmersive();
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
@@ -145,15 +166,59 @@ public class AsuraActivity extends SDLActivity {
         }
     }
 
+    private void showTouchOverlay() {
+        if (mLayout == null) return;
+
+        if (mTouchOverlay == null) {
+            mTouchOverlay = new TouchOverlayView(this);
+            mTouchOverlay.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+            RelativeLayout.LayoutParams params =
+                new RelativeLayout.LayoutParams(
+                    RelativeLayout.LayoutParams.MATCH_PARENT,
+                    RelativeLayout.LayoutParams.MATCH_PARENT
+                );
+            mLayout.addView(mTouchOverlay, params);
+
+            // Register the touch overlay as an SDL Virtual Gamepad
+            mTouchOverlay.initVirtualController();
+        }
+
+        mTouchOverlay.setVisibility(View.VISIBLE);
+        mTouchOverlay.bringToFront();
+        mLayout.bringChildToFront(mTouchOverlay);
+        mLayout.invalidate();
+    }
+
     private void handleBackPress() {
         long now = System.currentTimeMillis();
         if (now - mLastBackPressTime < 2000) {
-            finish();
-            System.exit(0);
+            if (mGameStarted) {
+                returnToMenu();
+            } else {
+                finish();
+                android.os.Process.killProcess(android.os.Process.myPid());
+            }
         } else {
             mLastBackPressTime = now;
-            Toast.makeText(this, "Press back again to exit game", Toast.LENGTH_SHORT).show();
+            Toast.makeText(
+                this,
+                mGameStarted
+                    ? "Press back again to return to menu"
+                    : "Press back again to exit app",
+                Toast.LENGTH_SHORT
+            ).show();
         }
+    }
+
+    private void returnToMenu() {
+        mGameStarted = false;
+        Intent intent = new Intent(this, AsuraActivity.class);
+        intent.addFlags(
+            Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK
+        );
+        startActivity(intent);
+        finish();
+        android.os.Process.killProcess(android.os.Process.myPid());
     }
 
     @Override
@@ -164,7 +229,10 @@ public class AsuraActivity extends SDLActivity {
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
         if (event.getKeyCode() == KeyEvent.KEYCODE_BACK) {
-            if (event.getAction() == KeyEvent.ACTION_UP && event.getRepeatCount() == 0) {
+            if (
+                event.getAction() == KeyEvent.ACTION_UP &&
+                event.getRepeatCount() == 0
+            ) {
                 handleBackPress();
             }
             return true;
@@ -196,52 +264,58 @@ public class AsuraActivity extends SDLActivity {
     }
 
     private void setFullscreenImmersive() {
-        if (getWindow() == null) {
-            return;
-        }
+        if (getWindow() == null) return;
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             getWindow().getAttributes().layoutInDisplayCutoutMode =
                 WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
         }
+
+        View decorView = getWindow().getDecorView();
+        if (decorView == null) return;
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             getWindow().setDecorFitsSystemWindows(false);
-            WindowInsetsController controller = getWindow().getInsetsController();
+            WindowInsetsController controller =
+                decorView.getWindowInsetsController();
             if (controller != null) {
-                controller.hide(WindowInsets.Type.statusBars() | WindowInsets.Type.navigationBars());
-                controller.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                controller.hide(
+                    WindowInsets.Type.statusBars() |
+                        WindowInsets.Type.navigationBars()
+                );
+                controller.setSystemBarsBehavior(
+                    WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                );
             }
         } else {
-            View decorView = getWindow().getDecorView();
-            if (decorView != null) {
-                int flags = View.SYSTEM_UI_FLAG_FULLSCREEN
-                    | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                    | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                    | View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
-                decorView.setSystemUiVisibility(flags);
-            }
+            int flags =
+                View.SYSTEM_UI_FLAG_FULLSCREEN |
+                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY |
+                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
+                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
+            decorView.setSystemUiVisibility(flags);
         }
     }
 
     @Override
     protected void resumeNativeThread() {
-        if (!mGameStarted) {
-            return;
-        }
+        if (!mGameStarted) return;
         File filesDir = getGameFilesDir();
-        if (!hasStoragePermission()) {
-            return;
-        }
-        if (!hasGameFiles(filesDir)) {
-            return;
-        }
-        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+        if (!hasStoragePermission() || !hasGameFiles(filesDir)) return;
+
+        setRequestedOrientation(
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        );
         super.resumeNativeThread();
     }
 
     private File getGameFilesDir() {
-        SharedPreferences prefs = getSharedPreferences("asura_prefs", Context.MODE_PRIVATE);
+        SharedPreferences prefs = getSharedPreferences(
+            "asura_prefs",
+            Context.MODE_PRIVATE
+        );
         String customPath = prefs.getString(PREF_KEY_CUSTOM_DIR, null);
         if (customPath != null) {
             File customDir = new File(customPath);
@@ -254,18 +328,24 @@ public class AsuraActivity extends SDLActivity {
     }
 
     private void saveGameFilesDir(File dir) {
-        if (dir == null) {
-            return;
-        }
-        SharedPreferences prefs = getSharedPreferences("asura_prefs", Context.MODE_PRIVATE);
-        prefs.edit().putString(PREF_KEY_CUSTOM_DIR, dir.getAbsolutePath()).commit();
+        if (dir == null) return;
+        SharedPreferences prefs = getSharedPreferences(
+            "asura_prefs",
+            Context.MODE_PRIVATE
+        );
+        prefs
+            .edit()
+            .putString(PREF_KEY_CUSTOM_DIR, dir.getAbsolutePath())
+            .commit();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
         if (mGameStarted) {
-            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+            setRequestedOrientation(
+                ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            );
             super.resumeNativeThread();
             return;
         }
@@ -277,127 +357,170 @@ public class AsuraActivity extends SDLActivity {
             return Environment.isExternalStorageManager();
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            return checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
-                && checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED;
+            return (
+                checkSelfPermission(
+                    Manifest.permission.READ_EXTERNAL_STORAGE
+                ) == PackageManager.PERMISSION_GRANTED &&
+                checkSelfPermission(
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE
+                ) == PackageManager.PERMISSION_GRANTED
+            );
         }
         return true;
     }
 
     private void requestStoragePermission() {
-        Toast.makeText(this, "Storage permission is required for game files", Toast.LENGTH_LONG).show();
+        Toast.makeText(
+            this,
+            "Storage permission is required for game files",
+            Toast.LENGTH_LONG
+        ).show();
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             try {
-                Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
+                Intent intent = new Intent(
+                    Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION
+                );
                 intent.setData(Uri.parse("package:" + getPackageName()));
                 startActivityForResult(intent, REQUEST_CODE_STORAGE_PERMISSION);
                 return;
             } catch (Exception e) {
-                Intent intent = new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION);
+                Intent intent = new Intent(
+                    Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION
+                );
                 startActivityForResult(intent, REQUEST_CODE_STORAGE_PERMISSION);
                 return;
             }
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            requestPermissions(new String[]{
-                Manifest.permission.READ_EXTERNAL_STORAGE,
-                Manifest.permission.WRITE_EXTERNAL_STORAGE
-            }, REQUEST_CODE_STORAGE_PERMISSION);
+            requestPermissions(
+                new String[] {
+                    Manifest.permission.READ_EXTERNAL_STORAGE,
+                    Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                },
+                REQUEST_CODE_STORAGE_PERMISSION
+            );
         }
     }
 
     @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+    public void onRequestPermissionsResult(
+        int requestCode,
+        String[] permissions,
+        int[] grantResults
+    ) {
+        super.onRequestPermissionsResult(
+            requestCode,
+            permissions,
+            grantResults
+        );
         mPickerOpened = false;
-        if (requestCode != REQUEST_CODE_STORAGE_PERMISSION) {
-            return;
-        }
+        if (requestCode != REQUEST_CODE_STORAGE_PERMISSION) return;
         if (hasStoragePermission()) {
             onResume();
             return;
         }
-        Toast.makeText(this, "Storage permission denied.", Toast.LENGTH_LONG).show();
+        Toast.makeText(
+            this,
+            "Storage permission denied.",
+            Toast.LENGTH_LONG
+        ).show();
     }
 
     private boolean hasGameFiles(File dir) {
-        if (dir == null || !dir.exists()) {
-            return false;
-        }
-        if (checkDirectoryForGameFiles(dir)) {
-            return true;
-        }
+        if (dir == null || !dir.exists()) return false;
+        if (checkDirectoryForGameFiles(dir)) return true;
         File subDir = new File(dir, "asura_wrath_recomp");
         return checkDirectoryForGameFiles(subDir);
     }
 
     private boolean checkDirectoryForGameFiles(File dir) {
-        if (dir == null || !dir.exists()) {
-            return false;
-        }
-        if (new File(dir, "default.xex").isFile()) {
-            return true;
-        }
+        if (dir == null || !dir.exists()) return false;
+        if (new File(dir, "default.xex").isFile()) return true;
         File extractedDir = new File(dir, "extracted");
-        if (extractedDir.isDirectory() && checkDirectoryForGameFiles(extractedDir)) {
-            return true;
-        }
+        if (
+            extractedDir.isDirectory() &&
+            checkDirectoryForGameFiles(extractedDir)
+        ) return true;
         File gameDataDir = new File(dir, "game_data");
-        if (gameDataDir.isDirectory() && checkDirectoryForGameFiles(gameDataDir)) {
-            return true;
-        }
+        if (
+            gameDataDir.isDirectory() && checkDirectoryForGameFiles(gameDataDir)
+        ) return true;
         File[] files = dir.listFiles();
-        if (files == null) {
-            return false;
-        }
+        if (files == null) return false;
         for (File f : files) {
             if (f.isFile()) {
                 String name = f.getName().toLowerCase();
-                if (name.endsWith(".iso") || name.endsWith(".gdfx")) {
-                    return true;
-                }
+                if (
+                    name.endsWith(".iso") || name.endsWith(".gdfx")
+                ) return true;
             }
         }
         return false;
     }
 
     private void openIsoPicker() {
-        Toast.makeText(this, "Select your Asura's Wrath Xbox 360 ISO", Toast.LENGTH_SHORT).show();
+        Toast.makeText(
+            this,
+            "Select your Asura's Wrath Xbox 360 ISO",
+            Toast.LENGTH_SHORT
+        ).show();
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("*/*");
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        intent.addFlags(
+            Intent.FLAG_GRANT_READ_URI_PERMISSION |
+                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+        );
         startActivityForResult(intent, REQUEST_CODE_PICK_ISO);
     }
 
     private void openFolderPicker() {
-        Toast.makeText(this, "Select destination folder for game, cache & logs", Toast.LENGTH_SHORT).show();
+        Toast.makeText(
+            this,
+            "Select destination folder for game, cache & logs",
+            Toast.LENGTH_SHORT
+        ).show();
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION 
-                | Intent.FLAG_GRANT_WRITE_URI_PERMISSION 
-                | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        intent.addFlags(
+            Intent.FLAG_GRANT_READ_URI_PERMISSION |
+                Intent.FLAG_GRANT_WRITE_URI_PERMISSION |
+                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+        );
         startActivityForResult(intent, REQUEST_CODE_PICK_FOLDER);
     }
 
     private void openDriverZipPicker() {
-        Toast.makeText(this, "Select custom Adreno driver .zip package", Toast.LENGTH_SHORT).show();
+        Toast.makeText(
+            this,
+            "Select custom Adreno driver .zip package",
+            Toast.LENGTH_SHORT
+        ).show();
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         intent.addCategory(Intent.CATEGORY_OPENABLE);
         intent.setType("*/*");
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        intent.addFlags(
+            Intent.FLAG_GRANT_READ_URI_PERMISSION |
+                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+        );
         startActivityForResult(intent, REQUEST_CODE_PICK_DRIVER_ZIP);
     }
 
     private void openDriverFolderPicker() {
-        Toast.makeText(this, "Select extracted custom driver folder", Toast.LENGTH_SHORT).show();
+        Toast.makeText(
+            this,
+            "Select extracted custom driver folder",
+            Toast.LENGTH_SHORT
+        ).show();
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        intent.addFlags(
+            Intent.FLAG_GRANT_READ_URI_PERMISSION |
+                Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+        );
         startActivityForResult(intent, REQUEST_CODE_PICK_DRIVER_FOLDER);
     }
 
     private File getFileFromTreeUri(Uri uri) {
-        if (uri == null) {
-            return getExternalFilesDir(null);
-        }
+        if (uri == null) return getExternalFilesDir(null);
         try {
             String docId = DocumentsContract.getTreeDocumentId(uri);
             if (docId != null) {
@@ -409,9 +532,9 @@ public class AsuraActivity extends SDLActivity {
                     return path.isEmpty() ? root : new File(root, path);
                 } else {
                     File root = new File("/storage/" + type);
-                    if (root.exists()) {
-                        return path.isEmpty() ? root : new File(root, path);
-                    }
+                    if (root.exists()) return path.isEmpty()
+                        ? root
+                        : new File(root, path);
                 }
             }
         } catch (Exception e) {
@@ -421,7 +544,11 @@ public class AsuraActivity extends SDLActivity {
     }
 
     @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+    protected void onActivityResult(
+        int requestCode,
+        int resultCode,
+        Intent data
+    ) {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQUEST_CODE_STORAGE_PERMISSION) {
             mPickerOpened = false;
@@ -429,82 +556,146 @@ public class AsuraActivity extends SDLActivity {
                 onResume();
                 return;
             }
-            Toast.makeText(this, "Storage permission required.", Toast.LENGTH_LONG).show();
+            Toast.makeText(
+                this,
+                "Storage permission required.",
+                Toast.LENGTH_LONG
+            ).show();
             updateSplashStatus();
             return;
         }
 
         if (requestCode == REQUEST_CODE_PICK_ISO) {
-            if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
+            if (
+                resultCode == Activity.RESULT_OK &&
+                data != null &&
+                data.getData() != null
+            ) {
                 mPendingIsoUri = data.getData();
                 try {
-                    getContentResolver().takePersistableUriPermission(mPendingIsoUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    getContentResolver().takePersistableUriPermission(
+                        mPendingIsoUri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    );
                 } catch (Exception ignored) {}
                 File targetDir = getGameFilesDir();
                 copyIsoInBackground(mPendingIsoUri, targetDir);
                 return;
             }
             mPickerOpened = false;
-            Toast.makeText(this, "ISO selection canceled.", Toast.LENGTH_SHORT).show();
+            Toast.makeText(
+                this,
+                "ISO selection canceled.",
+                Toast.LENGTH_SHORT
+            ).show();
             updateSplashStatus();
             return;
         }
 
         if (requestCode == REQUEST_CODE_PICK_FOLDER) {
-            if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
+            if (
+                resultCode == Activity.RESULT_OK &&
+                data != null &&
+                data.getData() != null
+            ) {
                 Uri folderUri = data.getData();
                 try {
-                    getContentResolver().takePersistableUriPermission(folderUri, 
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                    getContentResolver().takePersistableUriPermission(
+                        folderUri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION |
+                            Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    );
                 } catch (Exception ignored) {}
 
                 File targetDir = getFileFromTreeUri(folderUri);
                 saveGameFilesDir(targetDir);
                 mPickerOpened = false;
-                Toast.makeText(this, "Target folder set: " + targetDir.getAbsolutePath(), Toast.LENGTH_SHORT).show();
+                Toast.makeText(
+                    this,
+                    "Target folder set: " + targetDir.getAbsolutePath(),
+                    Toast.LENGTH_SHORT
+                ).show();
                 updateSplashStatus();
                 return;
             }
             mPickerOpened = false;
-            Toast.makeText(this, "Folder selection canceled.", Toast.LENGTH_SHORT).show();
+            Toast.makeText(
+                this,
+                "Folder selection canceled.",
+                Toast.LENGTH_SHORT
+            ).show();
             updateSplashStatus();
             return;
         }
 
         if (requestCode == REQUEST_CODE_PICK_DRIVER_ZIP) {
-            if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
+            if (
+                resultCode == Activity.RESULT_OK &&
+                data != null &&
+                data.getData() != null
+            ) {
                 extractDriverZipInBackground(data.getData());
                 return;
             }
             mPickerOpened = false;
-            Toast.makeText(this, "Driver selection canceled.", Toast.LENGTH_SHORT).show();
+            Toast.makeText(
+                this,
+                "Driver selection canceled.",
+                Toast.LENGTH_SHORT
+            ).show();
             return;
         }
 
         if (requestCode == REQUEST_CODE_PICK_DRIVER_FOLDER) {
-            if (resultCode == Activity.RESULT_OK && data != null && data.getData() != null) {
+            if (
+                resultCode == Activity.RESULT_OK &&
+                data != null &&
+                data.getData() != null
+            ) {
                 Uri folderUri = data.getData();
                 try {
-                    getContentResolver().takePersistableUriPermission(folderUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    getContentResolver().takePersistableUriPermission(
+                        folderUri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    );
                 } catch (Exception ignored) {}
                 File targetDir = getFileFromTreeUri(folderUri);
                 File searchFile = findDriverSo(targetDir);
-                String driverName = searchFile != null ? searchFile.getName() : "libvulkan_freedreno.so";
-                File driverDir = searchFile != null ? searchFile.getParentFile() : targetDir;
+                String driverName =
+                    searchFile != null
+                        ? searchFile.getName()
+                        : "libvulkan_freedreno.so";
+                File driverDir =
+                    searchFile != null ? searchFile.getParentFile() : targetDir;
 
-                SharedPreferences prefs = getSharedPreferences("asura_prefs", Context.MODE_PRIVATE);
-                prefs.edit()
-                    .putString(PREF_KEY_ADRENO_DRIVER_DIR, driverDir.getAbsolutePath())
+                SharedPreferences prefs = getSharedPreferences(
+                    "asura_prefs",
+                    Context.MODE_PRIVATE
+                );
+                prefs
+                    .edit()
+                    .putString(
+                        PREF_KEY_ADRENO_DRIVER_DIR,
+                        driverDir.getAbsolutePath()
+                    )
                     .putString(PREF_KEY_ADRENO_DRIVER_NAME, driverName)
                     .commit();
 
                 mPickerOpened = false;
-                Toast.makeText(this, "Custom driver folder set: " + driverDir.getAbsolutePath(), Toast.LENGTH_SHORT).show();
+                Toast.makeText(
+                    this,
+                    "Custom driver folder set: " + driverDir.getAbsolutePath(),
+                    Toast.LENGTH_SHORT
+                ).show();
                 updateSplashStatus();
                 return;
             }
             mPickerOpened = false;
-            Toast.makeText(this, "Driver folder selection canceled.", Toast.LENGTH_SHORT).show();
+            Toast.makeText(
+                this,
+                "Driver folder selection canceled.",
+                Toast.LENGTH_SHORT
+            ).show();
         }
     }
 
@@ -549,8 +740,14 @@ public class AsuraActivity extends SDLActivity {
                 targetDir = new File(driversDir, zipName);
                 if (!targetDir.exists()) targetDir.mkdirs();
 
-                try (InputStream is = getContentResolver().openInputStream(zipUri);
-                     ZipInputStream zis = new ZipInputStream(new BufferedInputStream(is))) {
+                try (
+                    InputStream is = getContentResolver().openInputStream(
+                        zipUri
+                    );
+                    ZipInputStream zis = new ZipInputStream(
+                        new BufferedInputStream(is)
+                    )
+                ) {
                     ZipEntry entry;
                     byte[] buffer = new byte[8192];
                     while ((entry = zis.getNextEntry()) != null) {
@@ -562,8 +759,15 @@ public class AsuraActivity extends SDLActivity {
                         File destFile = new File(targetDir, entryName);
                         File parent = destFile.getParentFile();
                         if (parent != null && !parent.exists()) parent.mkdirs();
-                        try (FileOutputStream fos = new FileOutputStream(destFile);
-                             BufferedOutputStream bos = new BufferedOutputStream(fos, buffer.length)) {
+                        try (
+                            FileOutputStream fos = new FileOutputStream(
+                                destFile
+                            );
+                            BufferedOutputStream bos = new BufferedOutputStream(
+                                fos,
+                                buffer.length
+                            )
+                        ) {
                             int len;
                             while ((len = zis.read(buffer)) > 0) {
                                 bos.write(buffer, 0, len);
@@ -594,27 +798,38 @@ public class AsuraActivity extends SDLActivity {
                 progressDialog.dismiss();
                 mPickerOpened = false;
                 if (err != null || finalTargetDir == null) {
-                    Toast.makeText(AsuraActivity.this, "Failed to install driver: " + err, Toast.LENGTH_LONG).show();
+                    Toast.makeText(
+                        AsuraActivity.this,
+                        "Failed to install driver: " + err,
+                        Toast.LENGTH_LONG
+                    ).show();
                     return;
                 }
-                SharedPreferences prefs = getSharedPreferences("asura_prefs", Context.MODE_PRIVATE);
-                prefs.edit()
-                    .putString(PREF_KEY_ADRENO_DRIVER_DIR, finalTargetDir.getAbsolutePath())
+                SharedPreferences prefs = getSharedPreferences(
+                    "asura_prefs",
+                    Context.MODE_PRIVATE
+                );
+                prefs
+                    .edit()
+                    .putString(
+                        PREF_KEY_ADRENO_DRIVER_DIR,
+                        finalTargetDir.getAbsolutePath()
+                    )
                     .putString(PREF_KEY_ADRENO_DRIVER_NAME, finalDriverName)
                     .commit();
-                Toast.makeText(AsuraActivity.this, "Custom driver installed: " + finalDriverName, Toast.LENGTH_SHORT).show();
+                Toast.makeText(
+                    AsuraActivity.this,
+                    "Custom driver installed: " + finalDriverName,
+                    Toast.LENGTH_SHORT
+                ).show();
                 updateSplashStatus();
             });
         }).start();
     }
 
     private void copyIsoInBackground(Uri uri, File targetDir) {
-        if (targetDir == null) {
-            targetDir = getGameFilesDir();
-        }
-        if (!targetDir.exists()) {
-            targetDir.mkdirs();
-        }
+        if (targetDir == null) targetDir = getGameFilesDir();
+        if (!targetDir.exists()) targetDir.mkdirs();
 
         File cacheDir = new File(targetDir, "cache");
         File logsDir = new File(targetDir, "logs");
@@ -623,10 +838,11 @@ public class AsuraActivity extends SDLActivity {
 
         long totalBytes = -1;
         if (uri != null) {
-            try (ParcelFileDescriptor pfd = getContentResolver().openFileDescriptor(uri, "r")) {
-                if (pfd != null) {
-                    totalBytes = pfd.getStatSize();
-                }
+            try (
+                ParcelFileDescriptor pfd =
+                    getContentResolver().openFileDescriptor(uri, "r")
+            ) {
+                if (pfd != null) totalBytes = pfd.getStatSize();
             } catch (Exception ignored) {}
         }
 
@@ -637,6 +853,8 @@ public class AsuraActivity extends SDLActivity {
         progressDialog.setTitle("Preparing Asura's Wrath");
         progressDialog.setMessage("Copying ISO to selected folder...");
         progressDialog.setProgressStyle(ProgressDialog.STYLE_HORIZONTAL);
+        progressDialog.setProgressNumberFormat(null);
+        progressDialog.setProgressPercentFormat(null);
         progressDialog.setCancelable(false);
         if (finalTotalBytes > 0) {
             progressDialog.setMax(100);
@@ -650,17 +868,17 @@ public class AsuraActivity extends SDLActivity {
         new Thread(() -> {
             String errorMessage = null;
             File extractedFolder = new File(destDir, "extracted");
-            if (!extractedFolder.exists()) {
-                extractedFolder.mkdirs();
-            }
+            if (!extractedFolder.exists()) extractedFolder.mkdirs();
             File targetFile = new File(extractedFolder, "Asura's Wrath.iso");
 
             if (uri != null) {
-                try (InputStream in = getContentResolver().openInputStream(uri);
-                     OutputStream out = new FileOutputStream(targetFile)) {
-                    if (in == null) {
-                        throw new Exception("Unable to open input stream for selected file.");
-                    }
+                try (
+                    InputStream in = getContentResolver().openInputStream(uri);
+                    OutputStream out = new FileOutputStream(targetFile)
+                ) {
+                    if (in == null) throw new Exception(
+                        "Unable to open input stream for selected file."
+                    );
                     byte[] buffer = new byte[128 * 1024];
                     int bytesRead;
                     long copiedBytes = 0;
@@ -671,22 +889,35 @@ public class AsuraActivity extends SDLActivity {
                         copiedBytes += bytesRead;
 
                         long now = System.currentTimeMillis();
-                        if (now - lastUpdate > 100 || (finalTotalBytes > 0 && copiedBytes == finalTotalBytes)) {
+                        if (
+                            now - lastUpdate > 100 ||
+                            (finalTotalBytes > 0 &&
+                                copiedBytes == finalTotalBytes)
+                        ) {
                             lastUpdate = now;
                             final long currentCopied = copiedBytes;
                             mainHandler.post(() -> {
                                 if (finalTotalBytes > 0) {
-                                    int percent = (int) ((currentCopied * 100) / finalTotalBytes);
+                                    int percent = (int) ((currentCopied * 100) /
+                                        finalTotalBytes);
                                     progressDialog.setProgress(percent);
-                                    progressDialog.setMessage(String.format(Locale.US,
-                                        "Copying ISO: %.1f MB / %.1f MB (%d%%)",
-                                        currentCopied / (1024.0 * 1024.0),
-                                        finalTotalBytes / (1024.0 * 1024.0),
-                                        percent));
+                                    progressDialog.setMessage(
+                                        String.format(
+                                            Locale.US,
+                                            "Copying ISO: %.1f MB / %.1f MB (%d%%)",
+                                            currentCopied / (1024.0 * 1024.0),
+                                            finalTotalBytes / (1024.0 * 1024.0),
+                                            percent
+                                        )
+                                    );
                                 } else {
-                                    progressDialog.setMessage(String.format(Locale.US,
-                                        "Copying ISO: %.1f MB",
-                                        currentCopied / (1024.0 * 1024.0)));
+                                    progressDialog.setMessage(
+                                        String.format(
+                                            Locale.US,
+                                            "Copying ISO: %.1f MB",
+                                            currentCopied / (1024.0 * 1024.0)
+                                        )
+                                    );
                                 }
                             });
                         }
@@ -694,10 +925,9 @@ public class AsuraActivity extends SDLActivity {
                     out.flush();
                 } catch (Throwable t) {
                     t.printStackTrace();
-                    errorMessage = t.getClass().getSimpleName() + ": " + t.getMessage();
-                    if (targetFile.exists()) {
-                        targetFile.delete();
-                    }
+                    errorMessage =
+                        t.getClass().getSimpleName() + ": " + t.getMessage();
+                    if (targetFile.exists()) targetFile.delete();
                 }
             }
 
@@ -706,56 +936,80 @@ public class AsuraActivity extends SDLActivity {
                 progressDialog.dismiss();
                 mPickerOpened = false;
                 if (errorStr != null) {
-                    Toast.makeText(AsuraActivity.this, "Failed to copy ISO: " + errorStr, Toast.LENGTH_LONG).show();
+                    Toast.makeText(
+                        AsuraActivity.this,
+                        "Failed to copy ISO: " + errorStr,
+                        Toast.LENGTH_LONG
+                    ).show();
                     updateSplashStatus();
                     return;
                 }
-                Toast.makeText(AsuraActivity.this, "Setup complete!", Toast.LENGTH_SHORT).show();
+                Toast.makeText(
+                    AsuraActivity.this,
+                    "Setup complete!",
+                    Toast.LENGTH_SHORT
+                ).show();
                 updateSplashStatus();
             });
         }).start();
     }
 
     private void createSplashUI() {
-        if (mSplashOverlay != null) {
-            return;
-        }
+        if (mSplashOverlay != null) return;
 
         ScrollView scrollView = new ScrollView(this);
         scrollView.setFillViewport(true);
+        mScrollView = scrollView;
 
         final LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dpToPx(24), dpToPx(16), dpToPx(24), dpToPx(16));
 
-        // Safe Area WindowInsets handling for status bar, notification bar, cutouts
         root.setOnApplyWindowInsetsListener((v, insets) -> {
-            int top = 0, bottom = 0, left = 0, right = 0;
+            int top = 0,
+                bottom = 0,
+                left = 0,
+                right = 0,
+                imeHeight = 0;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 android.graphics.Insets sInsets = insets.getInsets(
-                    WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout()
+                    WindowInsets.Type.systemBars() |
+                        WindowInsets.Type.displayCutout()
+                );
+                android.graphics.Insets imeInsets = insets.getInsets(
+                    WindowInsets.Type.ime()
                 );
                 top = sInsets.top;
                 bottom = sInsets.bottom;
                 left = sInsets.left;
                 right = sInsets.right;
+                imeHeight = imeInsets.bottom;
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 top = insets.getSystemWindowInsetTop();
                 bottom = insets.getSystemWindowInsetBottom();
                 left = insets.getSystemWindowInsetLeft();
                 right = insets.getSystemWindowInsetRight();
             }
-            v.setPadding(dpToPx(20) + left, dpToPx(16) + top, dpToPx(20) + right, dpToPx(16) + bottom);
+            int bottomPadding = dpToPx(16) + Math.max(bottom, imeHeight);
+            v.setPadding(
+                dpToPx(20) + left,
+                dpToPx(16) + top,
+                dpToPx(20) + right,
+                bottomPadding
+            );
+            if (imeHeight > 0 && mScrollView != null) {
+                View focused = mScrollView.findFocus();
+                if (focused != null) scrollToChild(focused);
+            }
             return insets;
         });
 
         GradientDrawable rootBg = new GradientDrawable(
             GradientDrawable.Orientation.TOP_BOTTOM,
-            new int[]{0xFF0F172A, 0xFF1E1E2E}
+            new int[] { 0xFF0F172A, 0xFF1E1E2E }
         );
         root.setBackground(rootBg);
 
-        // Title Header
         TextView title = new TextView(this);
         title.setText("ASURA'S WRATH RECOMPILED");
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
@@ -770,7 +1024,6 @@ public class AsuraActivity extends SDLActivity {
         subtitle.setGravity(Gravity.CENTER);
         subtitle.setPadding(0, dpToPx(2), 0, dpToPx(16));
 
-        // Status Card
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dpToPx(16), dpToPx(12), dpToPx(16), dpToPx(12));
@@ -791,12 +1044,13 @@ public class AsuraActivity extends SDLActivity {
         card.addView(mTvGameStatus);
         card.addView(mTvDriverStatus);
 
-        // Buttons Bar (3 setup buttons arranged vertically)
         LinearLayout btnBar = new LinearLayout(this);
         btnBar.setOrientation(LinearLayout.VERTICAL);
         btnBar.setPadding(0, dpToPx(12), 0, dpToPx(12));
 
-        Button btnPermission = createSecondaryButton("1. Grant Storage Permission");
+        Button btnPermission = createSecondaryButton(
+            "1. Grant Storage Permission"
+        );
         btnPermission.setOnClickListener(v -> {
             mPickerOpened = true;
             requestStoragePermission();
@@ -815,15 +1069,17 @@ public class AsuraActivity extends SDLActivity {
         });
 
         LinearLayout.LayoutParams btnParams = new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(44));
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            dpToPx(44)
+        );
         btnParams.setMargins(0, dpToPx(4), 0, dpToPx(4));
 
         btnBar.addView(btnPermission, btnParams);
         btnBar.addView(btnFolder, btnParams);
         btnBar.addView(btnIso, btnParams);
 
-        // Collapsible Advanced Settings & GPU Drivers Section
         final LinearLayout advContainer = new LinearLayout(this);
+        mAdvContainer = advContainer;
         advContainer.setOrientation(LinearLayout.VERTICAL);
         advContainer.setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10));
         advContainer.setVisibility(View.GONE);
@@ -834,14 +1090,40 @@ public class AsuraActivity extends SDLActivity {
         advBg.setStroke(dpToPx(1), 0xFF334155);
         advContainer.setBackground(advBg);
 
-        final Button btnAdvToggle = createSecondaryButton("⚙ Advanced Settings & GPU Drivers  ▼");
+        SharedPreferences prefs = getSharedPreferences(
+            "asura_prefs",
+            Context.MODE_PRIVATE
+        );
+        boolean showTouchDefault = prefs.getBoolean(
+            PREF_KEY_SHOW_TOUCH_CONTROLS,
+            false
+        );
+
+        mCbShowTouchControls = new CheckBox(this);
+        mCbShowTouchControls.setText("Show Touch Controls (WIP, UI only)");
+        mCbShowTouchControls.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        mCbShowTouchControls.setTextColor(0xFFE2E8F0);
+        mCbShowTouchControls.setChecked(showTouchDefault);
+
+        LinearLayout.LayoutParams cbParams = new LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        cbParams.setMargins(0, dpToPx(8), 0, dpToPx(8));
+
+        final Button btnAdvToggle = createSecondaryButton(
+            "⚙ Advanced Settings & GPU Drivers  ▼"
+        );
         btnAdvToggle.setOnClickListener(v -> {
             boolean visible = advContainer.getVisibility() == View.VISIBLE;
             advContainer.setVisibility(visible ? View.GONE : View.VISIBLE);
-            btnAdvToggle.setText(visible ? "⚙ Advanced Settings & GPU Drivers  ▼" : "⚙ Advanced Settings & GPU Drivers  ▲");
+            btnAdvToggle.setText(
+                visible
+                    ? "⚙ Advanced Settings & GPU Drivers  ▼"
+                    : "⚙ Advanced Settings & GPU Drivers  ▲"
+            );
         });
 
-        // Adreno Tools / Custom Driver Section
         TextView tvDriverLabel = new TextView(this);
         tvDriverLabel.setText("🎮 Custom GPU Driver (Adreno Tools):");
         tvDriverLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
@@ -863,14 +1145,23 @@ public class AsuraActivity extends SDLActivity {
 
         Button btnDriverReset = createSecondaryButton("Reset to System Driver");
         btnDriverReset.setOnClickListener(v -> {
-            SharedPreferences prefs = getSharedPreferences("asura_prefs", Context.MODE_PRIVATE);
-            prefs.edit().remove(PREF_KEY_ADRENO_DRIVER_DIR).remove(PREF_KEY_ADRENO_DRIVER_NAME).commit();
-            Toast.makeText(this, "Reset to system Vulkan driver.", Toast.LENGTH_SHORT).show();
+            prefs
+                .edit()
+                .remove(PREF_KEY_ADRENO_DRIVER_DIR)
+                .remove(PREF_KEY_ADRENO_DRIVER_NAME)
+                .commit();
+            Toast.makeText(
+                this,
+                "Reset to system Vulkan driver.",
+                Toast.LENGTH_SHORT
+            ).show();
             updateSplashStatus();
         });
 
         LinearLayout.LayoutParams drvBtnParams = new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(40));
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            dpToPx(40)
+        );
         drvBtnParams.setMargins(0, dpToPx(3), 0, dpToPx(3));
 
         advContainer.addView(tvDriverLabel);
@@ -878,15 +1169,15 @@ public class AsuraActivity extends SDLActivity {
         advContainer.addView(btnDriverFolder, drvBtnParams);
         advContainer.addView(btnDriverReset, drvBtnParams);
 
-        // Divider in Advanced Settings
         View advDiv = new View(this);
         advDiv.setBackgroundColor(0xFF334155);
         LinearLayout.LayoutParams advDivParams = new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(1));
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            dpToPx(1)
+        );
         advDivParams.setMargins(0, dpToPx(10), 0, dpToPx(10));
         advContainer.addView(advDiv, advDivParams);
 
-        // Key-Value Flags UI Header
         TextView tvFlagsHeader = new TextView(this);
         tvFlagsHeader.setText("🚩 Command-Line Flags (Key-Value):");
         tvFlagsHeader.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
@@ -897,26 +1188,44 @@ public class AsuraActivity extends SDLActivity {
         mFlagsListContainer = new LinearLayout(this);
         mFlagsListContainer.setOrientation(LinearLayout.VERTICAL);
 
-        Button btnAddFlag = createSecondaryButton("➕ Add Flag");
+        LinearLayout flagsBtnBar = new LinearLayout(this);
+        flagsBtnBar.setOrientation(LinearLayout.HORIZONTAL);
+
+        Button btnAddFlag = createSecondaryButton("➕ Add");
         btnAddFlag.setOnClickListener(v -> addFlagRow("", ""));
+
+        Button btnCopyFlags = createSecondaryButton("📋 Copy");
+        btnCopyFlags.setOnClickListener(v -> copyFlagsToClipboard());
+
+        Button btnPasteFlags = createSecondaryButton("📥 Paste");
+        btnPasteFlags.setOnClickListener(v -> pasteFlagsFromClipboard());
+
+        LinearLayout.LayoutParams flagBtnParams = new LinearLayout.LayoutParams(
+            0,
+            dpToPx(38),
+            1.0f
+        );
+        flagBtnParams.setMargins(dpToPx(2), dpToPx(4), dpToPx(2), dpToPx(4));
+
+        flagsBtnBar.addView(btnAddFlag, flagBtnParams);
+        flagsBtnBar.addView(btnCopyFlags, flagBtnParams);
+        flagsBtnBar.addView(btnPasteFlags, flagBtnParams);
 
         advContainer.addView(tvFlagsHeader);
         advContainer.addView(mFlagsListContainer);
-        advContainer.addView(btnAddFlag, drvBtnParams);
+        advContainer.addView(flagsBtnBar);
 
-        // Load saved flags into list UI
-        SharedPreferences prefs = getSharedPreferences("asura_prefs", Context.MODE_PRIVATE);
         String savedFlags = prefs.getString(PREF_KEY_CUSTOM_FLAGS, "");
         loadSavedFlagsIntoList(savedFlags);
 
-        // Separator / Divider
         View divider = new View(this);
         divider.setBackgroundColor(0xFF334155);
         LinearLayout.LayoutParams divParams = new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(1));
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            dpToPx(1)
+        );
         divParams.setMargins(0, dpToPx(12), 0, dpToPx(16));
 
-        // Play Button (Separated from the top setup buttons)
         mBtnPlay = new Button(this);
         mBtnPlay.setText("PLAY GAME");
         mBtnPlay.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
@@ -925,21 +1234,23 @@ public class AsuraActivity extends SDLActivity {
 
         GradientDrawable playBg = new GradientDrawable(
             GradientDrawable.Orientation.LEFT_RIGHT,
-            new int[]{0xFFFF6B00, 0xFFE11D48}
+            new int[] { 0xFFFF6B00, 0xFFE11D48 }
         );
         playBg.setCornerRadius(dpToPx(12));
         mBtnPlay.setBackground(playBg);
         mBtnPlay.setOnClickListener(v -> onPlayButtonClicked());
 
         LinearLayout.LayoutParams playParams = new LinearLayout.LayoutParams(
-            ViewGroup.LayoutParams.MATCH_PARENT, dpToPx(52));
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            dpToPx(52)
+        );
         playParams.setMargins(dpToPx(16), 0, dpToPx(16), dpToPx(16));
 
-        // Assemble Layout
         root.addView(title);
         root.addView(subtitle);
         root.addView(card);
         root.addView(btnBar);
+        root.addView(mCbShowTouchControls, cbParams);
         root.addView(btnAdvToggle, btnParams);
         root.addView(advContainer);
         root.addView(divider, divParams);
@@ -949,20 +1260,28 @@ public class AsuraActivity extends SDLActivity {
         mSplashOverlay = scrollView;
 
         if (mLayout != null) {
-            mLayout.addView(mSplashOverlay, new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            mLayout.addView(
+                mSplashOverlay,
+                new ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+            );
         } else {
-            addContentView(mSplashOverlay, new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            addContentView(
+                mSplashOverlay,
+                new ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+            );
         }
 
         updateSplashStatus();
     }
 
     private void addFlagRow(String key, String value) {
-        if (mFlagsListContainer == null) {
-            return;
-        }
+        if (mFlagsListContainer == null) return;
         final LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
@@ -1003,6 +1322,12 @@ public class AsuraActivity extends SDLActivity {
         etBg2.setStroke(dpToPx(1), 0xFF475569);
         etVal.setBackground(etBg2);
 
+        View.OnFocusChangeListener focusListener = (v, hasFocus) -> {
+            if (hasFocus) scrollToChild(v);
+        };
+        etKey.setOnFocusChangeListener(focusListener);
+        etVal.setOnFocusChangeListener(focusListener);
+
         Button btnRemove = new Button(this);
         btnRemove.setText("✕");
         btnRemove.setTextColor(0xFFF87171);
@@ -1015,9 +1340,20 @@ public class AsuraActivity extends SDLActivity {
         btnRemove.setBackground(remBg);
         btnRemove.setOnClickListener(v -> mFlagsListContainer.removeView(row));
 
-        LinearLayout.LayoutParams kParams = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
-        LinearLayout.LayoutParams vParams = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f);
-        LinearLayout.LayoutParams btnParams = new LinearLayout.LayoutParams(dpToPx(36), dpToPx(36));
+        LinearLayout.LayoutParams kParams = new LinearLayout.LayoutParams(
+            0,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            1.0f
+        );
+        LinearLayout.LayoutParams vParams = new LinearLayout.LayoutParams(
+            0,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            1.0f
+        );
+        LinearLayout.LayoutParams btnParams = new LinearLayout.LayoutParams(
+            dpToPx(36),
+            dpToPx(36)
+        );
         btnParams.setMargins(dpToPx(6), 0, 0, 0);
 
         row.addView(etKey, kParams);
@@ -1029,9 +1365,7 @@ public class AsuraActivity extends SDLActivity {
     }
 
     private void saveFlagsFromList() {
-        if (mFlagsListContainer == null) {
-            return;
-        }
+        if (mFlagsListContainer == null) return;
         StringBuilder sb = new StringBuilder();
         int count = mFlagsListContainer.getChildCount();
         for (int i = 0; i < count; i++) {
@@ -1042,41 +1376,134 @@ public class AsuraActivity extends SDLActivity {
                     View vKey = row.getChildAt(0);
                     View vVal = row.getChildAt(2);
                     if (vKey instanceof EditText && vVal instanceof EditText) {
-                        String k = ((EditText) vKey).getText().toString().trim();
-                        String v = ((EditText) vVal).getText().toString().trim();
+                        String k = ((EditText) vKey)
+                            .getText()
+                            .toString()
+                            .trim();
+                        String v = ((EditText) vVal)
+                            .getText()
+                            .toString()
+                            .trim();
                         if (!k.isEmpty()) {
-                            if (!k.startsWith("--")) {
-                                k = "--" + k;
-                            }
-                            if (sb.length() > 0) {
-                                sb.append(" ");
-                            }
-                            if (!v.isEmpty()) {
-                                sb.append(k).append("=").append(v);
-                            } else {
-                                sb.append(k);
-                            }
+                            if (!k.startsWith("--")) k = "--" + k;
+                            if (sb.length() > 0) sb.append(" ");
+                            if (!v.isEmpty()) sb.append(k)
+                                .append("=")
+                                .append(v);
+                            else sb.append(k);
                         }
                     }
                 }
             }
         }
-        SharedPreferences prefs = getSharedPreferences("asura_prefs", Context.MODE_PRIVATE);
+        SharedPreferences prefs = getSharedPreferences(
+            "asura_prefs",
+            Context.MODE_PRIVATE
+        );
         prefs.edit().putString(PREF_KEY_CUSTOM_FLAGS, sb.toString()).commit();
     }
 
+    private void scrollToChild(View v) {
+        if (v == null || mScrollView == null) return;
+        int y = 0;
+        View current = v;
+        while (current != null && current != mScrollView) {
+            y += current.getTop();
+            if (current.getParent() instanceof View) {
+                current = (View) current.getParent();
+            } else {
+                break;
+            }
+        }
+        final int targetY = y;
+        mScrollView.postDelayed(
+            () -> mScrollView.smoothScrollTo(0, targetY),
+            100
+        );
+    }
+
+    private void copyFlagsToClipboard() {
+        saveFlagsFromList();
+        SharedPreferences prefs = getSharedPreferences(
+            "asura_prefs",
+            Context.MODE_PRIVATE
+        );
+        String customFlags = prefs.getString(PREF_KEY_CUSTOM_FLAGS, "");
+        if (customFlags == null || customFlags.trim().isEmpty()) {
+            Toast.makeText(
+                this,
+                "No flags to copy.",
+                Toast.LENGTH_SHORT
+            ).show();
+            return;
+        }
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(
+            Context.CLIPBOARD_SERVICE
+        );
+        if (clipboard != null) {
+            ClipData clip = ClipData.newPlainText(
+                "Command Line Flags",
+                customFlags.trim()
+            );
+            clipboard.setPrimaryClip(clip);
+            Toast.makeText(
+                this,
+                "Flags copied to clipboard!",
+                Toast.LENGTH_SHORT
+            ).show();
+        }
+    }
+
+    private void pasteFlagsFromClipboard() {
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(
+            Context.CLIPBOARD_SERVICE
+        );
+        if (clipboard == null || !clipboard.hasPrimaryClip()) {
+            Toast.makeText(
+                this,
+                "Clipboard is empty.",
+                Toast.LENGTH_SHORT
+            ).show();
+            return;
+        }
+        ClipData clip = clipboard.getPrimaryClip();
+        if (clip == null || clip.getItemCount() == 0) {
+            Toast.makeText(
+                this,
+                "Clipboard is empty.",
+                Toast.LENGTH_SHORT
+            ).show();
+            return;
+        }
+        CharSequence text = clip.getItemAt(0).getText();
+        if (text == null || text.toString().trim().isEmpty()) {
+            Toast.makeText(
+                this,
+                "No valid text found in clipboard.",
+                Toast.LENGTH_SHORT
+            ).show();
+            return;
+        }
+        String pasted = text.toString().trim();
+        loadSavedFlagsIntoList(pasted);
+        saveFlagsFromList();
+        Toast.makeText(
+            this,
+            "Flags pasted from clipboard!",
+            Toast.LENGTH_SHORT
+        ).show();
+    }
+
     private void loadSavedFlagsIntoList(String savedFlags) {
-        if (mFlagsListContainer == null) {
-            return;
-        }
+        if (mFlagsListContainer == null) return;
         mFlagsListContainer.removeAllViews();
-        if (savedFlags == null || savedFlags.trim().isEmpty()) {
-            return;
-        }
+        if (savedFlags == null || savedFlags.trim().isEmpty()) return;
         String[] tokens = savedFlags.trim().split("\\s+");
         for (String token : tokens) {
             if (token.isEmpty()) continue;
-            String cleanToken = token.startsWith("--") ? token.substring(2) : token;
+            String cleanToken = token.startsWith("--")
+                ? token.substring(2)
+                : token;
             int eq = cleanToken.indexOf('=');
             if (eq != -1) {
                 String k = cleanToken.substring(0, eq);
@@ -1114,9 +1541,7 @@ public class AsuraActivity extends SDLActivity {
     }
 
     private void updateSplashStatus() {
-        if (mSplashOverlay == null) {
-            return;
-        }
+        if (mSplashOverlay == null) return;
         boolean hasPerm = hasStoragePermission();
         File filesDir = getGameFilesDir();
         boolean hasFiles = hasGameFiles(filesDir);
@@ -1132,7 +1557,8 @@ public class AsuraActivity extends SDLActivity {
         }
 
         if (mTvFolderStatus != null) {
-            String path = (filesDir != null) ? filesDir.getAbsolutePath() : "Not Selected";
+            String path =
+                filesDir != null ? filesDir.getAbsolutePath() : "Not Selected";
             mTvFolderStatus.setText("📁 Target Folder: " + path);
             mTvFolderStatus.setTextColor(0xFFE2E8F0);
         }
@@ -1142,20 +1568,35 @@ public class AsuraActivity extends SDLActivity {
                 mTvGameStatus.setText("✓ Game Files: Ready to Play");
                 mTvGameStatus.setTextColor(0xFF4ADE80);
             } else {
-                mTvGameStatus.setText("✗ Game Files: Missing (Select Folder or Select ISO)");
+                mTvGameStatus.setText(
+                    "✗ Game Files: Missing (Select Folder or Select ISO)"
+                );
                 mTvGameStatus.setTextColor(0xFFF87171);
             }
         }
 
         if (mTvDriverStatus != null) {
-            SharedPreferences prefs = getSharedPreferences("asura_prefs", Context.MODE_PRIVATE);
-            String driverDir = prefs.getString(PREF_KEY_ADRENO_DRIVER_DIR, null);
-            String driverName = prefs.getString(PREF_KEY_ADRENO_DRIVER_NAME, "libvulkan_freedreno.so");
+            SharedPreferences prefs = getSharedPreferences(
+                "asura_prefs",
+                Context.MODE_PRIVATE
+            );
+            String driverDir = prefs.getString(
+                PREF_KEY_ADRENO_DRIVER_DIR,
+                null
+            );
+            String driverName = prefs.getString(
+                PREF_KEY_ADRENO_DRIVER_NAME,
+                "libvulkan_freedreno.so"
+            );
             if (driverDir != null && !driverDir.trim().isEmpty()) {
-                mTvDriverStatus.setText("⚡ GPU Driver: Custom (" + driverName + ")");
+                mTvDriverStatus.setText(
+                    "⚡ GPU Driver: Custom (" + driverName + ")"
+                );
                 mTvDriverStatus.setTextColor(0xFF38BDF8);
             } else {
-                mTvDriverStatus.setText("⚡ GPU Driver: System Vulkan (Default)");
+                mTvDriverStatus.setText(
+                    "⚡ GPU Driver: System Vulkan (Default)"
+                );
                 mTvDriverStatus.setTextColor(0xFF94A3B8);
             }
         }
@@ -1168,24 +1609,120 @@ public class AsuraActivity extends SDLActivity {
 
     private void onPlayButtonClicked() {
         if (!hasStoragePermission()) {
-            Toast.makeText(this, "Storage permission is required to play. Click '1. Permissions'.", Toast.LENGTH_LONG).show();
+            Toast.makeText(
+                this,
+                "Storage permission is required to play. Click '1. Permissions'.",
+                Toast.LENGTH_LONG
+            ).show();
             requestStoragePermission();
             return;
         }
         File filesDir = getGameFilesDir();
         if (!hasGameFiles(filesDir)) {
-            Toast.makeText(this, "No game files found! Click '2. Select Folder' or '3. Select ISO'.", Toast.LENGTH_LONG).show();
+            Toast.makeText(
+                this,
+                "No game files found! Click '2. Select Folder' or '3. Select ISO'.",
+                Toast.LENGTH_LONG
+            ).show();
             return;
         }
 
         saveFlagsFromList();
 
-        mGameStarted = true;
-        if (mSplashOverlay != null) {
-            mSplashOverlay.setVisibility(View.GONE);
+        SharedPreferences prefs = getSharedPreferences(
+            "asura_prefs",
+            Context.MODE_PRIVATE
+        );
+
+        if (mCbShowTouchControls != null) {
+            prefs
+                .edit()
+                .putBoolean(
+                    PREF_KEY_SHOW_TOUCH_CONTROLS,
+                    mCbShowTouchControls.isChecked()
+                )
+                .commit();
         }
-        setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE);
+
+        mGameStarted = true;
+
+        if (mSplashOverlay != null) {
+            if (mLayout != null) {
+                mLayout.removeView(mSplashOverlay);
+            }
+            mSplashOverlay = null;
+        }
+
+        boolean showTouch = prefs.getBoolean(
+            PREF_KEY_SHOW_TOUCH_CONTROLS,
+            true
+        );
+        if (showTouch) {
+            showTouchOverlay();
+        }
+
+        setRequestedOrientation(
+            ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        );
         setFullscreenImmersive();
         super.resumeNativeThread();
+    }
+
+    // TODO: Fix SDL not picking touch controls
+    public static void sendAxis(int deviceId, int axis, float value) {
+        // SDLActivity native axis forwarding
+        // SDLControllerManager.onNativeJoy(deviceId, axis, value);
+    }
+
+    // TODO: Fix SDL not picking touch controls
+    public static void sendButton(int deviceId, int button, boolean pressed) {
+        // Map controller buttons to standard KeyEvent codes for SDL handling
+        int keyCode;
+        switch (button) {
+            case TouchOverlayView.SDL_GAMEPAD_BUTTON_A:
+                keyCode = KeyEvent.KEYCODE_BUTTON_A;
+                break;
+            case TouchOverlayView.SDL_GAMEPAD_BUTTON_B:
+                keyCode = KeyEvent.KEYCODE_BUTTON_B;
+                break;
+            case TouchOverlayView.SDL_GAMEPAD_BUTTON_X:
+                keyCode = KeyEvent.KEYCODE_BUTTON_X;
+                break;
+            case TouchOverlayView.SDL_GAMEPAD_BUTTON_Y:
+                keyCode = KeyEvent.KEYCODE_BUTTON_Y;
+                break;
+            case TouchOverlayView.SDL_GAMEPAD_BUTTON_LEFT_SHOULDER:
+                keyCode = KeyEvent.KEYCODE_BUTTON_L1;
+                break;
+            case TouchOverlayView.SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER:
+                keyCode = KeyEvent.KEYCODE_BUTTON_R1;
+                break;
+            case TouchOverlayView.SDL_GAMEPAD_BUTTON_START:
+                keyCode = KeyEvent.KEYCODE_BUTTON_START;
+                break;
+            case TouchOverlayView.SDL_GAMEPAD_BUTTON_BACK:
+                keyCode = KeyEvent.KEYCODE_BUTTON_SELECT;
+                break;
+            case TouchOverlayView.SDL_GAMEPAD_BUTTON_DPAD_UP:
+                keyCode = KeyEvent.KEYCODE_DPAD_UP;
+                break;
+            case TouchOverlayView.SDL_GAMEPAD_BUTTON_DPAD_DOWN:
+                keyCode = KeyEvent.KEYCODE_DPAD_DOWN;
+                break;
+            case TouchOverlayView.SDL_GAMEPAD_BUTTON_DPAD_LEFT:
+                keyCode = KeyEvent.KEYCODE_DPAD_LEFT;
+                break;
+            case TouchOverlayView.SDL_GAMEPAD_BUTTON_DPAD_RIGHT:
+                keyCode = KeyEvent.KEYCODE_DPAD_RIGHT;
+                break;
+            default:
+                return;
+        }
+
+        if (pressed) {
+            SDLActivity.onNativeKeyDown(keyCode);
+        } else {
+            SDLActivity.onNativeKeyUp(keyCode);
+        }
     }
 }

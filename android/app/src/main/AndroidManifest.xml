@@ -1,12 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.recomp.asurawrath"
     android:versionCode="1"
     android:versionName="v0.3">
 
-    <uses-feature android:glEsVersion="0x00030000" android:required="true" />
-    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
-    <uses-feature android:name="android.hardware.gamepad" android:required="false" />
+    <uses-feature
+        android:glEsVersion="0x00030000"
+        android:required="true" />
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.gamepad"
+        android:required="false" />
 
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
@@ -14,30 +19,33 @@
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
     <application
-        android:label="Asura's Wrath Recompiled"
-        android:icon="@mipmap/ic_launcher"
-        android:roundIcon="@mipmap/ic_launcher"
-        android:theme="@style/Theme.AsuraWrath.Fullscreen"
         android:allowBackup="true"
-        android:hardwareAccelerated="true">
-
+        android:hardwareAccelerated="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="Asura&apos;s Wrath Recompiled"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:theme="@style/Theme.AsuraWrath.Fullscreen">
         <activity
-            android:name="com.recomp.asurawrath.AsuraActivity"
-            android:label="Asura's Wrath Recompiled"
-            android:theme="@style/Theme.AsuraWrath.Fullscreen"
+            android:name=".AsuraActivity"
             android:alwaysRetainTaskState="true"
+            android:configChanges="orientation|keyboard|keyboardHidden|screenSize|smallestScreenSize|uiMode|navigation"
+            android:exported="true"
+            android:label="Asura&apos;s Wrath Recompiled"
             android:launchMode="singleInstance"
             android:screenOrientation="unspecified"
-            android:configChanges="orientation|keyboardHidden|screenSize|smallestScreenSize|uiMode"
-            android:exported="true">
+            android:theme="@style/Theme.AppCompat.DayNight.NoActionBar"
+            android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
+
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
+
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
+
                 <data android:scheme="file" />
                 <data android:scheme="content" />
                 <data android:mimeType="*/*" />
@@ -46,4 +54,5 @@
             </intent-filter>
         </activity>
     </application>
+
 </manifest>

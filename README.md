@@ -1,5 +1,12 @@
 # Asura's Wrath Recompiled
 
+# Update 2026/11/07
+Still working slowly on free time with xenon/xenosrecomp tools, but wanted to link another repo that managed to achieve superior performance than this one for PC (help him out with playthrough issues)
+
+https://github.com/omar2300/asuras-wrath-pc/
+
+---
+
 PC port of Asura's Wrath (`default.xex`, Title ID `43430817`) via Xbox 360 static PowerPC recompilation to C++23.
 
 > Note: Android port is experimental, use on your own risk.

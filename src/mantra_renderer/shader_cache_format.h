@@ -10,7 +10,9 @@
 namespace mantra::shader_cache {
 
 constexpr char kMagic[4] = {'M', 'S', 'H', 'C'};
-constexpr uint32_t kVersion = 1;
+// 2: mantra_shader_common.hlsl interface (descriptors instead of buffer
+//    device addresses), texture_slot_mask / bool_mask.
+constexpr uint32_t kVersion = 2;
 
 struct CacheHeader {
   char magic[4];
@@ -33,8 +35,10 @@ struct CacheEntry {
   uint32_t spirv_offset;
   uint32_t spirv_size;
   uint32_t microcode_dwords;
+  uint32_t texture_slot_mask;  // fetch constant slots sampled (bit per slot)
+  uint32_t bool_mask;          // bool constant registers tested (bit per register)
   uint32_t reserved;
 };
-static_assert(sizeof(CacheEntry) == 40);
+static_assert(sizeof(CacheEntry) == 48);
 
 }  // namespace mantra::shader_cache

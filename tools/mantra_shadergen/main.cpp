@@ -66,7 +66,18 @@ struct Shader {
   // Translation results.
   bool translated = false;
   uint32_t spec_constants_mask = 0;
+  uint32_t texture_slot_mask = 0;
+  uint32_t bool_mask = 0;
+  bool bool_overflow = false;
   std::vector<uint8_t> spirv;
+};
+
+// Written by a translation child next to its .spv.
+struct ChildResult {
+  uint32_t spec_constants_mask;
+  uint32_t texture_slot_mask;
+  uint32_t bool_mask;
+  uint32_t bool_overflow;
 };
 
 void PutBe32(std::vector<uint8_t>& v, size_t at, uint32_t x) {
@@ -199,9 +210,14 @@ void TranslateAll(std::vector<Shader*>& shaders, const fs::path& work, const fs:
                   WIFSIGNALED(status) ? strsignal(WTERMSIG(status)) : "translation failed");
     }
     if (fs::exists(ok)) {
-      auto mask = ReadFile(ok);
-      if (mask.size() == 4) {
-        std::memcpy(&s.spec_constants_mask, mask.data(), 4);
+      auto bytes = ReadFile(ok);
+      if (bytes.size() == sizeof(ChildResult)) {
+        ChildResult cr;
+        std::memcpy(&cr, bytes.data(), sizeof(cr));
+        s.spec_constants_mask = cr.spec_constants_mask;
+        s.texture_slot_mask = cr.texture_slot_mask;
+        s.bool_mask = cr.bool_mask;
+        s.bool_overflow = cr.bool_overflow != 0;
       }
       s.spirv = ReadFile(work / (std::to_string(index) + ".spv"));
       s.translated = !s.spirv.empty();
@@ -230,7 +246,9 @@ void TranslateAll(std::vector<Shader*>& shaders, const fs::path& work, const fs:
           _exit(2);
         }
         WriteFile(work / (std::to_string(next) + ".spv"), r.spirv.data(), r.spirv.size());
-        WriteFile(work / (std::to_string(next) + ".ok"), &r.spec_constants_mask, 4);
+        const ChildResult cr{r.spec_constants_mask, r.texture_slot_mask, r.bool_mask,
+                             uint32_t(r.bool_overflow)};
+        WriteFile(work / (std::to_string(next) + ".ok"), &cr, sizeof(cr));
         _exit(0);
       }
       if (pid < 0) {
@@ -258,6 +276,8 @@ bool WriteCache(const fs::path& path, const std::map<uint64_t, Shader>& shaders)
     e.flags = (s.is_pixel ? kEntryPixelShader : 0) | (s.translated ? 0 : kEntryFailed);
     e.spec_constants_mask = s.spec_constants_mask;
     e.microcode_dwords = s.microcode_dwords;
+    e.texture_slot_mask = s.texture_slot_mask;
+    e.bool_mask = s.bool_mask;
     if (s.translated) {
       e.spirv_offset = uint32_t(blobs.size());
       e.spirv_size = uint32_t(s.spirv.size());
@@ -404,6 +424,17 @@ int main(int argc, char** argv) {
     }
   }
   std::printf("translated: %zu vertex + %zu pixel shaders, %zu failed\n", ok_vs, ok_ps, failed);
+  size_t textured = 0, with_bools = 0, bool_overflow = 0;
+  uint32_t slots = 0;
+  for (const auto& [hash, s] : shaders) {
+    textured += s.texture_slot_mask != 0;
+    with_bools += s.bool_mask != 0;
+    bool_overflow += s.bool_overflow;
+    slots |= s.texture_slot_mask;
+  }
+  std::printf("interface: %zu shaders sample textures (slots used: %08X), %zu test bools, "
+              "%zu test bools outside b0..b15\n",
+              textured, slots, with_bools, bool_overflow);
 
   if (!WriteCache(out, shaders)) {
     std::fprintf(stderr, "failed to write %s\n", out.c_str());

@@ -13,6 +13,12 @@ struct TranslateResult {
   bool ok = false;
   bool is_pixel = false;
   uint32_t spec_constants_mask = 0;
+  // Xenos fetch constant slots the shader samples through (bit per slot).
+  uint32_t texture_slot_mask = 0;
+  // Bool constant registers the shader tests (bit per register 0..15);
+  // bool_overflow: it tests a register outside the synthetic b0..b15.
+  uint32_t bool_mask = 0;
+  bool bool_overflow = false;
   std::string hlsl;
   std::vector<uint8_t> spirv;
 };

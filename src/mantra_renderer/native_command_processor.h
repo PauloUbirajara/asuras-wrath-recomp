@@ -5,6 +5,7 @@
 #include <memory>
 #include <tuple>
 #include <unordered_map>
+#include <vector>
 
 #include <rex/graphics/command_processor.h>
 #include <rex/graphics/pipeline/shader/shader.h>
@@ -14,12 +15,21 @@
 #include "copy_pipelines.h"
 #include "render_targets.h"
 #include "shader_cache.h"
+#include "shader_interface.h"
 
 namespace rex::ui::vulkan {
 class VulkanDevice;
 }
 
 namespace rex::graphics::native {
+
+// A guest shader plus its offline translation (if the cache has one).
+class MantraShader : public Shader {
+ public:
+  using Shader::Shader;
+  const mantra::shader_cache::CacheEntry* cache_entry = nullptr;
+  VkShaderModule module = VK_NULL_HANDLE;
+};
 
 class NativeCommandProcessor : public CommandProcessor {
  public:
@@ -75,6 +85,31 @@ class NativeCommandProcessor : public CommandProcessor {
   // host clears (solid_fill.cpp).
   enum class SolidFillResult { kNotSolidFill, kDone, kUnsupported };
   SolidFillResult TrySolidFill(xenos::PrimitiveType prim_type, xenos::EdramMode edram_mode);
+
+  // --- Guest shader constants -------------------------------------------------
+  // Uploads this draw's VS/PS float constants and shared constants into the
+  // constant ring (reusing the previous upload of this submission when the
+  // registers did not change). Returns false if nothing could be uploaded.
+  bool PrepareDrawConstants(mantra::DrawConstantOffsets& offsets);
+  bool UploadConstants(const void* data, uint32_t size, uint32_t& offset);
+  void DestroyShaderModules();
+
+  struct ConstantCache {
+    uint64_t submission = 0;  // submission the cached upload belongs to
+    uint32_t offset = 0;
+    std::vector<uint8_t> data;
+  };
+  ConstantCache vs_constants_, ps_constants_, shared_constants_;
+
+  struct ConstantStats {
+    uint64_t draws = 0;          // draws whose constants were prepared
+    uint64_t uploads = 0;        // ring copies
+    uint64_t reused = 0;         // stages that reused the previous upload
+    uint64_t bytes = 0;
+    uint64_t ring_full = 0;      // early submits because the ring filled up
+    uint64_t no_translation = 0; // draws with a shader lacking SPIR-V
+  };
+  ConstantStats constant_stats_;
 
   // --- EDRAM / resolves -----------------------------------------------------
   // Executes the resolve set up in the RB_COPY_* registers: copy an EDRAM
@@ -150,6 +185,8 @@ class NativeCommandProcessor : public CommandProcessor {
     uint64_t cache_normalized = 0;
     uint64_t cache_failed = 0;
     uint64_t cache_miss = 0;
+    uint64_t modules = 0;          // VkShaderModules created
+    uint64_t module_failures = 0;
   };
   ShaderStats shader_stats_;
   // Loaded shaders by microcode hash, [vertex, pixel].
@@ -169,6 +206,7 @@ class NativeCommandProcessor : public CommandProcessor {
   bool recording_ = false;
 
   mantra::CopyPipelines copy_pipelines_;
+  mantra::ShaderInterface shader_interface_;
   mantra::RenderTargetPool render_targets_;
   mantra::ResolvedSurfaces resolved_surfaces_;
 

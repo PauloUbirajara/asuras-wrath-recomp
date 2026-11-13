@@ -16,12 +16,13 @@ if(NOT TARGET Microsoft::DirectXShaderCompiler)
   add_subdirectory("${DXC_BIN_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/dxc-bin")
 endif()
 
-# shader_common.h is prepended to every generated shader; embed it so the tool
+# mantra_shader_common.hlsl (our descriptor-based replacement for XenosRecomp's
+# shader_common.h) is prepended to every generated shader; embed it so the tool
 # does not depend on the source tree at run time.
-file(READ "${XENOS_RECOMP_SRC}/shader_common.h" MANTRA_SHADER_COMMON)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/mantra_shader_common.hlsl" MANTRA_SHADER_COMMON)
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/shader_common_hlsl.h.in"
                "${CMAKE_CURRENT_BINARY_DIR}/generated/shader_common_hlsl.h" @ONLY)
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${XENOS_RECOMP_SRC}/shader_common.h")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/mantra_shader_common.hlsl")
 
 add_executable(mantra_shadergen
     main.cpp

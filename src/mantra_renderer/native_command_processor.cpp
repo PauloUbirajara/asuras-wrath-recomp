@@ -117,7 +117,8 @@ bool NativeCommandProcessor::SetupContext() {
     }
   }
 
-  if (!copy_pipelines_.Initialize(vulkan_device_) || !render_targets_.Initialize(vulkan_device_)) {
+  if (!copy_pipelines_.Initialize(vulkan_device_) || !render_targets_.Initialize(vulkan_device_) ||
+      !shader_interface_.Initialize(vulkan_device_, kFrameSlots)) {
     DestroyFrameResources();
     return false;
   }
@@ -191,6 +192,8 @@ VkCommandBuffer NativeCommandProcessor::BeginCommands() {
     return VK_NULL_HANDLE;
   }
   recording_ = true;
+  shader_interface_.BeginSlot(uint32_t(submission_current_ % kFrameSlots));
+  shader_interface_.InitializeResources(slot.command_buffer);
   return slot.command_buffer;
 }
 
@@ -201,6 +204,7 @@ bool NativeCommandProcessor::SubmitCommands() {
   recording_ = false;
   FrameSlot& slot = CurrentSlot();
   const auto& dfn = vulkan_device_->functions();
+  shader_interface_.FlushSlot();
   if (dfn.vkEndCommandBuffer(slot.command_buffer) != VK_SUCCESS) {
     MANTRA_ERROR("vkEndCommandBuffer failed");
     return false;
@@ -247,6 +251,8 @@ void NativeCommandProcessor::DestroyFrameResources() {
   resolved_surfaces_.Shutdown();
   render_targets_.Shutdown();
   copy_pipelines_.Shutdown();
+  DestroyShaderModules();
+  shader_interface_.Shutdown();
   const auto& dfn = vulkan_device_->functions();
   const VkDevice device = vulkan_device_->device();
   for (FrameSlot& slot : frame_slots_) {
@@ -319,7 +325,12 @@ bool NativeCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t,
     return IssueCopy();
   }
   ++draw_stats_.draws;
-  TrySolidFill(prim_type, edram_mode);
+  if (TrySolidFill(prim_type, edram_mode) == SolidFillResult::kNotSolidFill) {
+    // Real draws: pipelines come next (Phase 1 step 4); for now only the
+    // shader interface (constants) is exercised.
+    mantra::DrawConstantOffsets offsets;
+    PrepareDrawConstants(offsets);
+  }
   {
     Shader* vs = active_vertex_shader();
     Shader* ps = active_pixel_shader();
@@ -877,10 +888,16 @@ void NativeCommandProcessor::ReportSwapStats() {
               draw_stats_.fills_depth, draw_stats_.fills_skipped, render_targets_.size(),
               resolved_surfaces_.size());
   MANTRA_INFO("shaders: {} loads, {} unique, {} dumped; cache {} exact, {} normalized, "
-              "{} failed, {} miss",
+              "{} failed, {} miss; {} modules ({} failed)",
               shader_stats_.loads, shader_stats_.unique, shader_stats_.dumped,
               shader_stats_.cache_exact, shader_stats_.cache_normalized,
-              shader_stats_.cache_failed, shader_stats_.cache_miss);
+              shader_stats_.cache_failed, shader_stats_.cache_miss, shader_stats_.modules,
+              shader_stats_.module_failures);
+  MANTRA_INFO("constants: {} draws prepared, {} without translation; {} uploads ({:.1f} MB), "
+              "{} reused, {} ring-full submits; last submission used {} KB of the ring",
+              constant_stats_.draws, constant_stats_.no_translation, constant_stats_.uploads,
+              constant_stats_.bytes / 1048576.0, constant_stats_.reused,
+              constant_stats_.ring_full, shader_interface_.slot_bytes_used() >> 10);
   swap_stats_.last_report_time = now;
   swap_stats_.swaps_at_last_report = swap_stats_.swaps;
   // The draw census every 30 seconds.
@@ -903,12 +920,13 @@ Shader* NativeCommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32
   if (auto it = shaders.find(hash); it != shaders.end()) {
     return it->second.get();
   }
+  mantra::ShaderCache::Lookup lookup;
   {
     ++shader_stats_.unique;
     MANTRA_DEBUG("new {} shader {:016X}: {} dwords", is_pixel ? "pixel" : "vertex", hash,
                  dword_count);
     DumpShader(hash, is_pixel, host_address, byte_count);
-    const auto lookup = shader_cache_.Find(host_address, byte_count, is_pixel);
+    lookup = shader_cache_.Find(host_address, byte_count, is_pixel);
     switch (lookup.match) {
       case mantra::ShaderCache::Match::kExact: ++shader_stats_.cache_exact; break;
       case mantra::ShaderCache::Match::kNormalized: ++shader_stats_.cache_normalized; break;
@@ -919,8 +937,18 @@ Shader* NativeCommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32
         break;
     }
   }
-  auto shader = std::make_unique<Shader>(shader_type, hash, host_address, dword_count);
+  auto shader = std::make_unique<MantraShader>(shader_type, hash, host_address, dword_count);
   shader->AnalyzeUcode(ucode_disasm_buffer_);
+  if (!lookup.spirv.empty()) {
+    shader->cache_entry = lookup.entry;
+    shader->module = shader_interface_.CreateModule(lookup.spirv);
+    if (shader->module) {
+      ++shader_stats_.modules;
+    } else {
+      ++shader_stats_.module_failures;
+      MANTRA_WARN("shader {:016X}: vkCreateShaderModule failed", hash);
+    }
+  }
   Shader* result = shader.get();
   shaders.emplace(hash, std::move(shader));
   return result;
@@ -964,6 +992,91 @@ void NativeCommandProcessor::DumpShader(uint64_t hash, bool is_pixel, const uint
   std::fwrite(microcode, 1, byte_count, file);
   std::fclose(file);
   ++shader_stats_.dumped;
+}
+
+// --- Guest shader constants ---------------------------------------------------
+
+bool NativeCommandProcessor::UploadConstants(const void* data, uint32_t size, uint32_t& offset) {
+  if (!BeginCommands()) {
+    return false;
+  }
+  if (shader_interface_.Upload(data, size, offset)) {
+    return true;
+  }
+  // This submission's ring region is full: submit and continue in the next.
+  ++constant_stats_.ring_full;
+  SubmitCommands();
+  return BeginCommands() && shader_interface_.Upload(data, size, offset);
+}
+
+bool NativeCommandProcessor::PrepareDrawConstants(mantra::DrawConstantOffsets& offsets) {
+  auto* vs = static_cast<MantraShader*>(active_vertex_shader());
+  auto* ps = static_cast<MantraShader*>(active_pixel_shader());
+  if (!vs || !vs->module || (ps && !ps->module)) {
+    ++constant_stats_.no_translation;
+    return false;
+  }
+  ++constant_stats_.draws;
+  const RegisterFile& regs = *register_file_;
+
+  // Float constants: D3D on the 360 splits the 512 registers evenly, VS
+  // c0..c255 then PS c0..c255 (the translated shaders index from 0).
+  const auto* float_regs =
+      reinterpret_cast<const uint8_t*>(&regs.values[XE_GPU_REG_SHADER_CONSTANT_000_X]);
+
+  mantra::SharedConstants shared;
+  // Bool constants: the translated shaders test VS b<N> as bit N and PS b<N>
+  // as bit 16 + N; both read the guest's bool registers 0..15.
+  const uint32_t bools = regs[XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031] & 0xFFFF;
+  shared.booleans = bools | (bools << 16);
+  shared.alpha_threshold = regs.Get<float>(XE_GPU_REG_RB_ALPHA_REF);
+  // half_pixel_offset / swapped_texcoords: set with the pipeline state (step 4).
+
+  auto stage = [&](ConstantCache& cache, const void* data, uint32_t size,
+                   uint32_t& offset) -> bool {
+    // Submissions may change inside UploadConstants; compare against the
+    // submission being recorded.
+    if (cache.submission == submission_current_ && recording_ && cache.data.size() == size &&
+        std::memcmp(cache.data.data(), data, size) == 0) {
+      offset = cache.offset;
+      ++constant_stats_.reused;
+      return true;
+    }
+    if (!UploadConstants(data, size, offset)) {
+      return false;
+    }
+    cache.submission = submission_current_;
+    cache.offset = offset;
+    cache.data.assign(static_cast<const uint8_t*>(data), static_cast<const uint8_t*>(data) + size);
+    ++constant_stats_.uploads;
+    constant_stats_.bytes += size;
+    return true;
+  };
+  constexpr uint32_t kFloatBytes = mantra::ShaderInterface::kFloatConstantBytes;
+  if (!stage(vs_constants_, float_regs, kFloatBytes, offsets.vertex)) return false;
+  if (!stage(ps_constants_, float_regs + kFloatBytes, kFloatBytes, offsets.pixel)) return false;
+  if (!stage(shared_constants_, &shared, sizeof(shared), offsets.shared)) return false;
+  // A ring-full submit between stages invalidates the earlier offsets of
+  // this draw; redo them in the new submission.
+  if (vs_constants_.submission != submission_current_ ||
+      ps_constants_.submission != submission_current_) {
+    return stage(vs_constants_, float_regs, kFloatBytes, offsets.vertex) &&
+           stage(ps_constants_, float_regs + kFloatBytes, kFloatBytes, offsets.pixel);
+  }
+  return true;
+}
+
+void NativeCommandProcessor::DestroyShaderModules() {
+  const auto& dfn = vulkan_device_->functions();
+  for (auto& shaders : shaders_) {
+    for (auto& [hash, shader] : shaders) {
+      auto* s = static_cast<MantraShader*>(shader.get());
+      if (s->module) {
+        dfn.vkDestroyShaderModule(vulkan_device_->device(), s->module, nullptr);
+        s->module = VK_NULL_HANDLE;
+      }
+    }
+  }
 }
 
 }  // namespace rex::graphics::native

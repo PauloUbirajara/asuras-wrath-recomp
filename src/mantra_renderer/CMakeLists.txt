@@ -24,11 +24,42 @@ set(MANTRA_BASE_SOURCES
     ${MANTRA_SDK_GFX}/pipeline/shader/translator_disasm.cpp
 )
 
+# Host shaders (GLSL -> SPIR-V words, #included by copy_pipelines.cpp).
+find_program(MANTRA_GLSLC glslc REQUIRED)
+set(MANTRA_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
+set(MANTRA_SHADER_OUT "${CMAKE_CURRENT_BINARY_DIR}/shaders")
+file(MAKE_DIRECTORY "${MANTRA_SHADER_OUT}")
+set(MANTRA_SHADER_INCS)
+# <output name>|<source>|<extra glslc args>
+foreach(_spec
+    "fullscreen.vert|fullscreen.vert|"
+    "copy.frag|copy.frag|"
+    "copy_ms.frag|copy.frag|-DMULTISAMPLE")
+  string(REPLACE "|" ";" _parts "${_spec}")
+  list(GET _parts 0 _name)
+  list(GET _parts 1 _src)
+  list(GET _parts 2 _args)
+  set(_out "${MANTRA_SHADER_OUT}/${_name}.inc")
+  add_custom_command(
+      OUTPUT "${_out}"
+      COMMAND ${MANTRA_GLSLC} --target-env=vulkan1.1 -O -mfmt=num ${_args}
+              "${MANTRA_SHADER_DIR}/${_src}" -o "${_out}"
+      DEPENDS "${MANTRA_SHADER_DIR}/${_src}"
+      COMMENT "glslc ${_name}"
+      VERBATIM)
+  list(APPEND MANTRA_SHADER_INCS "${_out}")
+endforeach()
+
 add_library(rexgpu-mantra SHARED
     plugin_main.cpp
     native_graphics_system.cpp
     native_command_processor.cpp
     shader_cache.cpp
+    vk_image.cpp
+    copy_pipelines.cpp
+    render_targets.cpp
+    solid_fill.cpp
+    ${MANTRA_SHADER_INCS}
     ${MANTRA_BASE_SOURCES}
 )
 
@@ -43,6 +74,7 @@ endif()
 
 target_include_directories(rexgpu-mantra PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${MANTRA_SHADER_OUT}
     ${REXSDK_DIR}
     ${REXSDK_DIR}/include
     ${REXSDK_DIR}/thirdparty/renderdoc
@@ -70,3 +102,12 @@ foreach(_t xxHash::xxhash Vulkan::Headers GPUOpen::VulkanMemoryAllocator)
     target_link_libraries(rexgpu-mantra PRIVATE ${_t})
   endif()
 endforeach()
+
+# rexglue_setup_target stages GPU plugins only when the executable relinks;
+# re-stage this one whenever it is rebuilt on its own.
+if(TARGET asura_wrath)
+  add_custom_command(TARGET rexgpu-mantra POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          $<TARGET_FILE:rexgpu-mantra> $<TARGET_FILE_DIR:asura_wrath>
+      VERBATIM)
+endif()

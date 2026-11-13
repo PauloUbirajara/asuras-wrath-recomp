@@ -1,0 +1,7 @@
+[submodule "tools/rexglue"]
+	path = thirdparty/rexglue
+	url = https://github.com/PauloUbirajara/asura-wrath-rexglue-sdk
+
+[submodule "thirdparty/XenosRecomp"]
+	path = thirdparty/XenosRecomp
+	url = https://github.com/hedge-dev/XenosRecomp

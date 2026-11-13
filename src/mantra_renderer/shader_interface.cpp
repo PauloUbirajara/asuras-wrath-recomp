@@ -257,7 +257,8 @@ void ShaderInterface::InitializeResources(VkCommandBuffer cmd) {
   dfn.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 3,
                            barriers);
-  const VkClearColorValue white = {{1.0f, 1.0f, 1.0f, 1.0f}};
+  // Transparent black, like an unbound fetch on the guest.
+  const VkClearColorValue white = {{0.0f, 0.0f, 0.0f, 0.0f}};
   for (uint32_t i = 0; i < 3; ++i) {
     dfn.vkCmdClearColorImage(cmd, placeholder_images_[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                              &white, 1, &barriers[i].subresourceRange);

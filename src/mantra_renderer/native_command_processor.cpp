@@ -330,11 +330,30 @@ bool NativeCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
   if (edram_mode == xenos::EdramMode::kCopy) {
     // Not a draw: the RB copies EDRAM to memory, the shaders never run.
     ++draw_stats_.copy_draws;
+    if (const char* env = std::getenv("MANTRA_TRACE_SWAP");
+        env && swap_stats_.swaps + 1 == std::strtoull(env, nullptr, 10)) {
+      const auto& regs = *register_file_;
+      MANTRA_INFO("trace: copy rt src {} -> {:08X} fmt {} clear {}",
+                  regs.Get<reg::RB_COPY_CONTROL>().copy_src_select,
+                  regs[XE_GPU_REG_RB_COPY_DEST_BASE],
+                  uint32_t(regs.Get<reg::RB_COPY_DEST_INFO>().copy_dest_format),
+                  regs.Get<reg::RB_COPY_CONTROL>().color_clear_enable);
+    }
     return IssueCopy();
   }
   ++draw_stats_.draws;
+  const char* outcome = "fill";
   if (TrySolidFill(prim_type, edram_mode) == SolidFillResult::kNotSolidFill) {
-    DrawGuest(prim_type, index_count, index_buffer_info);
+    const DrawResult result = DrawGuest(prim_type, index_count, index_buffer_info);
+    outcome = result == DrawResult::kDrawn ? "drawn" : result == DrawResult::kSkipped ? "SKIPPED" : "FAILED";
+  }
+  // Debug: MANTRA_TRACE_SWAP=N logs every draw before swap N.
+  static const uint64_t trace_swap = [] {
+    const char* env = std::getenv("MANTRA_TRACE_SWAP");
+    return env ? std::strtoull(env, nullptr, 10) : 0;
+  }();
+  if (trace_swap && swap_stats_.swaps + 1 == trace_swap) {
+    TraceDraw(prim_type, index_count, outcome);
   }
   {
     Shader* vs = active_vertex_shader();
@@ -502,6 +521,43 @@ bool NativeCommandProcessor::Resolve() {
 }
 
 // --- Swap --------------------------------------------------------------------
+
+void NativeCommandProcessor::TraceDraw(xenos::PrimitiveType prim_type, uint32_t index_count,
+                                       const char* outcome) {
+  const RegisterFile& regs = *register_file_;
+  auto* vs = static_cast<MantraShader*>(active_vertex_shader());
+  auto* ps = static_cast<MantraShader*>(active_pixel_shader());
+  const auto surface_info = regs.Get<reg::RB_SURFACE_INFO>();
+  const auto color_info = regs.Get<reg::RB_COLOR_INFO>(reg::RB_COLOR_INFO::rt_register_indices[0]);
+  const auto blend = regs.Get<reg::RB_BLENDCONTROL>(reg::RB_BLENDCONTROL::rt_register_indices[0]);
+  const auto depth = regs.Get<reg::RB_DEPTHCONTROL>();
+  const auto color_control = regs.Get<reg::RB_COLORCONTROL>();
+  std::string textures;
+  uint32_t mask = 0;
+  if (vs && vs->cache_entry) mask |= vs->cache_entry->texture_slot_mask;
+  if (ps && ps->cache_entry) mask |= ps->cache_entry->texture_slot_mask;
+  while (mask) {
+    const uint32_t slot = uint32_t(std::countr_zero(mask));
+    mask &= mask - 1;
+    const auto fetch = regs.GetTextureFetch(slot);
+    textures += fmt::format(" t{}={:08X}/f{}/d{}/s{:o}", slot, fetch.base_address << 12,
+                            uint32_t(fetch.format), uint32_t(fetch.dimension),
+                            uint32_t(fetch.swizzle));
+  }
+  MANTRA_INFO(
+      "trace: {} mode {} prim {} n {} vs {:016X}{} ps {:016X}{} rt base {} fmt {} pitch {} "
+      "mask {:X} blend {}/{}/{} {}/{}/{} z {}{} at {}{}",
+      outcome, uint32_t(regs.Get<reg::RB_MODECONTROL>().edram_mode), uint32_t(prim_type),
+      index_count, vs ? vs->ucode_data_hash() : 0, vs && vs->module ? "" : "(none)",
+      ps ? ps->ucode_data_hash() : 0, ps && ps->module ? "" : "(none)",
+      uint32_t(color_info.color_base), uint32_t(color_info.color_format),
+      uint32_t(surface_info.surface_pitch), regs.Get<reg::RB_COLOR_MASK>().value & 0xF,
+      uint32_t(blend.color_srcblend), uint32_t(blend.color_destblend),
+      uint32_t(blend.color_comb_fcn), uint32_t(blend.alpha_srcblend),
+      uint32_t(blend.alpha_destblend), uint32_t(blend.alpha_comb_fcn), uint32_t(depth.z_enable),
+      uint32_t(depth.zfunc), color_control.alpha_test_enable ? uint32_t(color_control.alpha_func) : 99,
+      textures);
+}
 
 void NativeCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
                                        uint32_t frontbuffer_height) {
@@ -920,9 +976,10 @@ void NativeCommandProcessor::ReportSwapStats() {
               bc.not_cacheable, bc.volatile_skips, bc.resets);
   const auto& tc = texture_cache_.stats();
   MANTRA_INFO("textures: {} cached, {} samplers; {} loads ({} after CPU writes, {:.1f} MB), "
-              "{} from resolves, {} unsupported, {} failed; descriptor sets {} ({} reused)",
+              "{} from resolves ({} not copyable), {} unsupported, {} failed; descriptor sets {} "
+              "({} reused)",
               texture_cache_.size(), texture_cache_.sampler_count(), tc.loads, tc.reloads,
-              tc.load_bytes / 1048576.0, tc.resolved_binds, tc.unsupported, tc.failures,
+              tc.load_bytes / 1048576.0, tc.resolved_binds, tc.resolve_mismatches, tc.unsupported, tc.failures,
               g.texture_sets, g.texture_sets_reused);
   swap_stats_.last_report_time = now;
   swap_stats_.swaps_at_last_report = swap_stats_.swaps;

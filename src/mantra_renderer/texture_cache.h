@@ -15,8 +15,9 @@
 // written back to guest memory, so a texture at a resolve address samples the
 // resolved surface instead, unless the CPU wrote the memory after the resolve.
 //
-// Not yet: 3D textures, stacked 2D arrays beyond layer 0, 10:11:11 / 11:11:10,
-// YUV, depth (24:8) and CTX1 formats - those sample the white placeholder.
+// Formats Vulkan has no match for are decoded on the CPU while untiling
+// (CTX1, DXT3A, 10:11:11 / 11:11:10, 24:8 depth, 4:2:2 YUV). Stacked 2D
+// textures only use layer 0: the translated shaders sample Texture2D.
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -63,6 +64,7 @@ class TextureCache {
     uint64_t reloads = 0;         // of those, after a CPU write
     uint64_t load_bytes = 0;      // guest bytes read
     uint64_t resolved_binds = 0;  // bound from a resolved surface
+    uint64_t resolve_mismatches = 0;  // resolved surface not copyable (format): memory used
     uint64_t unsupported = 0;     // format/dimension not handled (placeholder)
     uint64_t failures = 0;        // creation/staging failures (placeholder)
   };
@@ -95,7 +97,10 @@ class TextureCache {
     VkDeviceMemory memory = VK_NULL_HANDLE;
     VkFormat format = VK_FORMAT_UNDEFINED;
     Dimension dimension = k2D;
-    uint32_t width = 0, height = 0, layers = 1, levels = 1;
+    uint32_t width = 0, height = 0, depth = 1, layers = 1, levels = 1;
+    uint8_t decode = 0;     // how guest blocks become host texels
+    uint8_t host_bpb = 0;   // bytes per host block
+    uint32_t dump_counter = 0;
     // Host channel holding each guest component (X, Y, Z, W), as
     // VkComponentSwizzle values; components past `component_count` repeat
     // the last one.
@@ -135,6 +140,7 @@ class TextureCache {
   std::unordered_map<uint64_t, VkSampler> samplers_;
   std::unordered_map<uint32_t, ResolveRecord> resolves_;
   std::vector<uint8_t> swapped_base_, swapped_mips_;
+  uint64_t unsupported_logged_ = 0;  // guest formats already reported
   Stats stats_;
 };
 

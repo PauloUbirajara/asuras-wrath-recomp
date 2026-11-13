@@ -4,6 +4,9 @@
 #include "render_targets.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <string>
 
 #include <xxhash.h>
 
@@ -28,8 +31,24 @@ constexpr uint32_t kPhysicalMask = 0x1FFFFFFF;
 constexpr VkPipelineStageFlags kShaderStages =
     VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
 
+// How guest blocks become host data. kCopy and kDXT3A keep the guest block
+// grid; the others write one host block per texel.
+enum Decode : uint8_t {
+  kCopy,
+  kCTX1,       // 4x4 8-byte blocks -> R8G8 texels
+  kDXT3A,      // 4x4 alpha-only blocks -> BC2 with black color
+  kR11G11B10,  // k_10_11_11 -> RGBA16
+  kR10G11B11,  // k_11_11_10 -> RGBA16
+  kDepthUnorm, // k_24_8 -> R32 float
+  kDepthFloat, // k_24_8_FLOAT (20e4) -> R32 float
+  kYUV,        // 4:2:2 (2x1 blocks, bytes Y0 Cb Y1 Cr) -> RGBA8 (Cr, Y, Cb, 1)
+  kYUVSwapped, // 4:2:2, bytes Cb Y0 Cr Y1
+};
+
 struct HostFormat {
   VkFormat format = VK_FORMAT_UNDEFINED;
+  Decode decode = kCopy;
+  uint32_t host_bpb = 0;  // 0: same as the guest block
   uint32_t component_count = 4;
   // Host channel of guest components X, Y, Z, W.
   VkComponentSwizzle channels[4] = {VK_COMPONENT_SWIZZLE_R, VK_COMPONENT_SWIZZLE_G,
@@ -139,6 +158,43 @@ HostFormat GetHostFormat(const xenos::xe_gpu_texture_fetch_t& fetch) {
     case F::k_32_32_32_32_FLOAT:
       h.format = VK_FORMAT_R32G32B32A32_SFLOAT;
       break;
+    case F::k_10_11_11:
+    case F::k_11_11_10:
+      h.format = pick(all_signed || (x_signed && fetch.sign_y == S::kSigned &&
+                                     fetch.sign_z == S::kSigned),
+                      VK_FORMAT_R16G16B16A16_UNORM, VK_FORMAT_R16G16B16A16_SNORM);
+      h.decode = rex::graphics::GetBaseFormat(fetch.format) == F::k_10_11_11 ? kR11G11B10
+                                                                              : kR10G11B11;
+      h.host_bpb = 8;
+      h.component_count = 3;
+      break;
+    case F::k_24_8:
+    case F::k_24_8_FLOAT:
+      h.format = VK_FORMAT_R32_SFLOAT;
+      h.decode = fetch.format == F::k_24_8 ? kDepthUnorm : kDepthFloat;
+      h.host_bpb = 4;
+      h.component_count = 1;
+      break;
+    case F::k_CTX1:
+      h.format = VK_FORMAT_R8G8_UNORM;
+      h.decode = kCTX1;
+      h.host_bpb = 2;
+      h.component_count = 2;
+      break;
+    case F::k_DXT3A:
+      h.format = VK_FORMAT_BC2_UNORM_BLOCK;
+      h.decode = kDXT3A;
+      h.host_bpb = 16;
+      h.channels[0] = VK_COMPONENT_SWIZZLE_A;
+      h.component_count = 1;
+      break;
+    case F::k_Cr_Y1_Cb_Y0_REP:
+    case F::k_Y1_Cr_Y0_Cb_REP:
+      h.format = VK_FORMAT_R8G8B8A8_UNORM;
+      h.decode = fetch.format == F::k_Cr_Y1_Cb_Y0_REP ? kYUV : kYUVSwapped;
+      h.host_bpb = 4;
+      h.component_count = 3;
+      break;
     default:
       break;
   }
@@ -170,6 +226,69 @@ VkComponentSwizzle SwizzleComponent(uint32_t select, const uint8_t channels[4],
   // Components a format doesn't have repeat its last one.
   select = std::min(select, component_count - 1);
   return VkComponentSwizzle(channels[select]);
+}
+
+// Fixed-point component of `bits` bits -> 16-bit UNORM/SNORM.
+uint16_t ExpandComponent(uint32_t value, uint32_t bits, bool is_signed) {
+  if (!is_signed) {
+    const uint32_t max = (1u << bits) - 1;
+    return uint16_t((value * 65535u + max / 2) / max);
+  }
+  int32_t v = int32_t(value << (32 - bits)) >> (32 - bits);
+  const int32_t max = (1 << (bits - 1)) - 1;
+  v = std::max(v, -max);
+  return uint16_t(int16_t((v * 32767 + (v < 0 ? -max / 2 : max / 2)) / max));
+}
+
+// Decodes one guest block (already endian-swapped) into host blocks laid out
+// row by row, `blocks_x` per row.
+void DecodeBlock(Decode decode, bool is_signed, const uint8_t* src, uint8_t* dst,
+                 uint32_t blocks_x) {
+  uint32_t word;
+  std::memcpy(&word, src, 4);
+  switch (decode) {
+    case kCTX1:
+      rex::graphics::texture_conversion::ConvertTexelCTX1ToR8G8(xenos::Endian::kNone, dst, src,
+                                                               blocks_x * 2);
+      break;
+    case kDXT3A:
+      rex::graphics::texture_conversion::ConvertTexelDXT3AToDXT3(xenos::Endian::kNone, dst, src,
+                                                                16);
+      break;
+    case kR11G11B10:
+    case kR10G11B11: {
+      const uint32_t bx = decode == kR11G11B10 ? 11 : 10, bz = decode == kR11G11B10 ? 10 : 11;
+      const uint16_t out[4] = {
+          ExpandComponent(word & ((1u << bx) - 1), bx, is_signed),
+          ExpandComponent((word >> bx) & 0x7FF, 11, is_signed),
+          ExpandComponent(word >> (bx + 11), bz, is_signed),
+          uint16_t(is_signed ? 0x7FFF : 0xFFFF)};
+      std::memcpy(dst, out, 8);
+      break;
+    }
+    case kDepthUnorm: {
+      const float depth = float(word >> 8) * (1.0f / 16777215.0f);
+      std::memcpy(dst, &depth, 4);
+      break;
+    }
+    case kDepthFloat: {
+      const float depth = xenos::Float20e4To32(word >> 8);
+      std::memcpy(dst, &depth, 4);
+      break;
+    }
+    case kYUV:
+    case kYUVSwapped: {
+      // kYUV bytes: Y0 Cb Y1 Cr; kYUVSwapped: Cb Y0 Cr Y1.
+      const bool swapped = decode == kYUVSwapped;
+      const uint8_t y0 = src[swapped ? 1 : 0], cb = src[swapped ? 0 : 1];
+      const uint8_t y1 = src[swapped ? 3 : 2], cr = src[swapped ? 2 : 3];
+      const uint8_t out[8] = {cr, y0, cb, 255, cr, y1, cb, 255};
+      std::memcpy(dst, out, 8);
+      break;
+    }
+    case kCopy:
+      break;
+  }
 }
 
 }  // namespace
@@ -236,11 +355,25 @@ TextureCache::Binding TextureCache::Get(const xenos::xe_gpu_texture_fetch_t& fet
     texture.format = host_format.format;
     texture.component_count = host_format.component_count;
     for (uint32_t i = 0; i < 4; ++i) texture.channels[i] = uint8_t(host_format.channels[i]);
+    texture.decode = host_format.decode;
+    texture.host_bpb = uint8_t(host_format.host_bpb);
     texture.dimension = binding.dimension;
-    if (texture.format == VK_FORMAT_UNDEFINED || binding.dimension == k3D) {
+    {
+      uint32_t w1, h1, d1;
+      texture_util::GetSubresourcesFromFetchConstant(fetch, &w1, &h1, &d1, nullptr, nullptr,
+                                                     nullptr, nullptr);
+      MANTRA_DEBUG("texture {:08X}: format {} dimension {} {}x{}x{} tiled {} sign {} swizzle {:03o}",
+                   fetch.base_address << 12, uint32_t(fetch.format), uint32_t(fetch.dimension),
+                   w1 + 1, h1 + 1, d1 + 1, uint32_t(fetch.tiled), uint32_t(fetch.sign_x),
+                   uint32_t(fetch.swizzle));
+    }
+    if (texture.format == VK_FORMAT_UNDEFINED) {
       texture.unsupported = true;
-      MANTRA_DEBUG("texture format {} dimension {} not supported yet", uint32_t(fetch.format),
-                   uint32_t(fetch.dimension));
+      const uint32_t format = uint32_t(fetch.format) & 63;
+      if (!(unsupported_logged_ & (uint64_t(1) << format))) {
+        unsupported_logged_ |= uint64_t(1) << format;
+        MANTRA_INFO("texture format {} not supported yet (placeholder)", format);
+      }
     }
   }
   if (texture.unsupported) {
@@ -250,16 +383,21 @@ TextureCache::Binding TextureCache::Get(const xenos::xe_gpu_texture_fetch_t& fet
 
   const uint32_t base_address = (fetch.base_address << 12) & kPhysicalMask;
   bool ready = texture.initialized;
+  bool from_resolve = false;
   if (base_address && ResolvedValid(base_address)) {
-    ready = CopyFromResolved(texture, fetch, base_address, host);
-    if (ready) {
+    from_resolve = CopyFromResolved(texture, fetch, base_address, host);
+    if (from_resolve) {
+      ready = true;
       ++stats_.resolved_binds;
+    } else {
+      ++stats_.resolve_mismatches;
     }
-  } else if (texture.resolved_image != VK_NULL_HANDLE || !texture.initialized ||
+  }
+  if (!from_resolve && (texture.resolved_image != VK_NULL_HANDLE || !texture.initialized ||
              !watcher_->RangeUnchanged(texture.base_start, texture.base_length, texture.epoch,
                                        texture.base_checked) ||
              !watcher_->RangeUnchanged(texture.mip_start, texture.mip_length, texture.epoch,
-                                       texture.mip_checked)) {
+                                       texture.mip_checked))) {
     if (texture.initialized && texture.resolved_image == VK_NULL_HANDLE) {
       ++stats_.reloads;
     }
@@ -277,9 +415,9 @@ TextureCache::Binding TextureCache::Get(const xenos::xe_gpu_texture_fetch_t& fet
 bool TextureCache::CreateImage(Texture& texture) {
   VkImageCreateInfo info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   info.flags = texture.dimension == kCube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
-  info.imageType = VK_IMAGE_TYPE_2D;
+  info.imageType = texture.dimension == k3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
   info.format = texture.format;
-  info.extent = {texture.width, texture.height, 1};
+  info.extent = {texture.width, texture.height, texture.depth};
   info.mipLevels = texture.levels;
   info.arrayLayers = texture.layers;
   info.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -310,6 +448,8 @@ bool TextureCache::LoadFromMemory(Texture& texture, const xenos::xe_gpu_texture_
   const uint32_t width = width_minus_1 + 1, height = height_minus_1 + 1;
   const uint32_t array_size = depth_minus_1 + 1;
   const uint32_t layers = texture.dimension == kCube ? 6 : 1;  // stacked: layer 0 only
+  const bool is_3d = texture.dimension == k3D;
+  const uint32_t depth = is_3d ? array_size : 1;
   const auto layout = texture_util::GetGuestTextureLayout(
       fetch.dimension, fetch.pitch, width, height, array_size, fetch.tiled, fetch.format,
       fetch.packed_mips, base_page != 0, mip_max);
@@ -322,6 +462,7 @@ bool TextureCache::LoadFromMemory(Texture& texture, const xenos::xe_gpu_texture_
     texture.width = host_width;
     texture.height = host_height;
     texture.layers = layers;
+    texture.depth = std::max(depth >> mip_min, 1u);
     texture.levels = host_levels;
     if (!CreateImage(texture)) {
       texture.unsupported = true;
@@ -368,16 +509,24 @@ bool TextureCache::LoadFromMemory(Texture& texture, const xenos::xe_gpu_texture_
   }
   stats_.load_bytes += base_length + mip_length;
 
-  // Staging: every level, all layers, tightly packed, 16-byte aligned.
+  // Staging: every level, all layers / slices, tightly packed, 16-byte
+  // aligned. Host blocks are the guest blocks, or texels for decoded formats.
   const uint32_t bw = format_info->block_width, bh = format_info->block_height;
   const uint32_t bpb = format_info->bytes_per_block();
   const uint32_t bpb_log2 = rex::log2_floor(bpb);
+  const Decode decode = Decode(texture.decode);
+  const bool keeps_blocks = decode == kCopy || decode == kDXT3A;
+  const uint32_t hbw = keeps_blocks ? bw : 1, hbh = keeps_blocks ? bh : 1;
+  const uint32_t hbpb = texture.host_bpb ? texture.host_bpb : bpb;
+  const uint32_t nx = bw / hbw, ny = bh / hbh;  // host blocks per guest block
+  const bool decode_signed = fetch.sign_x == xenos::TextureSign::kSigned;
   uint32_t staging_size = 0;
   uint32_t level_offsets[xenos::kTextureMaxMips + 1];
   for (uint32_t h = 0; h < host_levels; ++h) {
     level_offsets[h] = staging_size;
     const uint32_t lw = std::max(host_width >> h, 1u), lh = std::max(host_height >> h, 1u);
-    staging_size += ((lw + bw - 1) / bw) * ((lh + bh - 1) / bh) * bpb * layers;
+    const uint32_t ld = std::max(texture.depth >> h, 1u);
+    staging_size += ((lw + hbw - 1) / hbw) * ((lh + hbh - 1) / hbh) * hbpb * layers * ld;
     staging_size = (staging_size + 15) & ~15u;
   }
   VkBuffer staging_buffer;
@@ -390,6 +539,7 @@ bool TextureCache::LoadFromMemory(Texture& texture, const xenos::xe_gpu_texture_
   std::memset(staging, 0, staging_size);
 
   VkBufferImageCopy regions[xenos::kTextureMaxMips + 1] = {};
+  uint8_t decoded[64];
   for (uint32_t h = 0; h < host_levels; ++h) {
     const uint32_t level = mip_min + h;
     const bool is_base = level == 0;
@@ -400,28 +550,51 @@ bool TextureCache::LoadFromMemory(Texture& texture, const xenos::xe_gpu_texture_
     const uint32_t source_offset = is_base ? 0 : layout.mip_offsets_bytes[stored_level];
     uint32_t packed_x = 0, packed_y = 0, packed_z = 0;
     if (layout.packed_level != UINT32_MAX && level >= layout.packed_level) {
-      texture_util::GetPackedMipOffset(width, height, 1, fetch.format, level, packed_x, packed_y,
-                                       packed_z);
+      texture_util::GetPackedMipOffset(width, height, depth, fetch.format, level, packed_x,
+                                       packed_y, packed_z);
     }
     const uint32_t lw = std::max(host_width >> h, 1u), lh = std::max(host_height >> h, 1u);
+    const uint32_t ld = std::max(texture.depth >> h, 1u);
     const uint32_t blocks_x = (lw + bw - 1) / bw, blocks_y = (lh + bh - 1) / bh;
+    const uint32_t host_blocks_x = (lw + hbw - 1) / hbw, host_blocks_y = (lh + hbh - 1) / hbh;
     const uint32_t pitch_blocks = bpb ? level_layout.row_pitch_bytes / bpb : 0;
-    uint8_t* out = staging + level_offsets[h];
+    const uint32_t slice_rows = level_layout.z_slice_stride_block_rows;
+    uint8_t* const level_out = staging + level_offsets[h];
     for (uint32_t layer = 0; layer < layers; ++layer) {
       const uint64_t slice = source_offset + uint64_t(layer) * level_layout.array_slice_stride_bytes;
-      for (uint32_t y = 0; y < blocks_y; ++y) {
-        for (uint32_t x = 0; x < blocks_x; ++x, out += bpb) {
-          uint64_t offset;
-          if (fetch.tiled) {
-            offset = slice + uint32_t(texture_util::GetTiledOffset2D(
-                                 int32_t(x + packed_x), int32_t(y + packed_y), pitch_blocks,
-                                 bpb_log2));
-          } else {
-            offset = slice + uint64_t(y + packed_y) * level_layout.row_pitch_bytes +
-                     uint64_t(x + packed_x) * bpb;
-          }
-          if (offset + bpb <= source.size()) {
-            std::memcpy(out, source.data() + offset, bpb);
+      for (uint32_t z = 0; z < ld; ++z) {
+        uint8_t* const plane_out =
+            level_out + uint64_t(layer * ld + z) * host_blocks_y * host_blocks_x * hbpb;
+        for (uint32_t y = 0; y < blocks_y; ++y) {
+          for (uint32_t x = 0; x < blocks_x; ++x) {
+            const int32_t sx = int32_t(x + packed_x), sy = int32_t(y + packed_y);
+            const int32_t sz = int32_t(z + packed_z);
+            uint64_t offset;
+            if (fetch.tiled) {
+              offset = slice + uint32_t(is_3d ? texture_util::GetTiledOffset3D(
+                                                    sx, sy, sz, pitch_blocks, slice_rows, bpb_log2)
+                                              : texture_util::GetTiledOffset2D(sx, sy, pitch_blocks,
+                                                                               bpb_log2));
+            } else {
+              offset = slice + (uint64_t(sz) * slice_rows + uint64_t(sy)) *
+                                   level_layout.row_pitch_bytes +
+                       uint64_t(sx) * bpb;
+            }
+            if (offset + bpb > source.size()) {
+              continue;
+            }
+            const uint8_t* block = source.data() + offset;
+            if (decode == kCopy) {
+              std::memcpy(plane_out + (uint64_t(y) * host_blocks_x + x) * hbpb, block, bpb);
+              continue;
+            }
+            DecodeBlock(decode, decode_signed, block, decoded, nx);
+            // Clip the decoded texels to the level (partial edge blocks).
+            for (uint32_t dy = 0; dy < ny && y * ny + dy < host_blocks_y; ++dy) {
+              const uint32_t count = std::min(nx, host_blocks_x - x * nx);
+              std::memcpy(plane_out + (uint64_t(y * ny + dy) * host_blocks_x + x * nx) * hbpb,
+                          decoded + dy * nx * hbpb, count * hbpb);
+            }
           }
         }
       }
@@ -429,7 +602,21 @@ bool TextureCache::LoadFromMemory(Texture& texture, const xenos::xe_gpu_texture_
     VkBufferImageCopy& r = regions[h];
     r.bufferOffset = staging_offset + level_offsets[h];
     r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, h, 0, layers};
-    r.imageExtent = {lw, lh, 1};
+    r.imageExtent = {lw, lh, ld};
+  }
+
+  // Debug: MANTRA_TEXTURE_DUMP_DIR gets level 0 of 8-bit textures (PGM)
+  // every 60th load of each address.
+  if (const char* dump_dir = std::getenv("MANTRA_TEXTURE_DUMP_DIR");
+      dump_dir && texture.format == VK_FORMAT_R8_UNORM && host_levels &&
+      (texture.dump_counter++ % 60) == 0) {
+    const std::string path = fmt::format("{}/tex_{:08X}_{:05}.pgm", dump_dir, base_address,
+                                         texture.dump_counter - 1);
+    if (std::FILE* file = std::fopen(path.c_str(), "wb")) {
+      std::fprintf(file, "P5\n%u %u\n255\n", host_width, host_height);
+      std::fwrite(staging + level_offsets[0], 1, size_t(host_width) * host_height, file);
+      std::fclose(file);
+    }
   }
 
   VkCommandBuffer cmd = host.BeginTransferCommands();
@@ -492,7 +679,8 @@ bool TextureCache::ResolvedValid(uint32_t address) {
 bool TextureCache::CopyFromResolved(Texture& texture, const xenos::xe_gpu_texture_fetch_t& fetch,
                                     uint32_t address, Host& host) {
   ResolvedSurface* surface = resolved_->Find(address);
-  if (!surface || !surface->write_count || !cmd_copy_image_) {
+  if (!surface || !surface->write_count || !cmd_copy_image_ || texture.dimension == k3D ||
+      texture.decode != kCopy) {
     return false;
   }
   // Only plain reinterpretations of the resolved texels (same block size).
@@ -567,7 +755,9 @@ VkImageView TextureCache::GetView(Texture& texture, uint32_t swizzle) {
   }
   VkImageViewCreateInfo info = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
   info.image = texture.image;
-  info.viewType = texture.dimension == kCube ? VK_IMAGE_VIEW_TYPE_CUBE : VK_IMAGE_VIEW_TYPE_2D;
+  info.viewType = texture.dimension == kCube ? VK_IMAGE_VIEW_TYPE_CUBE
+                  : texture.dimension == k3D ? VK_IMAGE_VIEW_TYPE_3D
+                                             : VK_IMAGE_VIEW_TYPE_2D;
   info.format = texture.format;
   info.components.r = SwizzleComponent(swizzle & 7, texture.channels, texture.component_count);
   info.components.g =

@@ -113,6 +113,7 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
 
   // --- Guest draws (guest_draw.cpp) ----------------------------------------
   enum class DrawResult { kDrawn, kSkipped, kFailed };
+  void TraceDraw(xenos::PrimitiveType prim_type, uint32_t index_count, const char* outcome);
   // Draws with the translated shaders and a pipeline from the guest state.
   DrawResult DrawGuest(xenos::PrimitiveType prim_type, uint32_t index_count,
                        IndexBufferInfo* index_buffer_info);

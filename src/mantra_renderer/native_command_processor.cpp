@@ -119,7 +119,9 @@ bool NativeCommandProcessor::SetupContext() {
 
   if (!copy_pipelines_.Initialize(vulkan_device_) || !render_targets_.Initialize(vulkan_device_) ||
       !shader_interface_.Initialize(vulkan_device_, kFrameSlots) ||
-      !draw_pipelines_.Initialize(vulkan_device_, shader_interface_.pipeline_layout())) {
+      !draw_pipelines_.Initialize(vulkan_device_, shader_interface_.pipeline_layout()) ||
+      !buffer_cache_.Initialize(vulkan_device_, memory_) ||
+      !texture_cache_.Initialize(vulkan_device_, &buffer_cache_, &resolved_surfaces_)) {
     DestroyFrameResources();
     return false;
   }
@@ -154,6 +156,7 @@ void NativeCommandProcessor::AwaitSlot(FrameSlot& slot) {
   dfn.vkResetFences(device, 1, &slot.fence);
   slot.pending = false;
   submission_completed_ = std::max(submission_completed_, slot.submission);
+  buffer_cache_.SubmissionCompleted(submission_completed_);
 }
 
 void NativeCommandProcessor::AwaitSubmission(uint64_t index) {
@@ -254,6 +257,8 @@ void NativeCommandProcessor::DestroyFrameResources() {
   render_targets_.Shutdown();
   copy_pipelines_.Shutdown();
   draw_pipelines_.Shutdown();
+  texture_cache_.Shutdown();
+  buffer_cache_.Shutdown();
   DestroyShaderModules();
   shader_interface_.Shutdown();
   const auto& dfn = vulkan_device_->functions();
@@ -456,6 +461,7 @@ bool NativeCommandProcessor::Resolve() {
           ++draw_stats_.color_copies;
           ++surface->write_count;
           surface->last_write_frame = frame;
+          texture_cache_.NoteResolve(dest_address, info.copy_dest_extent_length);
         }
         if (FirstRoute((uint64_t(info.color_original_base) << 40) ^ (uint64_t(pitch_px) << 26) ^
                        (uint64_t(color_info.color_format) << 22) ^ dest_address ^
@@ -500,6 +506,7 @@ bool NativeCommandProcessor::Resolve() {
 void NativeCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
                                        uint32_t frontbuffer_height) {
   ++swap_stats_.swaps;
+  buffer_cache_.FrameEnded();
   ReportSwapStats();
   if (!graphics_system_ || !vulkan_device_) {
     MANTRA_WARN_ONCE("IssueSwap before the Vulkan device was set up, skipping present");
@@ -901,10 +908,22 @@ void NativeCommandProcessor::ReportSwapStats() {
   const GuestDrawStats& g = guest_draw_stats_;
   MANTRA_INFO("guest draws: {} drawn in {} render passes, {} pipelines ({} failed); skipped: "
               "primitive {}, no target {}, viewport {}, geometry {}; {} zero-fed inputs; "
-              "uploaded {:.1f} MB vertices, {:.1f} MB indices",
+              "streamed {:.1f} MB vertices, {:.1f} MB indices",
               g.drawn, g.render_passes, draw_pipelines_.size(), draw_pipelines_.creation_failures(),
               g.skipped_primitive, g.skipped_no_target, g.skipped_viewport, g.skipped_geometry,
               g.missing_inputs, g.vertex_bytes / 1048576.0, g.index_bytes / 1048576.0);
+  const auto& bc = buffer_cache_.stats();
+  MANTRA_INFO("buffer cache: {} entries in {} blocks; {} hits, {} uploads ({} re-uploads, "
+              "{:.1f} MB), {} CPU-write invalidations, {} uncacheable, {} volatile, {} resets",
+              buffer_cache_.size(), buffer_cache_.blocks_in_use(), bc.hits, bc.uploads,
+              bc.reuploads, bc.upload_bytes / 1048576.0, buffer_cache_.invalidations(),
+              bc.not_cacheable, bc.volatile_skips, bc.resets);
+  const auto& tc = texture_cache_.stats();
+  MANTRA_INFO("textures: {} cached, {} samplers; {} loads ({} after CPU writes, {:.1f} MB), "
+              "{} from resolves, {} unsupported, {} failed; descriptor sets {} ({} reused)",
+              texture_cache_.size(), texture_cache_.sampler_count(), tc.loads, tc.reloads,
+              tc.load_bytes / 1048576.0, tc.resolved_binds, tc.unsupported, tc.failures,
+              g.texture_sets, g.texture_sets_reused);
   swap_stats_.last_report_time = now;
   swap_stats_.swaps_at_last_report = swap_stats_.swaps;
   // The draw census every 30 seconds.

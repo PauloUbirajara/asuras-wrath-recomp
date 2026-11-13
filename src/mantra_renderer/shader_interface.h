@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <vector>
 
 #include <rex/ui/vulkan/api.h>
 
@@ -80,8 +81,16 @@ class ShaderInterface {
   VkBuffer ring_buffer() const { return ring_buffer_; }
   VkDeviceSize slot_bytes_used() const { return cursor_ - slot_begin_; }
 
-  // Binds both descriptor sets and pushes the offsets.
-  void Bind(VkCommandBuffer cmd, const DrawConstantOffsets& offsets) const;
+  // Binds both descriptor sets and pushes the offsets; `textures` null binds
+  // the all-placeholder set.
+  void Bind(VkCommandBuffer cmd, const DrawConstantOffsets& offsets,
+            VkDescriptorSet textures = VK_NULL_HANDLE) const;
+
+  // A textures set (set 1) from the current slot's pool, written with these
+  // views (per heap: 0 = 2D, 1 = 3D, 2 = cube) and samplers; null entries
+  // get the placeholders. VK_NULL_HANDLE when the pool is exhausted.
+  VkDescriptorSet AllocateTextureSet(const VkImageView views[3][kFetchSlots],
+                                     const VkSampler samplers[kFetchSlots]);
 
   // Creates a module from cached SPIR-V (VK_NULL_HANDLE on failure).
   VkShaderModule CreateModule(std::span<const uint8_t> spirv) const;
@@ -91,6 +100,7 @@ class ShaderInterface {
   bool CreateRing(uint32_t frame_slots);
   bool CreatePlaceholders();
   bool CreateDescriptorSets();
+  static constexpr uint32_t kTextureSetsPerSlot = 1024;
 
   const rex::ui::vulkan::VulkanDevice* device_ = nullptr;
 
@@ -118,6 +128,9 @@ class ShaderInterface {
   VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
   VkDescriptorSet constants_set_ = VK_NULL_HANDLE;
   VkDescriptorSet textures_set_ = VK_NULL_HANDLE;
+  // Per submission slot, reset when the slot is reused.
+  std::vector<VkDescriptorPool> texture_pools_;
+  uint32_t current_slot_ = 0;
 };
 
 }  // namespace mantra

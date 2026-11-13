@@ -1,10 +1,9 @@
 // Guest draws: the translated shaders from the shader cache, a pipeline built
 // from the guest registers (draw_pipelines.cpp), dynamic rendering into the
-// host render targets, and vertex/index data copied from guest memory into the
-// upload ring for each draw.
+// host render targets, and vertex/index data from the buffer cache
+// (buffer_cache.cpp), or copied into the upload ring when it can't be cached.
 //
 // Interim simplifications (later Phase 1 steps):
-//   - geometry is re-uploaded per draw (no buffer cache yet);
 //   - textures are the white placeholders;
 //   - EDRAM aliasing between render targets is not modeled;
 //   - gamma render targets store the shader output unconverted.
@@ -12,6 +11,7 @@
 #include "native_command_processor.h"
 
 #include <algorithm>
+#include <bit>
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -32,8 +32,8 @@ namespace {
 using mantra::shader_cache::DeclUsage;
 
 constexpr uint32_t kGuestPhysicalMemoryMask = 0x1FFFFFFF;
-// Largest per-draw vertex upload; bigger draws are skipped (no buffer cache
-// yet).
+// Largest per-draw vertex copy into the ring, for data the buffer cache can't
+// hold; bigger draws are skipped.
 constexpr uint32_t kMaxVertexUpload = 16u << 20;
 
 VkFormat VertexAttributeFormat(const MantraShader::VertexInput& in, bool& packed_normal) {
@@ -220,6 +220,72 @@ void MantraShader::DecodeVertexInputs(std::span<const uint32_t> packed_elements)
   }
 }
 
+// --- Textures ---------------------------------------------------------------------
+
+void NativeCommandProcessor::PrepareTextures(const MantraShader* vs, const MantraShader* ps,
+                                             TextureBindings& out) {
+  std::memset(&out, 0, sizeof(out));
+  uint32_t mask = 0;
+  if (vs && vs->cache_entry) mask |= vs->cache_entry->texture_slot_mask;
+  if (ps && ps->cache_entry) mask |= ps->cache_entry->texture_slot_mask;
+  const RegisterFile& regs = *register_file_;
+  while (mask) {
+    const uint32_t slot = uint32_t(std::countr_zero(mask));
+    mask &= mask - 1;
+    const auto fetch = regs.GetTextureFetch(slot);
+    if (fetch.type != xenos::FetchConstantType::kTexture) {
+      continue;
+    }
+    const mantra::TextureCache::Binding binding = texture_cache_.Get(fetch, *this);
+    out.views[binding.dimension][slot] = binding.view;
+    out.samplers[slot] = binding.sampler;
+  }
+}
+
+VkDescriptorSet NativeCommandProcessor::GetTextureSet(const TextureBindings& bindings) {
+  if (last_texture_set_ && last_texture_set_submission_ == submission_current_ &&
+      bindings == last_texture_bindings_) {
+    ++guest_draw_stats_.texture_sets_reused;
+    return last_texture_set_;
+  }
+  VkDescriptorSet set = shader_interface_.AllocateTextureSet(bindings.views, bindings.samplers);
+  if (!set) {
+    return VK_NULL_HANDLE;
+  }
+  ++guest_draw_stats_.texture_sets;
+  last_texture_bindings_ = bindings;
+  last_texture_set_ = set;
+  last_texture_set_submission_ = submission_current_;
+  return set;
+}
+
+uint8_t* NativeCommandProcessor::AllocateStaging(uint32_t size, VkBuffer& buffer,
+                                                 VkDeviceSize& offset) {
+  if (!BeginCommands()) {
+    return nullptr;
+  }
+  uint32_t ring_offset;
+  uint8_t* data = shader_interface_.Allocate(size, ring_offset);
+  if (!data) {
+    // Ring full: nothing of the current draw is recorded yet, so submit.
+    ++constant_stats_.ring_full;
+    SubmitCommands();
+    if (!BeginCommands()) {
+      return nullptr;
+    }
+    data = shader_interface_.Allocate(size, ring_offset);
+    if (!data) {
+      MANTRA_WARN_ONCE("texture upload of {} bytes doesn't fit the upload ring", size);
+      return nullptr;
+    }
+  }
+  buffer = shader_interface_.ring_buffer();
+  offset = ring_offset;
+  return data;
+}
+
+VkCommandBuffer NativeCommandProcessor::BeginTransferCommands() { return BeginNonDrawCommands(); }
+
 // --- Rendering --------------------------------------------------------------------
 
 VkCommandBuffer NativeCommandProcessor::BeginNonDrawCommands() {
@@ -387,37 +453,66 @@ bool NativeCommandProcessor::BeginDrawRendering(VkCommandBuffer cmd, uint32_t co
 
 // --- Geometry ---------------------------------------------------------------------
 
-NativeCommandProcessor::DrawResult NativeCommandProcessor::UploadGeometry(
-    const MantraShader& vs, xenos::PrimitiveType prim_type, uint32_t index_count,
-    IndexBufferInfo* index_buffer_info, bool restart_allowed, mantra::PipelineKey& key,
-    GeometryUpload& upload, uint32_t& spec_constants) {
+NativeCommandProcessor::DrawResult NativeCommandProcessor::UploadIndices(
+    xenos::PrimitiveType prim_type, uint32_t index_count, IndexBufferInfo* index_buffer_info,
+    bool restart_allowed, GeometryUpload& upload, IndexRange& range) {
   const RegisterFile& regs = *register_file_;
-  upload.buffer = shader_interface_.ring_buffer();
-  const uint32_t index_base = regs[XE_GPU_REG_VGT_INDX_OFFSET] & 0xFFFFFF;
-
-  // Indices: guest indices (endian-swapped) or a generated sequence when the
-  // primitive type has to be converted.
   const bool quad_list = prim_type == xenos::PrimitiveType::kQuadList;
   const bool line_loop = prim_type == xenos::PrimitiveType::kLineLoop;
   const bool guest_indexed = index_buffer_info && index_buffer_info->guest_base;
-  uint32_t min_index = 0, max_index = index_count ? index_count - 1 : 0;
-  std::vector<uint32_t> indices;
-  bool restart = false;
+  range = {};
+  range.max = index_count ? index_count - 1 : 0;
+  if (!guest_indexed && !quad_list && !line_loop) {
+    upload.indexed = false;
+    upload.draw_count = index_count;
+    return DrawResult::kDrawn;
+  }
+
+  // Guest indices go through the buffer cache, keyed by everything the
+  // conversion depends on.
+  mantra::BufferCache::Key key;
+  std::memset(&key, 0, sizeof(key));
+  const uint8_t* src = nullptr;
+  bool is_32 = false, use_reset = false;
+  uint32_t reset_index = 0;
   if (guest_indexed) {
-    const bool is_32 = index_buffer_info->format == xenos::IndexFormat::kInt32;
-    const uint8_t* src = memory_->TranslatePhysical<const uint8_t*>(
-        index_buffer_info->guest_base & kGuestPhysicalMemoryMask);
+    is_32 = index_buffer_info->format == xenos::IndexFormat::kInt32;
+    const uint32_t address = index_buffer_info->guest_base & kGuestPhysicalMemoryMask;
+    src = memory_->TranslatePhysical<const uint8_t*>(address);
     if (!src) {
       return DrawResult::kSkipped;
     }
-    const auto mode = regs.Get<reg::PA_SU_SC_MODE_CNTL>();
-    const uint32_t reset_index =
+    use_reset = regs.Get<reg::PA_SU_SC_MODE_CNTL>().multi_prim_ib_ena != 0;
+    reset_index =
         regs.Get<reg::VGT_MULTI_PRIM_IB_RESET_INDX>().reset_indx & (is_32 ? 0xFFFFFF : 0xFFFF);
-    const bool use_reset = mode.multi_prim_ib_ena != 0;
-    restart = use_reset && restart_allowed;
-    indices.resize(index_count);
-    min_index = UINT32_MAX;
-    max_index = 0;
+    range.restart = use_reset && restart_allowed;
+    key.start = address;
+    key.length = index_count * (is_32 ? 4 : 2);
+    key.kind = mantra::BufferCache::Kind::kIndex;
+    key.params[0] = index_count;
+    key.params[1] = uint32_t(is_32) | (uint32_t(index_buffer_info->endianness) << 1) |
+                    (uint32_t(use_reset) << 4) | (uint32_t(range.restart) << 5) |
+                    (uint32_t(quad_list) << 6) | (uint32_t(line_loop) << 7);
+    key.params[2] = use_reset ? reset_index : 0;
+    mantra::BufferCache::Data data;
+    if (buffer_cache_.Lookup(key, data)) {
+      range.min = data.meta[0];
+      range.max = data.meta[1];
+      upload.indexed = true;
+      upload.index_buffer = data.buffer;
+      upload.index_offset = data.offset;
+      upload.draw_count = data.meta[2];
+      upload.index_type = data.meta[3] ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
+      return DrawResult::kDrawn;
+    }
+  }
+
+  // Indices: guest indices (endian-swapped) or a generated sequence when the
+  // primitive type has to be converted.
+  std::vector<uint32_t> indices(index_count);
+  if (guest_indexed) {
+    range.min = UINT32_MAX;
+    range.max = 0;
     for (uint32_t i = 0; i < index_count; ++i) {
       uint32_t v;
       if (is_32) {
@@ -434,21 +529,20 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::UploadGeometry(
         continue;
       }
       indices[i] = v;
-      min_index = std::min(min_index, v);
-      max_index = std::max(max_index, v);
+      range.min = std::min(range.min, v);
+      range.max = std::max(range.max, v);
     }
-    if (min_index > max_index) {
+    if (range.min > range.max) {
       return DrawResult::kSkipped;  // only reset indices
     }
-    if (use_reset && !restart) {
+    if (use_reset && !range.restart) {
       // No host restart for this topology: point reset indices at a valid
       // vertex instead of past the uploaded range.
       for (uint32_t& v : indices) {
-        if (v == UINT32_MAX) v = min_index;
+        if (v == UINT32_MAX) v = range.min;
       }
     }
-  } else if (quad_list || line_loop) {
-    indices.resize(index_count);
+  } else {
     for (uint32_t i = 0; i < index_count; ++i) indices[i] = i;
   }
   if (quad_list) {
@@ -463,11 +557,124 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::UploadGeometry(
     indices.push_back(indices.front());
   }
 
-  // Vertex buffers: one binding per fetch constant; the vertex range
-  // [min_index, max_index] (+ VGT_INDX_OFFSET) is copied, endian-swapped per
-  // dword with the fetch constant's endianness.
-  const uint64_t first_vertex = uint64_t(min_index) + index_base;
-  const uint32_t vertex_count = max_index - min_index + 1;
+  // Host indices are the guest ones; vertex_offset (-min) rebases them onto
+  // the vertex bindings, which start at vertex `min`.
+  const bool host_32 = range.max > 0xFFFE || range.restart;
+  const uint32_t index_size = host_32 ? 4 : 2;
+  const uint32_t bytes = std::max<uint32_t>(uint32_t(indices.size()) * index_size, 4);
+  mantra::BufferCache::Data data;
+  uint8_t* dest = nullptr;
+  if (guest_indexed) {
+    dest = buffer_cache_.Reserve(key, bytes, submission_current_, data);
+  }
+  const bool cached = dest != nullptr;
+  if (cached) {
+    upload.index_buffer = data.buffer;
+    upload.index_offset = data.offset;
+  } else {
+    uint32_t offset;
+    dest = shader_interface_.Allocate(bytes, offset);
+    if (!dest) {
+      return DrawResult::kFailed;  // ring full; the caller submits and retries
+    }
+    upload.index_buffer = shader_interface_.ring_buffer();
+    upload.index_offset = offset;
+    guest_draw_stats_.index_bytes += bytes;
+  }
+  if (host_32) {
+    std::memcpy(dest, indices.data(), indices.size() * 4);
+  } else {
+    auto* out = reinterpret_cast<uint16_t*>(dest);
+    for (size_t i = 0; i < indices.size(); ++i) out[i] = uint16_t(indices[i]);
+  }
+  upload.indexed = true;
+  upload.index_type = host_32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
+  upload.draw_count = uint32_t(indices.size());
+  if (cached) {
+    data.meta[0] = range.min;
+    data.meta[1] = range.max;
+    data.meta[2] = upload.draw_count;
+    data.meta[3] = host_32 ? 1 : 0;
+    buffer_cache_.Commit(key, data);
+  }
+  return DrawResult::kDrawn;
+}
+
+bool NativeCommandProcessor::CachedVertexData(uint32_t buffer_address, uint32_t buffer_size,
+                                              xenos::Endian endian, uint32_t start,
+                                              uint32_t size, VkBuffer& buffer,
+                                              VkDeviceSize& offset) {
+  // Small buffers are cached whole; larger ones (streaming rings, big shared
+  // buffers) in 64 KB-aligned spans around what the draw reads.
+  constexpr uint32_t kWholeBufferLimit = 1u << 20;
+  constexpr uint32_t kSpanAlignment = 64u << 10;
+  // Attribute reads may run a little past the last vertex's stride (the
+  // vertex extent is offset + 16); that much zero padding follows the data.
+  constexpr uint32_t kPadding = 16;
+  const uint64_t buffer_end = uint64_t(buffer_address) + buffer_size;
+  if (!buffer_size || start < buffer_address || start >= buffer_end) {
+    return false;
+  }
+  uint64_t entry_start = buffer_address, entry_end = buffer_end;
+  if (buffer_size > kWholeBufferLimit) {
+    entry_start = std::max<uint64_t>(buffer_address, start & ~uint64_t(kSpanAlignment - 1));
+    entry_end = std::min<uint64_t>(
+        buffer_end, (uint64_t(start) + size + kSpanAlignment - 1) & ~uint64_t(kSpanAlignment - 1));
+  }
+  if (uint64_t(start) + size > entry_end + kPadding) {
+    return false;  // reads past the end of the buffer
+  }
+  mantra::BufferCache::Key key;
+  std::memset(&key, 0, sizeof(key));
+  key.start = uint32_t(entry_start);
+  key.length = uint32_t(entry_end - entry_start);
+  key.kind = mantra::BufferCache::Kind::kVertex;
+  key.params[0] = uint32_t(endian);
+  mantra::BufferCache::Data data;
+  if (!buffer_cache_.Lookup(key, data)) {
+    uint8_t* dest = buffer_cache_.Reserve(key, key.length + kPadding, submission_current_, data);
+    if (!dest) {
+      return false;
+    }
+    const uint32_t* src = memory_->TranslatePhysical<const uint32_t*>(key.start);
+    if (!src) {
+      return false;  // the reservation stays invalid
+    }
+    auto* out = reinterpret_cast<uint32_t*>(dest);
+    const uint32_t words = key.length / 4;
+    for (uint32_t w = 0; w < words; ++w) {
+      out[w] = xenos::GpuSwap(src[w], endian);
+    }
+    std::memset(dest + words * 4, 0, key.length + kPadding - words * 4);
+    buffer_cache_.Commit(key, data);
+  }
+  buffer = data.buffer;
+  offset = data.offset + (start - key.start);
+  return true;
+}
+
+NativeCommandProcessor::DrawResult NativeCommandProcessor::UploadGeometry(
+    const MantraShader& vs, xenos::PrimitiveType prim_type, uint32_t index_count,
+    IndexBufferInfo* index_buffer_info, bool restart_allowed, mantra::PipelineKey& key,
+    GeometryUpload& upload, uint32_t& spec_constants) {
+  const RegisterFile& regs = *register_file_;
+  const uint32_t index_base = regs[XE_GPU_REG_VGT_INDX_OFFSET] & 0xFFFFFF;
+
+  IndexRange range;
+  const DrawResult indices =
+      UploadIndices(prim_type, index_count, index_buffer_info, restart_allowed, upload, range);
+  if (indices != DrawResult::kDrawn) {
+    return indices;
+  }
+  upload.vertex_offset = upload.indexed ? -int32_t(range.min) : 0;
+  key.primitive_restart = range.restart ? 1 : 0;
+
+  // Vertex buffers: one binding per fetch constant, starting at vertex
+  // min + VGT_INDX_OFFSET, endian-swapped per dword with the fetch constant's
+  // endianness. Served from the buffer cache, or copied into the ring when
+  // they can't be cached.
+  const uint64_t first_vertex = uint64_t(range.min) + index_base;
+  const uint32_t vertex_count = range.max - range.min + 1;
   uint32_t binding_fetch_constants[mantra::kMaxVertexBindings];
   uint32_t binding_count = 0;
   bool packed_normal = false;
@@ -529,9 +736,14 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::UploadGeometry(
     const uint64_t start = stride ? first_vertex * stride : 0;
     const uint64_t size64 =
         stride ? uint64_t(vertex_count - 1) * stride + vertex_extent : vertex_extent;
+    if (start + size64 <= 0xFFFFFFFFu - buffer_address &&
+        CachedVertexData(buffer_address, uint32_t(std::min<uint64_t>(buffer_size, 0xFFFFFFFFu)),
+                         fetch.endian, uint32_t(buffer_address + start), uint32_t(size64),
+                         upload.binding_buffers[b], upload.binding_offsets[b])) {
+      continue;
+    }
     if (size64 > kMaxVertexUpload) {
-      MANTRA_WARN_ONCE("draw with {} bytes of vertex data, skipping (no buffer cache yet)",
-                       size64);
+      MANTRA_WARN_ONCE("draw with {} bytes of uncacheable vertex data, skipping", size64);
       return DrawResult::kSkipped;
     }
     const uint32_t size = uint32_t((size64 + 3) & ~uint64_t(3));
@@ -551,7 +763,7 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::UploadGeometry(
       }
     }
     std::memset(out + (src ? copy_words : 0), 0, size - (src ? copy_words : 0) * 4);
-    // Vertex i of the draw (index i + vertex_offset) is at offset + i * stride.
+    upload.binding_buffers[b] = shader_interface_.ring_buffer();
     upload.binding_offsets[b] = offset;
     guest_draw_stats_.vertex_bytes += size;
   }
@@ -564,6 +776,7 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::UploadGeometry(
     }
     std::memset(dest, 0, 16);
     key.binding_strides[b] = 0;
+    upload.binding_buffers[b] = shader_interface_.ring_buffer();
     upload.binding_offsets[b] = offset;
     for (uint32_t i = 0; i < zero_attribute_count; ++i) {
       key.attributes[zero_binding_attributes[i]].binding = uint8_t(b);
@@ -572,36 +785,6 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::UploadGeometry(
   key.binding_count = uint8_t(binding_count);
   key.attribute_count = uint8_t(attribute_count);
   upload.binding_count = binding_count;
-
-  if (!indices.empty() || guest_indexed) {
-    // Host indices are relative to first_vertex... except that the ring copy
-    // starts at first_vertex, so subtract min_index via vertex_offset.
-    const bool host_32 = max_index > 0xFFFE || restart;
-    const uint32_t index_size = host_32 ? 4 : 2;
-    const uint32_t bytes = uint32_t(indices.size()) * index_size;
-    uint32_t offset;
-    uint8_t* dest = shader_interface_.Allocate(std::max<uint32_t>(bytes, 4), offset);
-    if (!dest) {
-      return DrawResult::kFailed;
-    }
-    if (host_32) {
-      auto* out = reinterpret_cast<uint32_t*>(dest);
-      for (size_t i = 0; i < indices.size(); ++i) out[i] = indices[i];
-    } else {
-      auto* out = reinterpret_cast<uint16_t*>(dest);
-      for (size_t i = 0; i < indices.size(); ++i) out[i] = uint16_t(indices[i]);
-    }
-    upload.indexed = true;
-    upload.index_offset = offset;
-    upload.index_type = host_32 ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
-    upload.draw_count = uint32_t(indices.size());
-    upload.vertex_offset = -int32_t(min_index);
-    guest_draw_stats_.index_bytes += bytes;
-  } else {
-    upload.indexed = false;
-    upload.draw_count = index_count;
-  }
-  key.primitive_restart = restart ? 1 : 0;
   return DrawResult::kDrawn;
 }
 
@@ -753,6 +936,11 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
     ++guest_draw_stats_.skipped_viewport;
     return DrawResult::kSkipped;
   }
+  // Textures first: loading them may record transfers and submit.
+  TextureBindings textures;
+  PrepareTextures(vs, ps, textures);
+  VkDescriptorSet texture_set = VK_NULL_HANDLE;
+
   mantra::SharedConstants shared;
   std::copy_n(viewport.ndc_scale, 3, shared.ndc_scale);
   std::copy_n(viewport.ndc_offset, 3, shared.ndc_offset);
@@ -777,10 +965,17 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
     if (!PrepareDrawConstants(offsets, shared)) {
       return DrawResult::kFailed;
     }
-    if (submission_current_ == submission) {
-      key.spec_constants = attempt_spec;
-      uploaded = true;
+    if (submission_current_ != submission) {
+      continue;
     }
+    texture_set = GetTextureSet(textures);
+    if (!texture_set) {
+      // The slot's descriptor pool is exhausted: start a new submission.
+      SubmitCommands();
+      continue;
+    }
+    key.spec_constants = attempt_spec;
+    uploaded = true;
   }
   if (!uploaded) {
     return DrawResult::kFailed;
@@ -823,7 +1018,7 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
 
   const auto& dfn = vulkan_device_->functions();
   dfn.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-  shader_interface_.Bind(cmd, offsets);
+  shader_interface_.Bind(cmd, offsets, texture_set);
 
   // Viewport and scissor (inside the render area).
   VkViewport vk_viewport;
@@ -871,12 +1066,11 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
 
   // Geometry.
   if (upload.binding_count) {
-    VkBuffer buffers[mantra::kMaxVertexBindings];
-    std::fill_n(buffers, upload.binding_count, upload.buffer);
-    dfn.vkCmdBindVertexBuffers(cmd, 0, upload.binding_count, buffers, upload.binding_offsets);
+    dfn.vkCmdBindVertexBuffers(cmd, 0, upload.binding_count, upload.binding_buffers,
+                               upload.binding_offsets);
   }
   if (upload.indexed) {
-    dfn.vkCmdBindIndexBuffer(cmd, upload.buffer, upload.index_offset, upload.index_type);
+    dfn.vkCmdBindIndexBuffer(cmd, upload.index_buffer, upload.index_offset, upload.index_type);
     dfn.vkCmdDrawIndexed(cmd, upload.draw_count, 1, 0, upload.vertex_offset, 0);
   } else {
     dfn.vkCmdDraw(cmd, upload.draw_count, 1, 0, 0);

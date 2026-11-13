@@ -1,6 +1,7 @@
 #pragma once
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <map>
 #include <memory>
 #include <span>
@@ -13,11 +14,13 @@
 #include <rex/string/buffer.h>
 #include <rex/ui/vulkan/api.h>
 
+#include "buffer_cache.h"
 #include "copy_pipelines.h"
 #include "draw_pipelines.h"
 #include "render_targets.h"
 #include "shader_cache.h"
 #include "shader_interface.h"
+#include "texture_cache.h"
 
 namespace rex::ui::vulkan {
 class VulkanDevice;
@@ -53,7 +56,7 @@ class MantraShader : public Shader {
   void DecodeVertexInputs(std::span<const uint32_t> packed_elements);
 };
 
-class NativeCommandProcessor : public CommandProcessor {
+class NativeCommandProcessor : public CommandProcessor, private mantra::TextureCache::Host {
  public:
   NativeCommandProcessor(GraphicsSystem* graphics_system, system::KernelState* kernel_state);
   ~NativeCommandProcessor() override;
@@ -116,15 +119,29 @@ class NativeCommandProcessor : public CommandProcessor {
   // Uploads this draw's vertex (and index) data into the ring; fills the
   // pipeline key's vertex input and the draw parameters.
   struct GeometryUpload {
-    VkBuffer buffer = VK_NULL_HANDLE;
+    VkBuffer binding_buffers[mantra::kMaxVertexBindings] = {};
     VkDeviceSize binding_offsets[mantra::kMaxVertexBindings] = {};
     uint32_t binding_count = 0;
     bool indexed = false;
-    uint32_t index_offset = 0;  // bytes in the ring
+    VkBuffer index_buffer = VK_NULL_HANDLE;
+    VkDeviceSize index_offset = 0;
     VkIndexType index_type = VK_INDEX_TYPE_UINT32;
     uint32_t draw_count = 0;    // vertices or indices
     int32_t vertex_offset = 0;  // added to indices (vkCmdDrawIndexed)
   };
+  struct IndexRange {
+    uint32_t min = 0, max = 0;  // referenced vertices (reset indices excluded)
+    bool restart = false;       // host primitive restart (0xFFFFFFFF)
+  };
+  // Converts (or finds in the buffer cache) the draw's indices; leaves
+  // upload.indexed false for non-indexed draws that need no conversion.
+  DrawResult UploadIndices(xenos::PrimitiveType prim_type, uint32_t index_count,
+                           IndexBufferInfo* index_buffer_info, bool restart_allowed,
+                           GeometryUpload& upload, IndexRange& range);
+  // Vertex data [start, start + size) of the fetch buffer from the buffer
+  // cache; false if it can't be cached (the caller copies it into the ring).
+  bool CachedVertexData(uint32_t buffer_address, uint32_t buffer_size, xenos::Endian endian,
+                        uint32_t start, uint32_t size, VkBuffer& buffer, VkDeviceSize& offset);
   DrawResult UploadGeometry(const MantraShader& vs, xenos::PrimitiveType prim_type,
                             uint32_t index_count, IndexBufferInfo* index_buffer_info,
                             bool restart_allowed, mantra::PipelineKey& key,
@@ -138,6 +155,29 @@ class NativeCommandProcessor : public CommandProcessor {
   void EndRendering();
   // BeginCommands + EndRendering, for everything that is not a guest draw.
   VkCommandBuffer BeginNonDrawCommands();
+
+  // Textures: per fetch slot, the view in its dimension's heap and the
+  // sampler (null = placeholder).
+  struct TextureBindings {
+    VkImageView views[3][mantra::ShaderInterface::kFetchSlots];
+    VkSampler samplers[mantra::ShaderInterface::kFetchSlots];
+    bool operator==(const TextureBindings& other) const {
+      return std::memcmp(this, &other, sizeof(*this)) == 0;
+    }
+  };
+  // Loads the textures the draw's shaders sample (may record transfers and
+  // submit, so call before anything else of the draw is recorded).
+  void PrepareTextures(const MantraShader* vs, const MantraShader* ps, TextureBindings& out);
+  // The descriptor set for `bindings` in the current submission (reused while
+  // unchanged); VK_NULL_HANDLE when the slot's pool is exhausted.
+  VkDescriptorSet GetTextureSet(const TextureBindings& bindings);
+  TextureBindings last_texture_bindings_ = {};
+  VkDescriptorSet last_texture_set_ = VK_NULL_HANDLE;
+  uint64_t last_texture_set_submission_ = 0;
+  // TextureCache::Host.
+  uint8_t* AllocateStaging(uint32_t size, VkBuffer& buffer, VkDeviceSize& offset) override;
+  VkCommandBuffer BeginTransferCommands() override;
+  uint64_t CurrentSubmission() const override { return submission_current_; }
 
   struct ActiveRendering {
     bool active = false;
@@ -159,6 +199,8 @@ class NativeCommandProcessor : public CommandProcessor {
     uint64_t render_passes = 0;
     uint64_t vertex_bytes = 0;
     uint64_t index_bytes = 0;
+    uint64_t texture_sets = 0;
+    uint64_t texture_sets_reused = 0;
   };
   GuestDrawStats guest_draw_stats_;
 
@@ -286,6 +328,8 @@ class NativeCommandProcessor : public CommandProcessor {
 
   mantra::CopyPipelines copy_pipelines_;
   mantra::DrawPipelines draw_pipelines_;
+  mantra::BufferCache buffer_cache_;
+  mantra::TextureCache texture_cache_;
   mantra::ShaderInterface shader_interface_;
   mantra::RenderTargetPool render_targets_;
   mantra::ResolvedSurfaces resolved_surfaces_;

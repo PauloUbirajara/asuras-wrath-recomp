@@ -32,6 +32,7 @@ bool ShaderInterface::Initialize(const rex::ui::vulkan::VulkanDevice* device,
                  props.maxStorageBufferRange);
     return false;
   }
+  texture_pools_.assign(frame_slots, VK_NULL_HANDLE);
   return CreateLayouts() && CreateRing(frame_slots) && CreatePlaceholders() &&
          CreateDescriptorSets();
 }
@@ -190,6 +191,21 @@ bool ShaderInterface::CreateDescriptorSets() {
   constants_set_ = sets[0];
   textures_set_ = sets[1];
 
+  const VkDescriptorPoolSize texture_pool_sizes[] = {
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 3 * kFetchSlots * kTextureSetsPerSlot},
+      {VK_DESCRIPTOR_TYPE_SAMPLER, kFetchSlots * kTextureSetsPerSlot},
+  };
+  VkDescriptorPoolCreateInfo texture_pool_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+  texture_pool_info.maxSets = kTextureSetsPerSlot;
+  texture_pool_info.poolSizeCount = uint32_t(std::size(texture_pool_sizes));
+  texture_pool_info.pPoolSizes = texture_pool_sizes;
+  for (VkDescriptorPool& pool : texture_pools_) {
+    if (dfn.vkCreateDescriptorPool(vk_device, &texture_pool_info, nullptr, &pool) != VK_SUCCESS) {
+      MANTRA_ERROR("failed to create a texture descriptor pool");
+      return false;
+    }
+  }
+
   VkDescriptorBufferInfo buffer_info = {ring_buffer_, 0, VK_WHOLE_SIZE};
   VkDescriptorImageInfo image_infos[3][kFetchSlots] = {};
   VkDescriptorImageInfo sampler_infos[kFetchSlots] = {};
@@ -263,6 +279,9 @@ void ShaderInterface::Shutdown() {
   const auto& dfn = device_->functions();
   const VkDevice vk_device = device_->device();
   if (descriptor_pool_) dfn.vkDestroyDescriptorPool(vk_device, descriptor_pool_, nullptr);
+  for (VkDescriptorPool pool : texture_pools_) {
+    if (pool) dfn.vkDestroyDescriptorPool(vk_device, pool, nullptr);
+  }
   if (placeholder_sampler_) dfn.vkDestroySampler(vk_device, placeholder_sampler_, nullptr);
   for (uint32_t i = 0; i < 3; ++i) {
     if (placeholder_views_[i]) dfn.vkDestroyImageView(vk_device, placeholder_views_[i], nullptr);
@@ -279,6 +298,10 @@ void ShaderInterface::Shutdown() {
 }
 
 void ShaderInterface::BeginSlot(uint32_t slot) {
+  current_slot_ = slot;
+  if (slot < texture_pools_.size() && texture_pools_[slot]) {
+    device_->functions().vkResetDescriptorPool(device_->device(), texture_pools_[slot], 0);
+  }
   slot_begin_ = kRingBytesPerSlot * slot;
   cursor_ = slot_begin_;
   flushed_ = slot_begin_;
@@ -311,9 +334,47 @@ bool ShaderInterface::Upload(const void* data, uint32_t size, uint32_t& offset) 
   return true;
 }
 
-void ShaderInterface::Bind(VkCommandBuffer cmd, const DrawConstantOffsets& offsets) const {
+VkDescriptorSet ShaderInterface::AllocateTextureSet(const VkImageView views[3][kFetchSlots],
+                                                   const VkSampler samplers[kFetchSlots]) {
   const auto& dfn = device_->functions();
-  const VkDescriptorSet sets[] = {constants_set_, textures_set_};
+  const VkDevice vk_device = device_->device();
+  VkDescriptorSetAllocateInfo alloc_info = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+  alloc_info.descriptorPool = texture_pools_[current_slot_];
+  alloc_info.descriptorSetCount = 1;
+  alloc_info.pSetLayouts = &textures_layout_;
+  VkDescriptorSet set = VK_NULL_HANDLE;
+  if (dfn.vkAllocateDescriptorSets(vk_device, &alloc_info, &set) != VK_SUCCESS) {
+    return VK_NULL_HANDLE;
+  }
+  VkDescriptorImageInfo image_infos[3][kFetchSlots] = {};
+  VkDescriptorImageInfo sampler_infos[kFetchSlots] = {};
+  for (uint32_t d = 0; d < 3; ++d) {
+    for (uint32_t i = 0; i < kFetchSlots; ++i) {
+      image_infos[d][i].imageView = views[d][i] ? views[d][i] : placeholder_views_[d];
+      image_infos[d][i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+  }
+  for (uint32_t i = 0; i < kFetchSlots; ++i) {
+    sampler_infos[i].sampler = samplers[i] ? samplers[i] : placeholder_sampler_;
+  }
+  VkWriteDescriptorSet writes[4] = {};
+  for (uint32_t i = 0; i < 4; ++i) {
+    VkWriteDescriptorSet& w = writes[i];
+    w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w.dstSet = set;
+    w.dstBinding = i;
+    w.descriptorCount = kFetchSlots;
+    w.descriptorType = i < 3 ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLER;
+    w.pImageInfo = i < 3 ? image_infos[i] : sampler_infos;
+  }
+  dfn.vkUpdateDescriptorSets(vk_device, 4, writes, 0, nullptr);
+  return set;
+}
+
+void ShaderInterface::Bind(VkCommandBuffer cmd, const DrawConstantOffsets& offsets,
+                           VkDescriptorSet textures) const {
+  const auto& dfn = device_->functions();
+  const VkDescriptorSet sets[] = {constants_set_, textures ? textures : textures_set_};
   dfn.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 2, sets,
                               0, nullptr);
   dfn.vkCmdPushConstants(cmd, pipeline_layout_, kStages, 0, sizeof(offsets), &offsets);

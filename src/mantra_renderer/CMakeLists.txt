@@ -61,8 +61,10 @@ add_library(rexgpu-mantra SHARED
     render_targets.cpp
     shader_interface.cpp
     solid_fill.cpp
+    buffer_cache.cpp
     draw_pipelines.cpp
     guest_draw.cpp
+    texture_cache.cpp
     ${MANTRA_SHADER_INCS}
     ${MANTRA_BASE_SOURCES}
 )

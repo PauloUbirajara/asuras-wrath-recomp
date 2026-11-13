@@ -21,6 +21,8 @@ class ShaderCache {
     Match match = Match::kNone;
     const shader_cache::CacheEntry* entry = nullptr;
     std::span<const uint8_t> spirv;
+    // Packed shader_cache::VertexElement words (vertex shaders).
+    std::vector<uint32_t> vertex_elements;
   };
 
   // Default location: $MANTRA_SHADER_CACHE, else

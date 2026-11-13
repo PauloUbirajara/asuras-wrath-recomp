@@ -90,7 +90,9 @@ bool ShaderInterface::CreateLayouts() {
 bool ShaderInterface::CreateRing(uint32_t frame_slots) {
   const auto& dfn = device_->functions();
   if (!util::CreateDedicatedAllocationBuffer(
-          device_, kRingBytesPerSlot * frame_slots, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+          device_, kRingBytesPerSlot * frame_slots,
+          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT |
+              VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
           util::MemoryPurpose::kUpload, ring_buffer_, ring_memory_, &ring_memory_type_,
           &ring_memory_size_)) {
     MANTRA_ERROR("failed to create the constant ring ({} MB)",
@@ -290,14 +292,22 @@ void ShaderInterface::FlushSlot() {
   }
 }
 
-bool ShaderInterface::Upload(const void* data, uint32_t size, uint32_t& offset) {
+uint8_t* ShaderInterface::Allocate(uint32_t size, uint32_t& offset) {
   const VkDeviceSize at = (cursor_ + kUploadAlignment - 1) & ~(kUploadAlignment - 1);
   if (at + size > slot_begin_ + kRingBytesPerSlot) {
-    return false;
+    return nullptr;
   }
-  std::memcpy(ring_mapping_ + at, data, size);
   offset = uint32_t(at);
   cursor_ = at + size;
+  return ring_mapping_ + at;
+}
+
+bool ShaderInterface::Upload(const void* data, uint32_t size, uint32_t& offset) {
+  uint8_t* dest = Allocate(size, offset);
+  if (!dest) {
+    return false;
+  }
+  std::memcpy(dest, data, size);
   return true;
 }
 

@@ -34,7 +34,8 @@ set(MANTRA_SHADER_INCS)
 foreach(_spec
     "fullscreen.vert|fullscreen.vert|"
     "copy.frag|copy.frag|"
-    "copy_ms.frag|copy.frag|-DMULTISAMPLE")
+    "copy_ms.frag|copy.frag|-DMULTISAMPLE"
+    "rect_list.geom|rect_list.geom|")
   string(REPLACE "|" ";" _parts "${_spec}")
   list(GET _parts 0 _name)
   list(GET _parts 1 _src)
@@ -60,6 +61,8 @@ add_library(rexgpu-mantra SHARED
     render_targets.cpp
     shader_interface.cpp
     solid_fill.cpp
+    draw_pipelines.cpp
+    guest_draw.cpp
     ${MANTRA_SHADER_INCS}
     ${MANTRA_BASE_SOURCES}
 )

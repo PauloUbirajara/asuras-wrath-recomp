@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <span>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
@@ -13,6 +14,7 @@
 #include <rex/ui/vulkan/api.h>
 
 #include "copy_pipelines.h"
+#include "draw_pipelines.h"
 #include "render_targets.h"
 #include "shader_cache.h"
 #include "shader_interface.h"
@@ -29,6 +31,26 @@ class MantraShader : public Shader {
   using Shader::Shader;
   const mantra::shader_cache::CacheEntry* cache_entry = nullptr;
   VkShaderModule module = VK_NULL_HANDLE;
+
+  // Vertex shaders: the translated shader's inputs, with the vfetch each one
+  // comes from decoded from this (possibly driver-patched) microcode.
+  struct VertexInput {
+    uint32_t location = 0;
+    mantra::shader_cache::DeclUsage usage = mantra::shader_cache::DeclUsage::kPosition;
+    bool is_uint = false;  // declared uint4
+    bool valid = false;    // the vfetch was found and decoded
+    uint32_t fetch_constant = 0;
+    uint32_t stride_words = 0;
+    int32_t offset_words = 0;
+    xenos::VertexFormat format = xenos::VertexFormat::kUndefined;
+    bool is_signed = false;
+    bool normalized = true;
+  };
+  std::vector<VertexInput> vertex_inputs;
+  // Pixel shaders: bits 0..3 = writes oC0..3, bit 4 = writes oDepth.
+  uint32_t ps_outputs = 0;
+
+  void DecodeVertexInputs(std::span<const uint32_t> packed_elements);
 };
 
 class NativeCommandProcessor : public CommandProcessor {
@@ -86,11 +108,68 @@ class NativeCommandProcessor : public CommandProcessor {
   enum class SolidFillResult { kNotSolidFill, kDone, kUnsupported };
   SolidFillResult TrySolidFill(xenos::PrimitiveType prim_type, xenos::EdramMode edram_mode);
 
+  // --- Guest draws (guest_draw.cpp) ----------------------------------------
+  enum class DrawResult { kDrawn, kSkipped, kFailed };
+  // Draws with the translated shaders and a pipeline from the guest state.
+  DrawResult DrawGuest(xenos::PrimitiveType prim_type, uint32_t index_count,
+                       IndexBufferInfo* index_buffer_info);
+  // Uploads this draw's vertex (and index) data into the ring; fills the
+  // pipeline key's vertex input and the draw parameters.
+  struct GeometryUpload {
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceSize binding_offsets[mantra::kMaxVertexBindings] = {};
+    uint32_t binding_count = 0;
+    bool indexed = false;
+    uint32_t index_offset = 0;  // bytes in the ring
+    VkIndexType index_type = VK_INDEX_TYPE_UINT32;
+    uint32_t draw_count = 0;    // vertices or indices
+    int32_t vertex_offset = 0;  // added to indices (vkCmdDrawIndexed)
+  };
+  DrawResult UploadGeometry(const MantraShader& vs, xenos::PrimitiveType prim_type,
+                            uint32_t index_count, IndexBufferInfo* index_buffer_info,
+                            bool restart_allowed, mantra::PipelineKey& key,
+                            GeometryUpload& upload, uint32_t& spec_constants);
+  // Begins (or keeps) dynamic rendering into this draw's render targets.
+  // Returns false if no target could be bound.
+  bool BeginDrawRendering(VkCommandBuffer cmd, uint32_t color_mask, bool use_depth,
+                          mantra::PipelineKey& key, VkRect2D& render_area);
+  // Ends the open dynamic rendering, if any; required before any other
+  // command (transfers, barriers, clears, copies).
+  void EndRendering();
+  // BeginCommands + EndRendering, for everything that is not a guest draw.
+  VkCommandBuffer BeginNonDrawCommands();
+
+  struct ActiveRendering {
+    bool active = false;
+    mantra::RenderTarget* color[mantra::kMaxColorAttachments] = {};
+    VkFormat color_format[mantra::kMaxColorAttachments] = {};
+    mantra::RenderTarget* depth = nullptr;
+    VkRect2D area = {};
+  };
+  ActiveRendering rendering_;
+
+  struct GuestDrawStats {
+    uint64_t drawn = 0;
+    uint64_t skipped_primitive = 0;  // unsupported primitive type
+    uint64_t skipped_no_target = 0;
+    uint64_t skipped_viewport = 0;   // empty viewport / scissor
+    uint64_t skipped_geometry = 0;   // vertex/index data unavailable
+    uint64_t failed_pipeline = 0;
+    uint64_t missing_inputs = 0;     // inputs fed zeros (undecodable fetch / format)
+    uint64_t render_passes = 0;
+    uint64_t vertex_bytes = 0;
+    uint64_t index_bytes = 0;
+  };
+  GuestDrawStats guest_draw_stats_;
+
   // --- Guest shader constants -------------------------------------------------
   // Uploads this draw's VS/PS float constants and shared constants into the
   // constant ring (reusing the previous upload of this submission when the
-  // registers did not change). Returns false if nothing could be uploaded.
-  bool PrepareDrawConstants(mantra::DrawConstantOffsets& offsets);
+  // registers did not change). `shared` provides the draw-specific shared
+  // constants (viewport transform); booleans and the alpha threshold are
+  // filled here. Returns false if nothing could be uploaded.
+  bool PrepareDrawConstants(mantra::DrawConstantOffsets& offsets,
+                            const mantra::SharedConstants& shared);
   bool UploadConstants(const void* data, uint32_t size, uint32_t& offset);
   void DestroyShaderModules();
 
@@ -206,6 +285,7 @@ class NativeCommandProcessor : public CommandProcessor {
   bool recording_ = false;
 
   mantra::CopyPipelines copy_pipelines_;
+  mantra::DrawPipelines draw_pipelines_;
   mantra::ShaderInterface shader_interface_;
   mantra::RenderTargetPool render_targets_;
   mantra::ResolvedSurfaces resolved_surfaces_;

@@ -146,7 +146,7 @@ NativeCommandProcessor::SolidFillResult NativeCommandProcessor::TrySolidFill(
   }
 
   const auto surface_info = regs.Get<reg::RB_SURFACE_INFO>();
-  VkCommandBuffer cmd = BeginCommands();
+  VkCommandBuffer cmd = BeginNonDrawCommands();
   if (!cmd) {
     return SolidFillResult::kUnsupported;
   }

@@ -19,6 +19,12 @@ struct TranslateResult {
   // bool_overflow: it tests a register outside the synthetic b0..b15.
   uint32_t bool_mask = 0;
   bool bool_overflow = false;
+  // Pixel shaders: XenosRecomp's PixelShaderOutputs (bits 0..3 = oC0..oC3,
+  // bit 4 = oDepth).
+  uint32_t ps_outputs = 0;
+  // Vertex shaders: one packed mantra::shader_cache::VertexElement per vertex
+  // input (ucode address of its vfetch + Vulkan input location).
+  std::vector<uint32_t> vertex_elements;
   std::string hlsl;
   std::vector<uint8_t> spirv;
 };

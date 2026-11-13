@@ -69,6 +69,8 @@ struct Shader {
   uint32_t texture_slot_mask = 0;
   uint32_t bool_mask = 0;
   bool bool_overflow = false;
+  uint32_t ps_outputs = 0;
+  std::vector<uint32_t> vertex_elements;
   std::vector<uint8_t> spirv;
 };
 
@@ -78,6 +80,9 @@ struct ChildResult {
   uint32_t texture_slot_mask;
   uint32_t bool_mask;
   uint32_t bool_overflow;
+  uint32_t ps_outputs;
+  uint32_t vertex_element_count;
+  uint32_t vertex_elements[32];
 };
 
 void PutBe32(std::vector<uint8_t>& v, size_t at, uint32_t x) {
@@ -218,6 +223,9 @@ void TranslateAll(std::vector<Shader*>& shaders, const fs::path& work, const fs:
         s.texture_slot_mask = cr.texture_slot_mask;
         s.bool_mask = cr.bool_mask;
         s.bool_overflow = cr.bool_overflow != 0;
+        s.ps_outputs = cr.ps_outputs;
+        s.vertex_elements.assign(cr.vertex_elements,
+                                 cr.vertex_elements + std::min<uint32_t>(cr.vertex_element_count, 32));
       }
       s.spirv = ReadFile(work / (std::to_string(index) + ".spv"));
       s.translated = !s.spirv.empty();
@@ -246,8 +254,10 @@ void TranslateAll(std::vector<Shader*>& shaders, const fs::path& work, const fs:
           _exit(2);
         }
         WriteFile(work / (std::to_string(next) + ".spv"), r.spirv.data(), r.spirv.size());
-        const ChildResult cr{r.spec_constants_mask, r.texture_slot_mask, r.bool_mask,
-                             uint32_t(r.bool_overflow)};
+        ChildResult cr{r.spec_constants_mask, r.texture_slot_mask, r.bool_mask,
+                       uint32_t(r.bool_overflow), r.ps_outputs,
+                       uint32_t(std::min<size_t>(r.vertex_elements.size(), 32)), {}};
+        std::copy_n(r.vertex_elements.begin(), cr.vertex_element_count, cr.vertex_elements);
         WriteFile(work / (std::to_string(next) + ".ok"), &cr, sizeof(cr));
         _exit(0);
       }
@@ -278,10 +288,16 @@ bool WriteCache(const fs::path& path, const std::map<uint64_t, Shader>& shaders)
     e.microcode_dwords = s.microcode_dwords;
     e.texture_slot_mask = s.texture_slot_mask;
     e.bool_mask = s.bool_mask;
+    e.ps_outputs = s.ps_outputs;
     if (s.translated) {
       e.spirv_offset = uint32_t(blobs.size());
       e.spirv_size = uint32_t(s.spirv.size());
       blobs.insert(blobs.end(), s.spirv.begin(), s.spirv.end());
+      blobs.resize((blobs.size() + 3) & ~size_t(3));
+      e.vertex_elements_offset = uint32_t(blobs.size());
+      e.vertex_element_count = uint32_t(s.vertex_elements.size());
+      const auto* words = reinterpret_cast<const uint8_t*>(s.vertex_elements.data());
+      blobs.insert(blobs.end(), words, words + s.vertex_elements.size() * sizeof(uint32_t));
     }
     entries.push_back(e);
   }

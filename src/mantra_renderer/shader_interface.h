@@ -6,6 +6,7 @@
 //     constant ring of this draw's VS float constants, PS float constants
 //     and SharedConstants.
 //   set 0 binding 0: storage buffer, the constant ring (all frame slots).
+//     The ring also holds the draws' vertex and index data (Allocate).
 //   set 1 bindings 0..3: Texture2D / Texture3D / TextureCube / sampler arrays,
 //     kFetchSlots each, indexed by Xenos fetch constant slot.
 //   specialization constant 0: XenosRecomp's spec constant flags.
@@ -39,17 +40,25 @@ struct SharedConstants {
   float half_pixel_offset[2] = {};
   float alpha_threshold = 0.0f;
   uint32_t pad[3] = {};
+  // mantra: host viewport transform applied by the VS
+  // (draw_util::ViewportInfo ndc_scale / ndc_offset).
+  float ndc_scale[3] = {1.0f, 1.0f, 1.0f};
+  float pad2 = 0.0f;
+  float ndc_offset[3] = {};
+  float pad3 = 0.0f;
 };
 static_assert(offsetof(SharedConstants, booleans) == 256);
 static_assert(offsetof(SharedConstants, half_pixel_offset) == 264);
 static_assert(offsetof(SharedConstants, alpha_threshold) == 272);
+static_assert(offsetof(SharedConstants, ndc_scale) == 288);
+static_assert(offsetof(SharedConstants, ndc_offset) == 304);
 
 class ShaderInterface {
  public:
   static constexpr uint32_t kFetchSlots = 32;
   // Float constants uploaded per stage (256 float4 registers).
   static constexpr uint32_t kFloatConstantBytes = 256 * 16;
-  static constexpr VkDeviceSize kRingBytesPerSlot = VkDeviceSize(16) << 20;
+  static constexpr VkDeviceSize kRingBytesPerSlot = VkDeviceSize(32) << 20;
 
   bool Initialize(const rex::ui::vulkan::VulkanDevice* device, uint32_t frame_slots);
   // Clears the placeholder textures; once, before the first draw.
@@ -65,6 +74,10 @@ class ShaderInterface {
   // Copies `size` bytes into the current region. Returns false when the region
   // is full (the caller submits and retries).
   bool Upload(const void* data, uint32_t size, uint32_t& offset);
+  // Reserves `size` bytes (16-byte aligned) for the caller to fill. Returns
+  // nullptr when the region is full.
+  uint8_t* Allocate(uint32_t size, uint32_t& offset);
+  VkBuffer ring_buffer() const { return ring_buffer_; }
   VkDeviceSize slot_bytes_used() const { return cursor_ - slot_begin_; }
 
   // Binds both descriptor sets and pushes the offsets.

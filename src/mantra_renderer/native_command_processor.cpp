@@ -118,7 +118,8 @@ bool NativeCommandProcessor::SetupContext() {
   }
 
   if (!copy_pipelines_.Initialize(vulkan_device_) || !render_targets_.Initialize(vulkan_device_) ||
-      !shader_interface_.Initialize(vulkan_device_, kFrameSlots)) {
+      !shader_interface_.Initialize(vulkan_device_, kFrameSlots) ||
+      !draw_pipelines_.Initialize(vulkan_device_, shader_interface_.pipeline_layout())) {
     DestroyFrameResources();
     return false;
   }
@@ -201,6 +202,7 @@ bool NativeCommandProcessor::SubmitCommands() {
   if (!recording_) {
     return true;
   }
+  EndRendering();
   recording_ = false;
   FrameSlot& slot = CurrentSlot();
   const auto& dfn = vulkan_device_->functions();
@@ -251,6 +253,7 @@ void NativeCommandProcessor::DestroyFrameResources() {
   resolved_surfaces_.Shutdown();
   render_targets_.Shutdown();
   copy_pipelines_.Shutdown();
+  draw_pipelines_.Shutdown();
   DestroyShaderModules();
   shader_interface_.Shutdown();
   const auto& dfn = vulkan_device_->functions();
@@ -316,8 +319,8 @@ bool NativeCommandProcessor::EnsureStagingBuffer(VkDeviceSize size) {
 
 // --- Draws and resolves ------------------------------------------------------
 
-bool NativeCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t, IndexBufferInfo*,
-                                       bool) {
+bool NativeCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t index_count,
+                                       IndexBufferInfo* index_buffer_info, bool) {
   const xenos::EdramMode edram_mode = register_file_->Get<reg::RB_MODECONTROL>().edram_mode;
   if (edram_mode == xenos::EdramMode::kCopy) {
     // Not a draw: the RB copies EDRAM to memory, the shaders never run.
@@ -326,10 +329,7 @@ bool NativeCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t,
   }
   ++draw_stats_.draws;
   if (TrySolidFill(prim_type, edram_mode) == SolidFillResult::kNotSolidFill) {
-    // Real draws: pipelines come next (Phase 1 step 4); for now only the
-    // shader interface (constants) is exercised.
-    mantra::DrawConstantOffsets offsets;
-    PrepareDrawConstants(offsets);
+    DrawGuest(prim_type, index_count, index_buffer_info);
   }
   {
     Shader* vs = active_vertex_shader();
@@ -390,7 +390,7 @@ bool NativeCommandProcessor::Resolve() {
   rect.height = info.height_div_8 << 3;
   const VkRect2D clear_rect = {{rect.x, rect.y}, {rect.width, rect.height}};
 
-  VkCommandBuffer cmd = BeginCommands();
+  VkCommandBuffer cmd = BeginNonDrawCommands();
   if (!cmd) {
     return false;
   }
@@ -425,7 +425,7 @@ bool NativeCommandProcessor::Resolve() {
           std::max<uint32_t>(dest_pitch.copy_dest_height, rect.y + rect.height), dest_format,
           frame);
       VkDescriptorPool descriptor_pool = ReserveDescriptorSet();
-      cmd = BeginCommands();  // may have been submitted to free descriptors
+      cmd = BeginNonDrawCommands();  // may have been submitted to free descriptors
       if (surface && descriptor_pool && cmd && rect.width && rect.height) {
         mantra::CopyPushConstants constants;
         const uint32_t sample_count = 1u << uint32_t(msaa);
@@ -470,7 +470,7 @@ bool NativeCommandProcessor::Resolve() {
   }
 
   // Clears (after the copy, of the same rectangle).
-  cmd = BeginCommands();
+  cmd = BeginNonDrawCommands();
   if (!cmd) {
     return false;
   }
@@ -665,7 +665,7 @@ bool NativeCommandProcessor::PresentResolvedSurface(mantra::ResolvedSurface& sur
             static_cast<ui::vulkan::VulkanPresenter::VulkanGuestOutputRefreshContext&>(context);
         context.SetIs8bpc(is_8bpc);
         VkDescriptorPool descriptor_pool = ReserveDescriptorSet();
-        VkCommandBuffer cmd = BeginCommands();
+        VkCommandBuffer cmd = BeginNonDrawCommands();
         if (!descriptor_pool || !cmd) {
           return false;
         }
@@ -721,7 +721,7 @@ void NativeCommandProcessor::CaptureSurface(mantra::ResolvedSurface& surface, ui
           &memory_size)) {
     return;
   }
-  VkCommandBuffer cmd = BeginCommands();
+  VkCommandBuffer cmd = BeginNonDrawCommands();
   if (cmd) {
     mantra::TransitionImage(vulkan_device_, cmd, surface.image,
                             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -830,7 +830,7 @@ bool NativeCommandProcessor::PresentFromGuestMemory(const uint8_t* src, uint32_t
             static_cast<ui::vulkan::VulkanPresenter::VulkanGuestOutputRefreshContext&>(context);
         const auto& dfn = vulkan_device_->functions();
         context.SetIs8bpc(is_8bpc);
-        VkCommandBuffer cmd = BeginCommands();
+        VkCommandBuffer cmd = BeginNonDrawCommands();
         if (!cmd) {
           return false;
         }
@@ -898,6 +898,13 @@ void NativeCommandProcessor::ReportSwapStats() {
               constant_stats_.draws, constant_stats_.no_translation, constant_stats_.uploads,
               constant_stats_.bytes / 1048576.0, constant_stats_.reused,
               constant_stats_.ring_full, shader_interface_.slot_bytes_used() >> 10);
+  const GuestDrawStats& g = guest_draw_stats_;
+  MANTRA_INFO("guest draws: {} drawn in {} render passes, {} pipelines ({} failed); skipped: "
+              "primitive {}, no target {}, viewport {}, geometry {}; {} zero-fed inputs; "
+              "uploaded {:.1f} MB vertices, {:.1f} MB indices",
+              g.drawn, g.render_passes, draw_pipelines_.size(), draw_pipelines_.creation_failures(),
+              g.skipped_primitive, g.skipped_no_target, g.skipped_viewport, g.skipped_geometry,
+              g.missing_inputs, g.vertex_bytes / 1048576.0, g.index_bytes / 1048576.0);
   swap_stats_.last_report_time = now;
   swap_stats_.swaps_at_last_report = swap_stats_.swaps;
   // The draw census every 30 seconds.
@@ -941,6 +948,10 @@ Shader* NativeCommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32
   shader->AnalyzeUcode(ucode_disasm_buffer_);
   if (!lookup.spirv.empty()) {
     shader->cache_entry = lookup.entry;
+    shader->ps_outputs = lookup.entry->ps_outputs;
+    if (!is_pixel) {
+      shader->DecodeVertexInputs(lookup.vertex_elements);
+    }
     shader->module = shader_interface_.CreateModule(lookup.spirv);
     if (shader->module) {
       ++shader_stats_.modules;
@@ -1009,7 +1020,8 @@ bool NativeCommandProcessor::UploadConstants(const void* data, uint32_t size, ui
   return BeginCommands() && shader_interface_.Upload(data, size, offset);
 }
 
-bool NativeCommandProcessor::PrepareDrawConstants(mantra::DrawConstantOffsets& offsets) {
+bool NativeCommandProcessor::PrepareDrawConstants(mantra::DrawConstantOffsets& offsets,
+                                                  const mantra::SharedConstants& draw_shared) {
   auto* vs = static_cast<MantraShader*>(active_vertex_shader());
   auto* ps = static_cast<MantraShader*>(active_pixel_shader());
   if (!vs || !vs->module || (ps && !ps->module)) {
@@ -1024,13 +1036,12 @@ bool NativeCommandProcessor::PrepareDrawConstants(mantra::DrawConstantOffsets& o
   const auto* float_regs =
       reinterpret_cast<const uint8_t*>(&regs.values[XE_GPU_REG_SHADER_CONSTANT_000_X]);
 
-  mantra::SharedConstants shared;
+  mantra::SharedConstants shared = draw_shared;
   // Bool constants: the translated shaders test VS b<N> as bit N and PS b<N>
   // as bit 16 + N; both read the guest's bool registers 0..15.
   const uint32_t bools = regs[XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031] & 0xFFFF;
   shared.booleans = bools | (bools << 16);
   shared.alpha_threshold = regs.Get<float>(XE_GPU_REG_RB_ALPHA_REF);
-  // half_pixel_offset / swapped_texcoords: set with the pipeline state (step 4).
 
   auto stage = [&](ConstantCache& cache, const void* data, uint32_t size,
                    uint32_t& offset) -> bool {

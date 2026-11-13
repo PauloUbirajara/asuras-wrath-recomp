@@ -11,6 +11,7 @@
 #include "shader_recompiler.h"
 
 #include "shader_common_hlsl.h"  // generated: kShaderCommonHlsl (mantra_shader_common.hlsl)
+#include "mantra_renderer/shader_cache_format.h"
 
 namespace mantra_shadergen {
 namespace {
@@ -87,6 +88,84 @@ void AdaptInterface(TranslateResult& r) {
     }
   }
   r.bool_overflow = std::regex_search(hlsl, kUndeclaredBool);
+
+  // Host viewport: XenosRecomp ends the VS with the half-pixel offset; mantra
+  // applies the full NDC transform of draw_util::GetHostViewportInfo there
+  // (viewport cropping, window offset, half-pixel offset, Z range).
+  if (!r.is_pixel) {
+    static const std::regex kHalfPixel(R"(oPos\.xy \+= g_HalfPixelOffset \* oPos\.w;)");
+    hlsl = std::regex_replace(hlsl, kHalfPixel,
+                              "oPos.xyz = oPos.xyz * g_NdcScale + g_NdcOffset * oPos.w;");
+  }
+}
+
+// Vertex inputs and pixel shader outputs, from the container (the same data
+// XenosRecomp declares the entry point from). Vertex inputs XenosRecomp's
+// location table does not cover get free locations from 16 up.
+bool CollectStageInterface(const uint8_t* container, TranslateResult& r) {
+  const auto* shader_container = reinterpret_cast<const ShaderContainer*>(container);
+  const auto* shader = reinterpret_cast<const Shader*>(container + shader_container->shaderOffset);
+  if (r.is_pixel) {
+    r.ps_outputs = uint32_t(reinterpret_cast<const PixelShader*>(shader)->outputs.get()) & 0x1F;
+    return true;
+  }
+  const auto* vertex_shader = reinterpret_cast<const VertexShader*>(shader);
+  // The entry point's input declarations, in vertex element order.
+  static const std::regex kInput(
+      R"(\t(\[\[vk::location\((\d+)\)\]\] )?in (float4|uint4) i\w+ : \w+,\n)");
+  std::string& hlsl = r.hlsl;
+  const size_t main_at = hlsl.find("void main(");
+  if (main_at == std::string::npos) {
+    return false;
+  }
+  std::vector<std::smatch> inputs;
+  for (std::sregex_iterator it(hlsl.cbegin() + main_at, hlsl.cend(), kInput), end; it != end;
+       ++it) {
+    inputs.push_back(*it);
+  }
+  const uint32_t count = vertex_shader->vertexElementCount;
+  if (inputs.size() != count) {
+    return false;
+  }
+  uint32_t used = 0;
+  for (const auto& m : inputs) {
+    if (m[2].matched) used |= 1u << std::stoul(m[2]);
+  }
+  std::string out(hlsl.cbegin(), hlsl.cbegin() + main_at);
+  auto copied = hlsl.cbegin() + main_at;
+  for (uint32_t i = 0; i < count; ++i) {
+    union {
+      VertexElement element;
+      uint32_t value;
+    };
+    value = vertex_shader->vertexElementsAndInterpolators[vertex_shader->field18 + i];
+    const std::smatch& m = inputs[i];
+    uint32_t location;
+    if (m[2].matched) {
+      location = uint32_t(std::stoul(m[2]));
+    } else {
+      location = 16;
+      while (location < 32 && (used & (1u << location))) ++location;
+      if (location >= 32) {
+        return false;
+      }
+      used |= 1u << location;
+    }
+    out.append(copied, m[0].first);
+    out += m[2].matched ? std::string(m[0]) : "\t[[vk::location(" + std::to_string(location) +
+                                                 ")]] " + std::string(m[0]).substr(1);
+    copied = m[0].second;
+    mantra::shader_cache::VertexElement packed;
+    packed.address = uint32_t(element.address);
+    packed.location = location;
+    packed.usage = mantra::shader_cache::DeclUsage(uint32_t(element.usage));
+    packed.usage_index = uint32_t(element.usageIndex);
+    packed.is_uint = m[3] == "uint4";
+    r.vertex_elements.push_back(packed.Pack());
+  }
+  out.append(copied, hlsl.cend());
+  hlsl = std::move(out);
+  return true;
 }
 
 }  // namespace
@@ -99,6 +178,9 @@ TranslateResult TranslateContainer(const uint8_t* container) {
   result.spec_constants_mask = recompiler.specConstantsMask;
   result.hlsl = std::move(recompiler.out);
   AdaptInterface(result);
+  if (!CollectStageInterface(container, result)) {
+    return result;
+  }
 
   static DxcCompiler dxc;
   IDxcBlob* spirv = dxc.compile(result.hlsl, result.is_pixel, false, true);

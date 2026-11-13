@@ -60,7 +60,9 @@ bool ShaderCache::Load(const std::filesystem::path& path) {
 
   for (size_t i = 0; i < entries_.size(); ++i) {
     const CacheEntry& e = entries_[i];
-    if (!(e.flags & kEntryFailed) && uint64_t(e.spirv_offset) + e.spirv_size > blobs_size_) {
+    if (!(e.flags & kEntryFailed) &&
+        (uint64_t(e.spirv_offset) + e.spirv_size > blobs_size_ ||
+         uint64_t(e.vertex_elements_offset) + uint64_t(e.vertex_element_count) * 4 > blobs_size_)) {
       MANTRA_WARN("shader cache {}: entry {} points past the end", path.string(), i);
       entries_.clear();
       by_exact_.clear();
@@ -90,6 +92,9 @@ ShaderCache::Lookup ShaderCache::Find(const void* microcode_be, size_t byte_coun
     } else {
       result.match = match;
       result.spirv = {blobs_ + e.spirv_offset, e.spirv_size};
+      result.vertex_elements.resize(e.vertex_element_count);
+      std::memcpy(result.vertex_elements.data(), blobs_ + e.vertex_elements_offset,
+                  e.vertex_element_count * sizeof(uint32_t));
     }
     return result;
   };

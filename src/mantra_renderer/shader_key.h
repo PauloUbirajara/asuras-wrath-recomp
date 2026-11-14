@@ -9,9 +9,11 @@
 //   the bound vertex declaration and pixel shader, so their bytes differ from
 //   the shader containers in the game files. The normalized key masks what the
 //   driver changes:
-//     * vertex fetch: stream select + prefetch (word 0 bits 25-29), all of
+//     * vertex fetch: fetch constant + prefetch (word 0 bits 20-29), all of
 //       word 1 except the predicate bit (format, signedness, destination
-//       swizzle, mini-fetch), and word 2 (stride, offset);
+//       swizzle, mini-fetch), and word 2 (stride, offset); and the order of
+//       the vertex fetches (the driver reorders them, even across clauses,
+//       which permutes their destination registers), by sorting them;
 //     * ALU instructions that export or write nothing (the driver turns
 //       exports of unused interpolators into writes with empty masks).
 //   The vertex input layout always comes from the runtime microcode, so the
@@ -75,6 +77,15 @@ inline uint64_t NormalizedHash(const void* microcode_be, size_t byte_count) {
     }
   }
 
+  // Vertex fetches, sorted back into the program's vertex fetch slots (other
+  // fetches and ALU instructions stay where they are). The driver moves them
+  // across clauses too.
+  struct Fetch {
+    uint32_t w[3];
+    bool operator<(const Fetch& o) const { return std::memcmp(w, o.w, sizeof(w)) < 0; }
+  };
+  std::vector<Fetch> fetches;
+  std::vector<size_t> slots;
   for (const Clause& clause : clauses) {
     for (uint32_t i = 0; i < clause.count; ++i) {
       const size_t base = size_t(clause.address + i) * 3;
@@ -85,9 +96,11 @@ inline uint64_t NormalizedHash(const void* microcode_be, size_t byte_count) {
       const bool is_fetch = (clause.sequence >> (i * 2)) & 1;
       if (is_fetch) {
         if ((w[0] & 0x1F) == uint32_t(ucode::FetchOpcode::kVertexFetch)) {
-          w[0] &= ~(0x1Fu << 25);
+          w[0] &= ~(0x3FFu << 20);
           w[1] &= 0x80000000u;
           w[2] = 0;
+          fetches.push_back({{w[0], w[1], w[2]}});
+          slots.push_back(base);
         }
       } else {
         ucode::AluInstruction alu;
@@ -97,6 +110,11 @@ inline uint64_t NormalizedHash(const void* microcode_be, size_t byte_count) {
         }
       }
     }
+  }
+  std::sort(fetches.begin(), fetches.end());
+  std::sort(slots.begin(), slots.end());
+  for (size_t k = 0; k < fetches.size(); ++k) {
+    std::memcpy(&code[slots[k]], fetches[k].w, sizeof(fetches[k].w));
   }
   return XXH3_64bits(code.data(), code.size() * sizeof(uint32_t));
 }

@@ -141,4 +141,35 @@ bool DecompressPackage(const std::vector<uint8_t>& file, std::vector<uint8_t>& o
   return all_ok;
 }
 
+uint32_t DecompressEmbeddedChunks(const std::vector<uint8_t>& body, std::vector<uint8_t>& out) {
+  // Candidates: u32 uncompressed, u32 compressed, then the framed stream.
+  // A stream up to one segment is a single 0xFF-prefixed final segment
+  // carrying both sizes; a longer one starts with a u16 segment size.
+  constexpr uint32_t kMaxUncompressed = 1u << 20;
+  uint32_t found = 0;
+  for (size_t i = 0; i + 13 <= body.size(); ++i) {
+    const uint32_t uncompressed = Be32(&body[i]);
+    const uint32_t compressed = Be32(&body[i + 4]);
+    if (!uncompressed || uncompressed > kMaxUncompressed || compressed < 5 ||
+        compressed > uncompressed + uncompressed / 8 + 64 || i + 8 + compressed > body.size()) {
+      continue;
+    }
+    const uint8_t* p = &body[i + 8];
+    if (uncompressed <= 0x8000) {
+      if (p[0] != 0xFF || Be16(p + 1) != uncompressed || Be16(p + 3) + 5u > compressed) {
+        continue;
+      }
+    } else if (p[0] == 0xFF || Be16(p) == 0 || Be16(p) + 2u > compressed) {
+      continue;
+    }
+    // Each segment decodes to 0x8000 bytes; DecodeBlock decodes the whole
+    // stream with one LZX state, as the chunks were compressed as one.
+    if (DecodeBlock(p, compressed, uncompressed, out)) {
+      ++found;
+      i += 8 + compressed - 1;
+    }
+  }
+  return found;
+}
+
 }  // namespace mantra_shadergen

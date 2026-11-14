@@ -1,4 +1,6 @@
 #include "buffer_cache.h"
+
+#include <cstdlib>
 #include "mantra_log.h"
 
 #include <algorithm>
@@ -141,7 +143,18 @@ uint32_t BufferCache::WatchRange(uint32_t start, uint32_t length) {
 
 // --- Entries ----------------------------------------------------------------
 
+namespace {
+// MANTRA_NO_BUFFER_CACHE: copy all geometry into the ring each draw (debug).
+bool CacheDisabled() {
+  static const bool disabled = std::getenv("MANTRA_NO_BUFFER_CACHE") != nullptr;
+  return disabled;
+}
+}  // namespace
+
 bool BufferCache::Lookup(const Key& key, Data& out) {
+  if (CacheDisabled()) {
+    return false;
+  }
   auto it = entries_.find(key);
   if (it == entries_.end() || !EntryValid(it->second, key)) {
     return false;
@@ -153,6 +166,9 @@ bool BufferCache::Lookup(const Key& key, Data& out) {
 
 uint8_t* BufferCache::Reserve(const Key& key, uint32_t size, uint64_t submission, Data& out) {
   reserving_ = nullptr;
+  if (CacheDisabled()) {
+    return nullptr;
+  }
   if (!size || size > kBlockBytes || !key.length || key.start >= kPhysicalBytes ||
       key.length > kPhysicalBytes - key.start) {
     ++stats_.not_cacheable;

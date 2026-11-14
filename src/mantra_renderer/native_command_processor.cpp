@@ -330,8 +330,7 @@ bool NativeCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
   if (edram_mode == xenos::EdramMode::kCopy) {
     // Not a draw: the RB copies EDRAM to memory, the shaders never run.
     ++draw_stats_.copy_draws;
-    if (const char* env = std::getenv("MANTRA_TRACE_SWAP");
-        env && swap_stats_.swaps + 1 == std::strtoull(env, nullptr, 10)) {
+    if (TracingThisFrame()) {
       const auto& regs = *register_file_;
       MANTRA_INFO("trace: copy rt src {} -> {:08X} fmt {} clear {}",
                   regs.Get<reg::RB_COPY_CONTROL>().copy_src_select,
@@ -344,16 +343,33 @@ bool NativeCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
   ++draw_stats_.draws;
   const char* outcome = "fill";
   if (TrySolidFill(prim_type, edram_mode) == SolidFillResult::kNotSolidFill) {
+    trace_current_draw_ = TracingThisFrame();
     const DrawResult result = DrawGuest(prim_type, index_count, index_buffer_info);
+    trace_current_draw_ = false;
     outcome = result == DrawResult::kDrawn ? "drawn" : result == DrawResult::kSkipped ? "SKIPPED" : "FAILED";
   }
-  // Debug: MANTRA_TRACE_SWAP=N logs every draw before swap N.
-  static const uint64_t trace_swap = [] {
-    const char* env = std::getenv("MANTRA_TRACE_SWAP");
-    return env ? std::strtoull(env, nullptr, 10) : 0;
-  }();
-  if (trace_swap && swap_stats_.swaps + 1 == trace_swap) {
+  if (TracingThisFrame()) {
     TraceDraw(prim_type, index_count, outcome);
+    if (CapturingPasses() && outcome[0] == 'd' && rendering_.active && rendering_.color[0]) {
+      mantra::RenderTarget& rt = *rendering_.color[0];
+      CaptureImage(rt.image, rendering_.color_format[0], rt.image.width, rt.image.height,
+                   0x688 /* RGBA */,
+                   fmt::format("pass_{:03}_draw_rt{}_{:016X}", pass_capture_index_++,
+                               rt.key.base_tiles,
+                               active_pixel_shader() ? active_pixel_shader()->ucode_data_hash()
+                                                     : 0));
+    }
+  }
+  // MANTRA_TRACE_VS=<hash>: trace the frame after the first draw with it.
+  static const uint64_t trace_vs = [] {
+    const char* env = std::getenv("MANTRA_TRACE_VS");
+    return env ? std::strtoull(env, nullptr, 16) : 0;
+  }();
+  if (trace_vs && !trace_swap_ && active_vertex_shader() &&
+      active_vertex_shader()->ucode_data_hash() == trace_vs) {
+    trace_swap_ = swap_stats_.swaps + 2;
+    MANTRA_INFO("trace: VS {:016X} seen at swap {}, tracing swap {}", trace_vs,
+                swap_stats_.swaps, trace_swap_);
   }
   {
     Shader* vs = active_vertex_shader();
@@ -481,6 +497,13 @@ bool NativeCommandProcessor::Resolve() {
           ++surface->write_count;
           surface->last_write_frame = frame;
           texture_cache_.NoteResolve(dest_address, info.copy_dest_extent_length);
+          if (TracingThisFrame() && CapturingPasses()) {
+            CaptureImage(surface->image, surface->image.format, surface->image.width,
+                         surface->image.height, 0x688 /* RGBA */,
+                         fmt::format("pass_{:03}_resolve_{:08X}_fmt{}", pass_capture_index_++,
+                                     dest_address, uint32_t(dest_format)));
+            cmd = BeginNonDrawCommands();
+          }
         }
         if (FirstRoute((uint64_t(info.color_original_base) << 40) ^ (uint64_t(pitch_px) << 26) ^
                        (uint64_t(color_info.color_format) << 22) ^ dest_address ^
@@ -522,6 +545,26 @@ bool NativeCommandProcessor::Resolve() {
 
 // --- Swap --------------------------------------------------------------------
 
+bool NativeCommandProcessor::CapturingPasses() {
+  static const bool enabled = [] {
+    const char* dir = std::getenv("MANTRA_CAPTURE_DIR");
+    return dir && *dir;
+  }();
+  return enabled;
+}
+
+bool NativeCommandProcessor::TracingThisFrame() {
+  // MANTRA_TRACE_SWAP=N logs every draw and copy before swap N.
+  static const uint64_t env_swap = [] {
+    const char* env = std::getenv("MANTRA_TRACE_SWAP");
+    return env ? std::strtoull(env, nullptr, 10) : 0;
+  }();
+  if (env_swap && !trace_swap_) {
+    trace_swap_ = env_swap;
+  }
+  return trace_swap_ && swap_stats_.swaps + 1 == trace_swap_;
+}
+
 void NativeCommandProcessor::TraceDraw(xenos::PrimitiveType prim_type, uint32_t index_count,
                                        const char* outcome) {
   const RegisterFile& regs = *register_file_;
@@ -543,6 +586,27 @@ void NativeCommandProcessor::TraceDraw(xenos::PrimitiveType prim_type, uint32_t 
     textures += fmt::format(" t{}={:08X}/f{}/d{}/s{:o}", slot, fetch.base_address << 12,
                             uint32_t(fetch.format), uint32_t(fetch.dimension),
                             uint32_t(fetch.swizzle));
+    // Guest-memory content check: nonzero bytes in the first 64 KB.
+    if (const auto* t = memory_->TranslatePhysical<const uint8_t*>((fetch.base_address << 12) &
+                                                                   0x1FFFFFFF)) {
+      uint32_t nonzero = 0;
+      for (uint32_t i = 0; i < 65536; ++i) nonzero += t[i] != 0;
+      textures += fmt::format("/nz{}/{}x{}/t{}/e{}/p{}", nonzero, fetch.size_2d.width + 1,
+                              fetch.size_2d.height + 1, uint32_t(fetch.tiled),
+                              uint32_t(fetch.endianness), uint32_t(fetch.pitch));
+      // Raw guest bytes (first 256 KB) for offline decoding.
+      if (const char* dir = std::getenv("MANTRA_CAPTURE_DIR"); dir && *dir) {
+        const std::filesystem::path path =
+            std::filesystem::path(dir) /
+            fmt::format("tex_{:08X}_f{}.bin", fetch.base_address << 12, uint32_t(fetch.format));
+        if (!std::filesystem::exists(path)) {
+          if (std::FILE* file = std::fopen(path.c_str(), "wb")) {
+            std::fwrite(t, 1, 256 * 1024, file);
+            std::fclose(file);
+          }
+        }
+      }
+    }
   }
   MANTRA_INFO(
       "trace: {} mode {} prim {} n {} vs {:016X}{} ps {:016X}{} rt base {} fmt {} pitch {} "
@@ -557,6 +621,39 @@ void NativeCommandProcessor::TraceDraw(xenos::PrimitiveType prim_type, uint32_t 
       uint32_t(blend.alpha_destblend), uint32_t(blend.alpha_comb_fcn), uint32_t(depth.z_enable),
       uint32_t(depth.zfunc), color_control.alpha_test_enable ? uint32_t(color_control.alpha_func) : 99,
       textures);
+  if (vs) {
+    std::string inputs;
+    for (const auto& in : vs->vertex_inputs) {
+      inputs += fmt::format(" [loc {} usage {} {} vf{} stride {} off {} fmt {}{}{}{}", in.location,
+                            uint32_t(in.usage), in.valid ? "ok" : "INVALID", in.fetch_constant,
+                            in.stride_words, in.offset_words, uint32_t(in.format),
+                            in.is_signed ? " s" : "", in.normalized ? " n" : "",
+                            in.is_uint ? " u" : "");
+      // Raw guest words of this element for the buffer's first 3 vertices.
+      const auto vfetch = regs.GetVertexFetch(in.fetch_constant);
+      const uint32_t base = (uint32_t(vfetch.address) << 2) & 0x1FFFFFFF;
+      inputs += fmt::format(" @{:08X} e{}", base, uint32_t(vfetch.endian));
+      for (uint32_t v = 0; v < 3 && in.valid; ++v) {
+        const uint32_t at = base + (v * in.stride_words + uint32_t(in.offset_words)) * 4;
+        if (const auto* w = memory_->TranslatePhysical<const uint8_t*>(at)) {
+          inputs += fmt::format(" {:02X}{:02X}{:02X}{:02X}", w[0], w[1], w[2], w[3]);
+        }
+      }
+      inputs += "]";
+    }
+    MANTRA_INFO("trace:   vs inputs{}", inputs);
+    MANTRA_INFO("trace:   vs {:016X} fetches{}", vs->cache_entry ? vs->cache_entry->exact_hash : 0,
+                vs->vfetch_debug);
+  }
+  // PS float constants c0..c7 (they follow the 256 VS registers).
+  std::string constants;
+  for (uint32_t i = 0; i < 16; ++i) {
+    const uint32_t base = XE_GPU_REG_SHADER_CONSTANT_256_X + i * 4;
+    constants += fmt::format(" c{}=({:g} {:g} {:g} {:g})", i, regs.Get<float>(base),
+                             regs.Get<float>(base + 1), regs.Get<float>(base + 2),
+                             regs.Get<float>(base + 3));
+  }
+  MANTRA_INFO("trace:   ps{}", constants);
 }
 
 void NativeCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
@@ -653,8 +750,15 @@ void NativeCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
   if (use_gpu) {
     presented = PresentResolvedSurface(*surface, width, height, fetch.swizzle, is_8bpc);
     swap_stats_.presented_gpu += presented;
+    // MANTRA_CAPTURE_DIR: dump the frame and the resolved surfaces every
+    // MANTRA_CAPTURE_EVERY (default 150) swaps.
     static const char* capture_dir = std::getenv("MANTRA_CAPTURE_DIR");
-    if (presented && capture_dir && *capture_dir && swap_stats_.swaps % 150 == 0) {
+    static const uint32_t capture_every = [] {
+      const char* every = std::getenv("MANTRA_CAPTURE_EVERY");
+      const int value = every ? std::atoi(every) : 0;
+      return value > 0 ? uint32_t(value) : 150u;
+    }();
+    if (presented && capture_dir && *capture_dir && swap_stats_.swaps % capture_every == 0) {
       CaptureSurface(*surface, width, height, fetch.swizzle,
                      fmt::format("frame_{:06}", swap_stats_.swaps));
       resolved_surfaces_.ForEach([&](mantra::ResolvedSurface& other) {
@@ -765,13 +869,48 @@ bool NativeCommandProcessor::PresentResolvedSurface(mantra::ResolvedSurface& sur
 void NativeCommandProcessor::CaptureSurface(mantra::ResolvedSurface& surface, uint32_t width,
                                             uint32_t height, uint32_t swizzle,
                                             const std::string& name) {
-  const VkFormat format = surface.image.format;
-  if (format != VK_FORMAT_R8G8B8A8_UNORM && format != VK_FORMAT_A2B10G10R10_UNORM_PACK32) {
+  CaptureImage(surface.image, surface.image.format, width, height, swizzle, name);
+}
+
+namespace {
+
+float HalfToFloat(uint16_t h) {
+  const uint32_t sign = uint32_t(h >> 15) << 31;
+  const uint32_t exponent = (h >> 10) & 0x1F;
+  const uint32_t mantissa = h & 0x3FF;
+  if (!exponent) {
+    const float value = std::ldexp(float(mantissa), -24);
+    return sign ? -value : value;
+  }
+  uint32_t bits = sign | ((exponent == 31 ? 255 : exponent + 112) << 23) | (mantissa << 13);
+  float value;
+  std::memcpy(&value, &bits, 4);
+  return value;
+}
+
+}  // namespace
+
+void NativeCommandProcessor::CaptureImage(mantra::TrackedImage& image, VkFormat format,
+                                          uint32_t width, uint32_t height, uint32_t swizzle,
+                                          const std::string& name) {
+  uint32_t texel_size;
+  switch (format) {
+    case VK_FORMAT_R8G8B8A8_UNORM:
+    case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
+    case VK_FORMAT_R16G16_SFLOAT:
+    case VK_FORMAT_R32_SFLOAT: texel_size = 4; break;
+    case VK_FORMAT_R16G16B16A16_SFLOAT: texel_size = 8; break;
+    default: return;
+  }
+  if (image.samples != VK_SAMPLE_COUNT_1_BIT || image.aspect != VK_IMAGE_ASPECT_COLOR_BIT) {
     return;
   }
-  width = std::min(width, surface.image.width);
-  height = std::min(height, surface.image.height);
-  const VkDeviceSize size = VkDeviceSize(width) * height * 4;
+  width = std::min(width, image.width);
+  height = std::min(height, image.height);
+  if (!width || !height) {
+    return;
+  }
+  const VkDeviceSize size = VkDeviceSize(width) * height * texel_size;
   const auto& dfn = vulkan_device_->functions();
   const VkDevice device = vulkan_device_->device();
   VkBuffer buffer = VK_NULL_HANDLE;
@@ -786,15 +925,14 @@ void NativeCommandProcessor::CaptureSurface(mantra::ResolvedSurface& surface, ui
   }
   VkCommandBuffer cmd = BeginNonDrawCommands();
   if (cmd) {
-    mantra::TransitionImage(vulkan_device_, cmd, surface.image,
-                            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                            VK_ACCESS_TRANSFER_READ_BIT);
+    mantra::TransitionImage(vulkan_device_, cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
     VkBufferImageCopy region = {};
     region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     region.imageSubresource.layerCount = 1;
     region.imageExtent = {width, height, 1};
-    dfn.vkCmdCopyImageToBuffer(cmd, surface.image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                               buffer, 1, &region);
+    dfn.vkCmdCopyImageToBuffer(cmd, image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1,
+                               &region);
     const uint64_t submission = submission_current_;
     SubmitCommands();
     AwaitSubmission(submission);
@@ -804,26 +942,50 @@ void NativeCommandProcessor::CaptureSurface(mantra::ResolvedSurface& surface, ui
       range.memory = memory;
       range.size = VK_WHOLE_SIZE;
       dfn.vkInvalidateMappedMemoryRanges(device, 1, &range);
-      const uint32_t* texels = static_cast<const uint32_t*>(mapping);
+      const uint8_t* bytes = static_cast<const uint8_t*>(mapping);
       const std::filesystem::path path = std::filesystem::path(std::getenv("MANTRA_CAPTURE_DIR")) /
                                          (name + ".ppm");
       std::error_code ec;
       std::filesystem::create_directories(path.parent_path(), ec);
+      double sum[4] = {}, peak[4] = {};
       if (std::FILE* file = std::fopen(path.c_str(), "wb")) {
         std::fprintf(file, "P6\n%u %u\n255\n", width, height);
         std::vector<uint8_t> row(size_t(width) * 3);
         for (uint32_t y = 0; y < height; ++y) {
           for (uint32_t x = 0; x < width; ++x) {
-            const uint32_t v = texels[size_t(y) * width + x];
-            uint16_t comps[4];
-            if (format == VK_FORMAT_R8G8B8A8_UNORM) {
-              for (uint32_t i = 0; i < 4; ++i) comps[i] = uint16_t(((v >> (8 * i)) & 0xFF) * 257);
-            } else {
-              for (uint32_t i = 0; i < 3; ++i) {
-                const uint32_t c = (v >> (10 * i)) & 0x3FF;
-                comps[i] = uint16_t((c << 6) | (c >> 4));
+            const uint8_t* t = bytes + (size_t(y) * width + x) * texel_size;
+            float f[4] = {0, 0, 0, 1};
+            uint32_t v;
+            std::memcpy(&v, t, 4);
+            switch (format) {
+              case VK_FORMAT_R8G8B8A8_UNORM:
+                for (uint32_t i = 0; i < 4; ++i) f[i] = float((v >> (8 * i)) & 0xFF) / 255.0f;
+                break;
+              case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
+                for (uint32_t i = 0; i < 3; ++i) f[i] = float((v >> (10 * i)) & 0x3FF) / 1023.0f;
+                f[3] = float(v >> 30) / 3.0f;
+                break;
+              case VK_FORMAT_R16G16_SFLOAT:
+                f[0] = HalfToFloat(uint16_t(v));
+                f[1] = HalfToFloat(uint16_t(v >> 16));
+                f[2] = 0;
+                break;
+              case VK_FORMAT_R32_SFLOAT:
+                std::memcpy(&f[0], &v, 4);
+                f[1] = f[2] = f[0];
+                break;
+              default: {  // R16G16B16A16_SFLOAT
+                uint16_t h[4];
+                std::memcpy(h, t, 8);
+                for (uint32_t i = 0; i < 4; ++i) f[i] = HalfToFloat(h[i]);
+                break;
               }
-              comps[3] = uint16_t((v >> 30) * 0x5555);
+            }
+            uint16_t comps[4];
+            for (uint32_t i = 0; i < 4; ++i) {
+              sum[i] += f[i];
+              peak[i] = std::max(peak[i], double(f[i]));
+              comps[i] = uint16_t(std::clamp(f[i], 0.0f, 1.0f) * 65535.0f + 0.5f);
             }
             for (uint32_t i = 0; i < 3; ++i) {
               row[x * 3 + i] = uint8_t(Swizzled(comps, (swizzle >> (3 * i)) & 7) >> 8);
@@ -832,7 +994,11 @@ void NativeCommandProcessor::CaptureSurface(mantra::ResolvedSurface& surface, ui
           std::fwrite(row.data(), 1, row.size(), file);
         }
         std::fclose(file);
-        MANTRA_INFO("captured {}", path.string());
+        const double n = double(width) * height;
+        MANTRA_INFO("captured {} ({}x{} fmt {}) mean ({:.4g} {:.4g} {:.4g} {:.4g}) max ({:.4g} "
+                    "{:.4g} {:.4g} {:.4g})",
+                    path.filename().string(), width, height, uint32_t(format), sum[0] / n,
+                    sum[1] / n, sum[2] / n, sum[3] / n, peak[0], peak[1], peak[2], peak[3]);
       }
       dfn.vkUnmapMemory(device, memory);
     }
@@ -1113,10 +1279,11 @@ bool NativeCommandProcessor::PrepareDrawConstants(mantra::DrawConstantOffsets& o
       reinterpret_cast<const uint8_t*>(&regs.values[XE_GPU_REG_SHADER_CONSTANT_000_X]);
 
   mantra::SharedConstants shared = draw_shared;
-  // Bool constants: the translated shaders test VS b<N> as bit N and PS b<N>
-  // as bit 16 + N; both read the guest's bool registers 0..15.
-  const uint32_t bools = regs[XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031] & 0xFFFF;
-  shared.booleans = bools | (bools << 16);
+  // Bool constants: the translated shaders test VS b0..15 (guest bool
+  // registers 0..15) as bits 0..15 and PS b0..15 (registers 128..143) as bits
+  // 16..31.
+  shared.booleans = (regs[XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031] & 0xFFFF) |
+                    (regs[XE_GPU_REG_SHADER_CONSTANT_BOOL_128_159] << 16);
   shared.alpha_threshold = regs.Get<float>(XE_GPU_REG_RB_ALPHA_REF);
 
   auto stage = [&](ConstantCache& cache, const void* data, uint32_t size,

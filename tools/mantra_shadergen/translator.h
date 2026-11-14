@@ -11,6 +11,8 @@ namespace mantra_shadergen {
 
 struct TranslateResult {
   bool ok = false;
+  // When not ok: what failed.
+  enum class Failure { kNone, kStageInterface, kDxc } failure = Failure::kNone;
   bool is_pixel = false;
   uint32_t spec_constants_mask = 0;
   // Xenos fetch constant slots the shader samples through (bit per slot).
@@ -32,5 +34,9 @@ struct TranslateResult {
 // May crash on shaders XenosRecomp does not support (it asserts instead of
 // reporting errors); callers run it in a child process.
 TranslateResult TranslateContainer(const uint8_t* container);
+
+// Replaces a container's microcode with `microcode` of the same size (a
+// runtime-patched variant of the same shader). False if the sizes differ.
+bool ReplaceMicrocode(std::vector<uint8_t>& container, const std::vector<uint8_t>& microcode);
 
 }  // namespace mantra_shadergen

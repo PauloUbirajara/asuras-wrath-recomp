@@ -3,10 +3,12 @@
 //
 //   mantra_shadergen --game <extracted dir> --out <cache file>
 //                    [--dumps <dir>] [--hlsl <dir>] [--jobs N]
-//                    [--child-mem-mb N] [--child-timeout S]
+//                    [--child-mem-mb N] [--child-timeout S] [--scan-only]
+//                    [--keep-work] [--only <hash>,<hash>...]
 //
 // Sources: BCGame/CookedXbox360/GlobalShaderCache-Xbox360.bin and every .xxx
-// package (LZX-decompressed). Each unique shader goes through XenosRecomp
+// package (LZX-decompressed), including the LZX-compressed shader code in
+// each package's ShaderCache export (the material shaders). Each unique shader goes through XenosRecomp
 // (HLSL) and DXC (SPIR-V) in a child process, since XenosRecomp asserts
 // instead of reporting unsupported shaders. --dumps reports how many runtime
 // dumps (MANTRA_SHADER_DUMP) the cache covers.
@@ -97,12 +99,12 @@ void PutBe16(std::vector<uint8_t>& v, size_t at, uint16_t x) {
 // synthetic table covering the hardware register files - constants are bound
 // by register, so the original parameter names are not needed:
 //   C  : float4 c0..c255 (vertex) / c0..c223 (pixel)
-//   s0..s15 : samplers, b0..b15 : bools
+//   s0..s31 : samplers (one per fetch constant), b0..b15 : bools
 void AddSyntheticConstantTable(std::vector<uint8_t>& container, bool is_pixel) {
   struct Info { std::string name; uint16_t set, index, count; };
   std::vector<Info> infos;
   infos.push_back({"C", 2 /*Float4*/, 0, uint16_t(is_pixel ? 224 : 256)});
-  for (uint16_t i = 0; i < 16; ++i) {
+  for (uint16_t i = 0; i < 32; ++i) {
     infos.push_back({"s" + std::to_string(i), 3 /*Sampler*/, i, 1});
   }
   for (uint16_t i = 0; i < 16; ++i) {
@@ -212,7 +214,10 @@ void TranslateAll(std::vector<Shader*>& shaders, const fs::path& work, const fs:
     if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
       std::printf("  %016llX (%s): %s\n", static_cast<unsigned long long>(s.exact_hash),
                   s.source.c_str(),
-                  WIFSIGNALED(status) ? strsignal(WTERMSIG(status)) : "translation failed");
+                  WIFSIGNALED(status)              ? strsignal(WTERMSIG(status))
+                  : WEXITSTATUS(status) == 3       ? "vertex inputs not matched"
+                  : WEXITSTATUS(status) == 4       ? "DXC failed"
+                                                   : "translation failed");
     }
     if (fs::exists(ok)) {
       auto bytes = ReadFile(ok);
@@ -249,9 +254,17 @@ void TranslateAll(std::vector<Shader*>& shaders, const fs::path& work, const fs:
           std::snprintf(name, sizeof(name), "%s_%016llX.hlsl", r.is_pixel ? "ps" : "vs",
                         static_cast<unsigned long long>(shaders[next]->exact_hash));
           WriteFile(hlsl_dir / name, r.hlsl.data(), r.hlsl.size());
+          // The container too, for comparing with runtime dumps.
+          std::snprintf(name, sizeof(name), "%s_%016llX.container", r.is_pixel ? "ps" : "vs",
+                        static_cast<unsigned long long>(shaders[next]->exact_hash));
+          WriteFile(hlsl_dir / name, shaders[next]->container.data(),
+                    shaders[next]->container.size());
         }
+        std::fflush(stderr);
         if (!r.ok) {
-          _exit(2);
+          _exit(r.failure == TranslateResult::Failure::kStageInterface ? 3
+                : r.failure == TranslateResult::Failure::kDxc            ? 4
+                                                                         : 2);
         }
         WriteFile(work / (std::to_string(next) + ".spv"), r.spirv.data(), r.spirv.size());
         ChildResult cr{r.spec_constants_mask, r.texture_slot_mask, r.bool_mask,
@@ -321,11 +334,14 @@ bool WriteCache(const fs::path& path, const std::map<uint64_t, Shader>& shaders)
   return true;
 }
 
-void ReportDumpCoverage(const fs::path& dumps, const std::map<uint64_t, Shader>& shaders) {
+// `known_only`: count shaders found in the game files as if translated (for
+// --scan-only).
+void ReportDumpCoverage(const fs::path& dumps, const std::map<uint64_t, Shader>& shaders,
+                        bool known_only = false) {
   std::unordered_set<uint64_t> exact_ok, normalized_ok, known;
   for (const auto& [hash, s] : shaders) {
     known.insert(s.exact_hash);
-    if (s.translated) {
+    if (s.translated || known_only) {
       exact_ok.insert(s.exact_hash);
       normalized_ok.insert(s.normalized_hash);
     }
@@ -363,13 +379,35 @@ void ReportDumpCoverage(const fs::path& dumps, const std::map<uint64_t, Shader>&
 int main(int argc, char** argv) {
   fs::path game, out, dumps, hlsl_dir;
   unsigned jobs = 0;  // 0: pick from cores and available memory
+  bool scan_only = false;
+  bool keep_work = false;
+  std::unordered_set<uint64_t> only;  // --only  // --keep-work: keep the per-shader logs (<work>/<index>.log)
   ChildLimits limits;
+  for (int i = 1; i < argc;) {
+    const std::string flag = argv[i];
+    if (flag == "--scan-only" || flag == "--keep-work") {
+      (flag == "--scan-only" ? scan_only : keep_work) = true;
+      for (int j = i; j + 1 < argc; ++j) argv[j] = argv[j + 1];
+      --argc;
+    } else {
+      ++i;
+    }
+  }
   for (int i = 1; i + 1 < argc; i += 2) {
     const std::string arg = argv[i];
     if (arg == "--game") game = argv[i + 1];
     else if (arg == "--out") out = argv[i + 1];
     else if (arg == "--dumps") dumps = argv[i + 1];
     else if (arg == "--hlsl") hlsl_dir = argv[i + 1];
+    else if (arg == "--only") {
+      // Comma-separated exact hashes: translate just these (debugging).
+      std::string list = argv[i + 1];
+      for (size_t at = 0; at < list.size();) {
+        const size_t comma = std::min(list.find(',', at), list.size());
+        only.insert(std::strtoull(list.substr(at, comma - at).c_str(), nullptr, 16));
+        at = comma + 1;
+      }
+    }
     else if (arg == "--jobs") jobs = unsigned(std::max(1, std::atoi(argv[i + 1])));
     else if (arg == "--child-mem-mb") limits.mem_mb = std::strtoull(argv[i + 1], nullptr, 10);
     else if (arg == "--child-timeout") limits.timeout_s = unsigned(std::atoi(argv[i + 1]));
@@ -403,7 +441,7 @@ int main(int argc, char** argv) {
     std::printf("GlobalShaderCache: %zu unique shaders\n", shaders.size());
   }
   PackageStats stats;
-  uint32_t packages = 0, failed_packages = 0;
+  uint32_t packages = 0, failed_packages = 0, code_chunks = 0;
   for (const auto& entry : fs::recursive_directory_iterator(game)) {
     if (entry.path().extension() != ".xxx") {
       continue;
@@ -414,13 +452,66 @@ int main(int argc, char** argv) {
     }
     ++packages;
     ScanContainers(body, entry.path().filename(), shaders, hits);
+    // Material shaders: UE3 keeps each package's shader code LZX-compressed
+    // per shader type inside its ShaderCache export.
+    std::vector<uint8_t> code;
+    if (const uint32_t chunks = DecompressEmbeddedChunks(body, code)) {
+      code_chunks += chunks;
+      ScanContainers(code, entry.path().filename(), shaders, hits);
+    }
   }
-  std::printf("packages: %u read (%u with failed chunks), %u container hits, %zu unique shaders\n",
-              packages, failed_packages, hits, shaders.size());
+  std::printf("packages: %u read (%u with failed chunks), %u shader code chunks, "
+              "%u container hits, %zu unique shaders\n",
+              packages, failed_packages, code_chunks, hits, shaders.size());
+  if (scan_only) {
+    size_t ps = 0;
+    for (const auto& [hash, s] : shaders) ps += s.is_pixel;
+    std::printf("scan only: %zu vertex + %zu pixel shaders\n", shaders.size() - ps, ps);
+    if (!dumps.empty()) {
+      ReportDumpCoverage(dumps, shaders, true);
+    }
+    return 0;
+  }
+
+  // Runtime-patched variants: the D3D runtime patches vertex shaders at draw
+  // time (vertex fetch formats/offsets, export swizzles and masks for the
+  // pixel shader's inputs). Each dumped program whose normalized hash matches
+  // a game shader of the same size is translated from that shader's container
+  // with the dumped microcode, and cached under its exact hash.
+  if (!dumps.empty()) {
+    std::unordered_map<uint64_t, const Shader*> by_normalized;
+    for (const auto& [hash, s] : shaders) by_normalized.emplace(s.normalized_hash, &s);
+    size_t variants = 0;
+    std::vector<std::pair<uint64_t, Shader>> added;
+    for (const auto& entry : fs::directory_iterator(dumps)) {
+      if (entry.path().extension() != ".mc") continue;
+      const auto code = ReadFile(entry.path());
+      const uint64_t exact = mantra::shader_key::ExactHash(code.data(), code.size());
+      if (shaders.count(exact)) continue;
+      auto base = by_normalized.find(mantra::shader_key::NormalizedHash(code.data(), code.size()));
+      if (base == by_normalized.end()) continue;
+      const Shader& original = *base->second;
+      const bool is_pixel = entry.path().filename().string().rfind("ps", 0) == 0;
+      if (original.is_pixel != is_pixel || original.microcode_dwords * 4 != code.size()) continue;
+      Shader variant = original;
+      variant.exact_hash = exact;
+      variant.source = "patched " + entry.path().filename().string() + " of " + original.source;
+      if (!ReplaceMicrocode(variant.container, code)) continue;
+      added.emplace_back(exact, std::move(variant));
+      ++variants;
+    }
+    for (auto& [hash, s] : added) shaders.emplace(hash, std::move(s));
+    std::printf("runtime-patched variants: %zu\n", variants);
+  }
 
   std::vector<Shader*> list;
-  for (auto& [hash, s] : shaders) {
-    list.push_back(&s);
+  for (auto it = shaders.begin(); it != shaders.end();) {
+    if (!only.empty() && !only.count(it->first)) {
+      it = shaders.erase(it);
+      continue;
+    }
+    list.push_back(&it->second);
+    ++it;
   }
   const fs::path work = fs::temp_directory_path() / ("mantra_shadergen_" + std::to_string(getpid()));
   fs::create_directories(work);
@@ -429,7 +520,11 @@ int main(int argc, char** argv) {
   }
   std::printf("translating with %u jobs...\n", jobs);
   TranslateAll(list, work, hlsl_dir, jobs, limits);
-  fs::remove_all(work);
+  if (keep_work) {
+    std::printf("kept %s\n", work.c_str());
+  } else {
+    fs::remove_all(work);
+  }
 
   size_t ok_vs = 0, ok_ps = 0, failed = 0;
   for (const auto& [hash, s] : shaders) {

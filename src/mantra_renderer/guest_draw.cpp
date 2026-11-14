@@ -187,19 +187,45 @@ void MantraShader::DecodeVertexInputs(std::span<const uint32_t> packed_elements)
     return out.opcode() == ucode::FetchOpcode::kVertexFetch;
   };
 
+  // Debug summary of every vertex fetch (logged by the draw trace).
+  vfetch_debug.clear();
+  for (size_t a = first_instruction; a < instruction_count; ++a) {
+    ucode::VertexFetchInstruction f;
+    if (vertex_fetch_at(a, f)) {
+      vfetch_debug += fmt::format(" a{}:r{}/o{}/f{}/s{}{}", a, f.dest(), f.offset(),
+                                  uint32_t(f.data_format()),
+                                  f.is_mini_fetch() ? 0u : f.stride(),
+                                  f.is_mini_fetch() ? "m" : "");
+    }
+  }
   for (uint32_t packed : packed_elements) {
     const auto element = mantra::shader_cache::VertexElement::Unpack(packed);
+    vfetch_debug += fmt::format(" | loc{}:a{}/r{}", element.location, element.address,
+                                element.dest);
     VertexInput in;
     in.location = element.location;
     in.usage = element.usage;
     in.is_uint = element.is_uint;
+    // The driver may reorder the fetches: find the element's by the register
+    // it writes when the one at its container address writes another.
+    size_t address = element.address;
     ucode::VertexFetchInstruction fetch;
-    if (vertex_fetch_at(element.address, fetch)) {
+    if (vertex_fetch_at(address, fetch) && fetch.dest() != element.dest) {
+      for (size_t a = first_instruction; a < instruction_count; ++a) {
+        ucode::VertexFetchInstruction candidate;
+        if (vertex_fetch_at(a, candidate) && !candidate.is_dest_relative() &&
+            candidate.dest() == element.dest) {
+          address = a;
+          break;
+        }
+      }
+    }
+    if (vertex_fetch_at(address, fetch)) {
       // A mini fetch takes the fetch constant and stride of the previous
       // full fetch.
       ucode::VertexFetchInstruction full = fetch;
       bool have_full = !fetch.is_mini_fetch();
-      for (size_t a = element.address; !have_full && a-- > 0;) {
+      for (size_t a = address; !have_full && a-- > 0;) {
         ucode::VertexFetchInstruction candidate;
         if (vertex_fetch_at(a, candidate) && !candidate.is_mini_fetch()) {
           full = candidate;
@@ -1063,6 +1089,24 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
   dfn.vkCmdSetStencilWriteMask(cmd, VK_STENCIL_FACE_BACK_BIT, back.stencilwritemask);
   dfn.vkCmdSetStencilReference(cmd, VK_STENCIL_FACE_FRONT_BIT, stencil_front.stencilref);
   dfn.vkCmdSetStencilReference(cmd, VK_STENCIL_FACE_BACK_BIT, back.stencilref);
+
+  if (trace_current_draw_) {
+    MANTRA_INFO(
+        "trace:   state vp {},{} {}x{} z {}..{} ndc ({} {} {}) + ({} {} {}) scissor {},{}-{},{} "
+        "area {}x{} cull {} front {} colormask {:X} depth t{} w{} f{} stencil {} ops {}/{}/{}/{} "
+        "ref {} mask {} wmask {} a2c {} count {} vofs {} indexed {}",
+        viewport.xy_offset[0], viewport.xy_offset[1], viewport.xy_extent[0],
+        viewport.xy_extent[1], viewport.z_min, viewport.z_max, viewport.ndc_scale[0],
+        viewport.ndc_scale[1], viewport.ndc_scale[2], viewport.ndc_offset[0],
+        viewport.ndc_offset[1], viewport.ndc_offset[2], x0, y0, x1, y1,
+        render_area.extent.width, render_area.extent.height, uint32_t(key.cull_mode),
+        uint32_t(key.front_face), color_mask, uint32_t(key.depth_test),
+        uint32_t(key.depth_write), uint32_t(key.depth_compare), uint32_t(key.stencil_test),
+        key.stencil_front[0], key.stencil_front[1], key.stencil_front[2], key.stencil_front[3],
+        uint32_t(stencil_front.stencilref), uint32_t(stencil_front.stencilmask),
+        uint32_t(stencil_front.stencilwritemask), uint32_t(key.alpha_to_coverage),
+        upload.draw_count, upload.vertex_offset, uint32_t(upload.indexed));
+  }
 
   // Geometry.
   if (upload.binding_count) {

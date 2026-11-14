@@ -70,6 +70,14 @@ uint MantraLoad_uint(uint address, uint alignment) { return g_Constants.Load(add
 [[vk::binding(2, 1)]] TextureCube<float4> g_TextureCubeDescriptorHeap[MANTRA_FETCH_SLOTS];
 [[vk::binding(3, 1)]] SamplerState g_SamplerDescriptorHeap[MANTRA_FETCH_SLOTS];
 
+// Vertex shaders have no implicit derivatives: they fetch from mip 0. The
+// translator defines MANTRA_VERTEX_SHADER for them.
+#ifdef MANTRA_VERTEX_SHADER
+#define MANTRA_SAMPLE(samplerState, texCoord) SampleLevel(samplerState, texCoord, 0)
+#else
+#define MANTRA_SAMPLE(samplerState, texCoord) Sample(samplerState, texCoord)
+#endif
+
 uint2 getTexture2DDimensions(Texture2D<float4> texture)
 {
     uint2 dimensions;
@@ -80,7 +88,7 @@ uint2 getTexture2DDimensions(Texture2D<float4> texture)
 float4 tfetch2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
 {
     Texture2D<float4> texture = g_Texture2DDescriptorHeap[resourceDescriptorIndex];
-    return texture.Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord + offset / getTexture2DDimensions(texture));
+    return texture.MANTRA_SAMPLE(g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord + offset / getTexture2DDimensions(texture));
 }
 
 float2 getWeights2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
@@ -122,17 +130,25 @@ float4 tfetch2DBicubic(uint resourceDescriptorIndex, uint samplerDescriptorIndex
     float h1y = h1(fy);
 
     float4 r =
-        g0(fy) * (g0x * texture.Sample(samplerState, float2(px + h0x, py + h0y) / float2(dimensions)) +
-            g1x * texture.Sample(samplerState, float2(px + h1x, py + h0y) / float2(dimensions))) +
-        g1(fy) * (g0x * texture.Sample(samplerState, float2(px + h0x, py + h1y) / float2(dimensions)) +
-            g1x * texture.Sample(samplerState, float2(px + h1x, py + h1y) / float2(dimensions)));
+        g0(fy) * (g0x * texture.MANTRA_SAMPLE(samplerState, float2(px + h0x, py + h0y) / float2(dimensions)) +
+            g1x * texture.MANTRA_SAMPLE(samplerState, float2(px + h1x, py + h0y) / float2(dimensions))) +
+        g1(fy) * (g0x * texture.MANTRA_SAMPLE(samplerState, float2(px + h0x, py + h1y) / float2(dimensions)) +
+            g1x * texture.MANTRA_SAMPLE(samplerState, float2(px + h1x, py + h1y) / float2(dimensions)));
 
     return r;
 }
 
+// 1D textures are bound as 2D views of height 1 (the translator points the
+// Texture1D index at the fetch slot, like the others).
+float4 tfetch1D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float texCoord)
+{
+    return g_Texture2DDescriptorHeap[resourceDescriptorIndex].MANTRA_SAMPLE(
+        g_SamplerDescriptorHeap[samplerDescriptorIndex], float2(texCoord, 0.5));
+}
+
 float4 tfetch3D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord)
 {
-    return g_Texture3DDescriptorHeap[resourceDescriptorIndex].Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord);
+    return g_Texture3DDescriptorHeap[resourceDescriptorIndex].MANTRA_SAMPLE(g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord);
 }
 
 struct CubeMapData
@@ -143,7 +159,7 @@ struct CubeMapData
 
 float4 tfetchCube(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord, inout CubeMapData cubeMapData)
 {
-    return g_TextureCubeDescriptorHeap[resourceDescriptorIndex].Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex], cubeMapData.cubeMapDirections[texCoord.z]);
+    return g_TextureCubeDescriptorHeap[resourceDescriptorIndex].MANTRA_SAMPLE(g_SamplerDescriptorHeap[samplerDescriptorIndex], cubeMapData.cubeMapDirections[texCoord.z]);
 }
 
 float4 tfetchR11G11B10(uint4 value)

@@ -16,7 +16,7 @@ constexpr char kMagic[4] = {'M', 'S', 'H', 'C'};
 //    device addresses), texture_slot_mask / bool_mask.
 // 3: vertex elements, PS outputs; the VS applies the host NDC transform
 //    (SharedConstants ndc_scale / ndc_offset) instead of the half-pixel offset.
-constexpr uint32_t kVersion = 3;
+constexpr uint32_t kVersion = 4;
 
 struct CacheHeader {
   char magic[4];
@@ -59,17 +59,21 @@ enum class DeclUsage : uint32_t {
 //   bits 12..16 Vulkan input location
 //   bits 17..20 DeclUsage, bits 21..24 usage index
 //   bit  25     declared uint4 in the shader (else float4)
+// `address` is the vertex fetch instruction in the container's microcode and
+// `dest` the register it writes: the driver may reorder fetches, so the
+// runtime finds the element's fetch by its destination register (v4).
 struct VertexElement {
   uint32_t address, location, usage_index;
   DeclUsage usage;
   bool is_uint;
+  uint32_t dest;
   static VertexElement Unpack(uint32_t v) {
     return {v & 0xFFF, (v >> 12) & 0x1F, (v >> 21) & 0xF, DeclUsage((v >> 17) & 0xF),
-            ((v >> 25) & 1) != 0};
+            ((v >> 25) & 1) != 0, v >> 26};
   }
   uint32_t Pack() const {
     return (address & 0xFFF) | ((location & 0x1F) << 12) | ((uint32_t(usage) & 0xF) << 17) |
-           ((usage_index & 0xF) << 21) | (uint32_t(is_uint) << 25);
+           ((usage_index & 0xF) << 21) | (uint32_t(is_uint) << 25) | ((dest & 0x3F) << 26);
   }
 };
 

@@ -20,4 +20,9 @@ struct PackageStats {
 bool DecompressPackage(const std::vector<uint8_t>& file, std::vector<uint8_t>& out,
                        PackageStats& stats);
 
+// UE3 compressed shader code (FShaderCache's per-type code chunks) inside a
+// decompressed package body: [u32 uncompressed][u32 compressed][framed LZX].
+// Appends every chunk that decodes to `out`; returns how many did.
+uint32_t DecompressEmbeddedChunks(const std::vector<uint8_t>& body, std::vector<uint8_t>& out);
+
 }  // namespace mantra_shadergen

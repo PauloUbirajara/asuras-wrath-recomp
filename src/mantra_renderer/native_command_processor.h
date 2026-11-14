@@ -50,6 +50,7 @@ class MantraShader : public Shader {
     bool normalized = true;
   };
   std::vector<VertexInput> vertex_inputs;
+  std::string vfetch_debug;  // all vfetches + cache elements (trace)
   // Pixel shaders: bits 0..3 = writes oC0..3, bit 4 = writes oDepth.
   uint32_t ps_outputs = 0;
 
@@ -113,6 +114,10 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
 
   // --- Guest draws (guest_draw.cpp) ----------------------------------------
   enum class DrawResult { kDrawn, kSkipped, kFailed };
+  // Debug tracing (MANTRA_TRACE_SWAP / MANTRA_TRACE_VS): whether the current
+  // frame's draws are logged.
+  bool TracingThisFrame();
+  uint64_t trace_swap_ = 0;
   void TraceDraw(xenos::PrimitiveType prim_type, uint32_t index_count, const char* outcome);
   // Draws with the translated shaders and a pipeline from the guest state.
   DrawResult DrawGuest(xenos::PrimitiveType prim_type, uint32_t index_count,
@@ -252,6 +257,15 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
   // surface is read back and written as <dir>/frame_<swap>.ppm (debug aid).
   void CaptureSurface(mantra::ResolvedSurface& surface, uint32_t width, uint32_t height,
                       uint32_t swizzle, const std::string& name);
+  // Reads back a single-sample color image whose texels are `format` and
+  // writes <MANTRA_CAPTURE_DIR>/<name>.ppm, logging per-channel mean / max.
+  void CaptureImage(mantra::TrackedImage& image, VkFormat format, uint32_t width,
+                    uint32_t height, uint32_t swizzle, const std::string& name);
+  // MANTRA_CAPTURE_DIR + traced frame: dumps each pass's output.
+  bool CapturingPasses();
+  uint32_t pass_capture_index_ = 0;
+  // Set around DrawGuest in a traced frame: logs the draw's fixed-function state.
+  bool trace_current_draw_ = false;
   // Logs a swap summary at most every few seconds (gpu.mantra, info level).
   void ReportSwapStats();
 

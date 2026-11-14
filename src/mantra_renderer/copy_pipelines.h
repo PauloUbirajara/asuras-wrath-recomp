@@ -19,8 +19,11 @@ struct CopyPushConstants {
   float scale = 1.0f;
   // Per output component: 0-3 = source component, 4 = 0.0, 5 = 1.0.
   uint32_t swizzle[4] = {0, 1, 2, 3};
+  // 0 = copy, 1 = float -> 7e3 bits (10:10:10:2 unorm), 2 = the reverse.
+  uint32_t mode = 0;
+  uint32_t padding[3] = {};
 };
-static_assert(sizeof(CopyPushConstants) == 32);
+static_assert(sizeof(CopyPushConstants) == 48);
 
 struct CopyRect {
   int32_t x = 0, y = 0;

@@ -4,6 +4,7 @@
 #include "render_targets.h"
 
 #include <algorithm>
+#include <unordered_set>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -331,9 +332,11 @@ void TextureCache::Shutdown() {
 
 TextureCache::Binding TextureCache::Get(const xenos::xe_gpu_texture_fetch_t& fetch, Host& host) {
   Binding binding;
+  const bool stacked = fetch.dimension == xenos::DataDimension::k2DOrStacked && fetch.stacked &&
+                       fetch.size_2d.stack_depth > 0;
   binding.dimension = fetch.dimension == xenos::DataDimension::kCube ? kCube
-                      : fetch.dimension == xenos::DataDimension::k3D ? k3D
-                                                                     : k2D;
+                      : fetch.dimension == xenos::DataDimension::k3D || stacked ? k3D
+                                                                                 : k2D;
   binding.sampler = GetSampler(fetch);
 
   // Data-describing parts of the fetch constant (no sampler state, swizzle).
@@ -358,6 +361,7 @@ TextureCache::Binding TextureCache::Get(const xenos::xe_gpu_texture_fetch_t& fet
     texture.decode = host_format.decode;
     texture.host_bpb = uint8_t(host_format.host_bpb);
     texture.dimension = binding.dimension;
+    texture.stacked = stacked;
     {
       uint32_t w1, h1, d1;
       texture_util::GetSubresourcesFromFetchConstant(fetch, &w1, &h1, &d1, nullptr, nullptr,
@@ -407,6 +411,29 @@ TextureCache::Binding TextureCache::Get(const xenos::xe_gpu_texture_fetch_t& fet
     return binding;
   }
   binding.view = GetView(texture, fetch.swizzle);
+  if (from_resolve) {
+    using F = xenos::TextureFormat;
+    const F base = rex::graphics::GetBaseFormat(fetch.format);
+    // Debug: MANTRA_NO_FIXED16_BIAS=1 reads them unscaled.
+    static const bool no_bias = std::getenv("MANTRA_NO_FIXED16_BIAS") != nullptr;
+    if (!no_bias && (base == F::k_16 || base == F::k_16_16 || base == F::k_16_16_16_16)) {
+      // SNORM views read value / 32; UNORM views of the same bits read
+      // value * 1024 / 65535 (non-negative values only).
+      const bool snorm = texture.format == VK_FORMAT_R16_SNORM ||
+                         texture.format == VK_FORMAT_R16G16_SNORM ||
+                         texture.format == VK_FORMAT_R16G16B16A16_SNORM;
+      binding.exp_bias = snorm ? 5 : 6;
+      static std::unordered_set<uint64_t> logged;
+      const uint64_t log_key = (uint64_t(base_address) << 8) | (uint32_t(fetch.sign_x) << 6) |
+                               (uint32_t(fetch.sign_y) << 4) | (uint32_t(fetch.sign_z) << 2) |
+                               uint32_t(fetch.sign_w);
+      if (logged.insert(log_key).second) {
+        MANTRA_INFO("fixed16 resolve read {:08X} fmt {} sign {}{}{}{} -> {}", base_address,
+                    uint32_t(fetch.format), uint32_t(fetch.sign_x), uint32_t(fetch.sign_y),
+                    uint32_t(fetch.sign_z), uint32_t(fetch.sign_w), snorm ? "snorm" : "unorm");
+      }
+    }
+  }
   return binding;
 }
 
@@ -447,9 +474,13 @@ bool TextureCache::LoadFromMemory(Texture& texture, const xenos::xe_gpu_texture_
   }
   const uint32_t width = width_minus_1 + 1, height = height_minus_1 + 1;
   const uint32_t array_size = depth_minus_1 + 1;
-  const uint32_t layers = texture.dimension == kCube ? 6 : 1;  // stacked: layer 0 only
-  const bool is_3d = texture.dimension == k3D;
-  const uint32_t depth = is_3d ? array_size : 1;
+  const uint32_t layers = texture.dimension == kCube ? 6 : 1;
+  // Guest 3D tiling; stacked slices are 2D-tiled, array_slice_stride apart.
+  const bool is_3d = texture.dimension == k3D && !texture.stacked;
+  const uint32_t depth = texture.dimension == k3D ? array_size : 1;
+  if (texture.stacked) {
+    mip_max = mip_min;  // a host 3D mip chain would halve the slice count
+  }
   const auto layout = texture_util::GetGuestTextureLayout(
       fetch.dimension, fetch.pitch, width, height, array_size, fetch.tiled, fetch.format,
       fetch.packed_mips, base_page != 0, mip_max);
@@ -561,14 +592,15 @@ bool TextureCache::LoadFromMemory(Texture& texture, const xenos::xe_gpu_texture_
     const uint32_t slice_rows = level_layout.z_slice_stride_block_rows;
     uint8_t* const level_out = staging + level_offsets[h];
     for (uint32_t layer = 0; layer < layers; ++layer) {
-      const uint64_t slice = source_offset + uint64_t(layer) * level_layout.array_slice_stride_bytes;
       for (uint32_t z = 0; z < ld; ++z) {
+        const uint64_t slice =
+            source_offset + uint64_t(texture.stacked ? z : layer) * level_layout.array_slice_stride_bytes;
         uint8_t* const plane_out =
             level_out + uint64_t(layer * ld + z) * host_blocks_y * host_blocks_x * hbpb;
         for (uint32_t y = 0; y < blocks_y; ++y) {
           for (uint32_t x = 0; x < blocks_x; ++x) {
             const int32_t sx = int32_t(x + packed_x), sy = int32_t(y + packed_y);
-            const int32_t sz = int32_t(z + packed_z);
+            const int32_t sz = texture.stacked ? 0 : int32_t(z + packed_z);
             uint64_t offset;
             if (fetch.tiled) {
               offset = slice + uint32_t(is_3d ? texture_util::GetTiledOffset3D(
@@ -615,6 +647,21 @@ bool TextureCache::LoadFromMemory(Texture& texture, const xenos::xe_gpu_texture_
     if (std::FILE* file = std::fopen(path.c_str(), "wb")) {
       std::fprintf(file, "P5\n%u %u\n255\n", host_width, host_height);
       std::fwrite(staging + level_offsets[0], 1, size_t(host_width) * host_height, file);
+      std::fclose(file);
+    }
+  }
+  // Debug: and the raw level 0 blocks of BC1 textures, once per address.
+  if (const char* dump_dir = std::getenv("MANTRA_TEXTURE_DUMP_DIR");
+      dump_dir && host_levels &&
+      (texture.format == VK_FORMAT_BC1_RGBA_UNORM_BLOCK ||
+       texture.format == VK_FORMAT_BC1_RGBA_SRGB_BLOCK) &&
+      texture.dump_counter++ == 0) {
+    const std::string path =
+        fmt::format("{}/tex_{:08X}_{}x{}_{}.bc1", dump_dir, base_address, host_width, host_height,
+                    texture.format == VK_FORMAT_BC1_RGBA_SRGB_BLOCK ? "srgb" : "unorm");
+    if (std::FILE* file = std::fopen(path.c_str(), "wb")) {
+      std::fwrite(staging + level_offsets[0], 1,
+                  size_t((host_width + 3) / 4) * ((host_height + 3) / 4) * 8, file);
       std::fclose(file);
     }
   }
@@ -679,28 +726,56 @@ bool TextureCache::ResolvedValid(uint32_t address) {
 bool TextureCache::CopyFromResolved(Texture& texture, const xenos::xe_gpu_texture_fetch_t& fetch,
                                     uint32_t address, Host& host) {
   ResolvedSurface* surface = resolved_->Find(address);
-  if (!surface || !surface->write_count || !cmd_copy_image_ || texture.dimension == k3D ||
-      texture.decode != kCopy) {
+  if (!surface || !surface->write_count || !cmd_copy_image_ ||
+      (texture.dimension == k3D && !texture.stacked)) {
     return false;
   }
-  // Only plain reinterpretations of the resolved texels (same block size).
-  const FormatInfo* texture_info = FormatInfo::Get(fetch.format);
-  const FormatInfo* surface_info =
-      FormatInfo::Get(rex::graphics::ColorFormatToTextureFormat(surface->format));
-  if (!texture_info || !surface_info || texture_info->block_width != 1 ||
-      texture_info->bytes_per_block() != surface_info->bytes_per_block()) {
-    return false;
+  if (surface->depth) {
+    // Depth resolves hold decoded depth (R32F), like the 24:8 decoders.
+    if ((texture.decode != kDepthUnorm && texture.decode != kDepthFloat) || texture.stacked) {
+      return false;
+    }
+  } else {
+    if (texture.decode != kCopy) {
+      return false;
+    }
+    // Only plain reinterpretations of the resolved texels (same block size).
+    const FormatInfo* texture_info = FormatInfo::Get(fetch.format);
+    const FormatInfo* surface_info =
+        FormatInfo::Get(rex::graphics::ColorFormatToTextureFormat(surface->format));
+    if (!texture_info || !surface_info || texture_info->block_width != 1 ||
+        texture_info->bytes_per_block() != surface_info->bytes_per_block()) {
+      return false;
+    }
   }
   if (texture.resolved_image == surface->image.image &&
       texture.resolved_writes == surface->write_count) {
     return true;
   }
+  uint32_t width_minus_1, height_minus_1, depth_minus_1;
+  texture_util::GetSubresourcesFromFetchConstant(fetch, &width_minus_1, &height_minus_1,
+                                                 &depth_minus_1, nullptr, nullptr, nullptr,
+                                                 nullptr);
+  // Stacked slices sit array_slice_stride apart in the resolved surface's rows.
+  uint32_t slice_rows = 0;
+  if (texture.stacked) {
+    const auto layout = texture_util::GetGuestTextureLayout(
+        fetch.dimension, fetch.pitch, width_minus_1 + 1, height_minus_1 + 1, depth_minus_1 + 1,
+        fetch.tiled, fetch.format, fetch.packed_mips, true, 0);
+    if (!layout.base.row_pitch_bytes) {
+      return false;
+    }
+    slice_rows = layout.base.array_slice_stride_bytes / layout.base.row_pitch_bytes;
+    if (!slice_rows || slice_rows * depth_minus_1 >= surface->image.height) {
+      MANTRA_WARN_ONCE("stacked texture {:08X}: {} slices of {} rows don't fit the {}-row resolve",
+                       address, depth_minus_1 + 1, slice_rows, surface->image.height);
+      return false;
+    }
+  }
   if (!texture.image) {
-    uint32_t width_minus_1, height_minus_1;
-    texture_util::GetSubresourcesFromFetchConstant(fetch, &width_minus_1, &height_minus_1,
-                                                   nullptr, nullptr, nullptr, nullptr, nullptr);
     texture.width = width_minus_1 + 1;
     texture.height = height_minus_1 + 1;
+    texture.depth = texture.stacked ? depth_minus_1 + 1 : 1;
     texture.layers = texture.dimension == kCube ? 6 : 1;
     texture.levels = 1;
     if (!CreateImage(texture)) {
@@ -728,13 +803,19 @@ bool TextureCache::CopyFromResolved(Texture& texture, const xenos::xe_gpu_textur
   dfn.vkCmdPipelineBarrier(cmd,
                            texture.initialized ? kShaderStages : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                            VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-  VkImageCopy region = {};
-  region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-  region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-  region.extent = {std::min(texture.width, surface->image.width),
-                   std::min(texture.height, surface->image.height), 1};
+  VkImageCopy regions[64] = {};
+  const uint32_t region_count = texture.stacked ? std::min(texture.depth, 64u) : 1;
+  for (uint32_t z = 0; z < region_count; ++z) {
+    VkImageCopy& region = regions[z];
+    region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.srcOffset = {0, int32_t(z * slice_rows), 0};
+    region.dstOffset = {0, 0, int32_t(z)};
+    region.extent = {std::min(texture.width, surface->image.width),
+                     std::min(texture.height, surface->image.height - z * slice_rows), 1};
+  }
   cmd_copy_image_(cmd, surface->image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                     texture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+                     texture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region_count, regions);
   barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
   barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
   barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;

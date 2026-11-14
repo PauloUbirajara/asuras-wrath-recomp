@@ -40,7 +40,12 @@ struct SharedConstants {
   uint32_t swapped_texcoords = 0;  // bit per TEXCOORD semantic: fetch as .yxwz
   float half_pixel_offset[2] = {};
   float alpha_threshold = 0.0f;
-  uint32_t pad[3] = {};
+  // mantra: guest vertex index of host vertex index 0 (the VS r0.x).
+  uint32_t vertex_index_base = 0;
+  // mantra: bit i = color output i goes to a fixed-point 16-bit target; the
+  // pixel shader writes it / 32 (the host SNORM image holds -32...32 / 32).
+  uint32_t fixed16_output_mask = 0;
+  uint32_t pad = 0;
   // mantra: host viewport transform applied by the VS
   // (draw_util::ViewportInfo ndc_scale / ndc_offset).
   float ndc_scale[3] = {1.0f, 1.0f, 1.0f};
@@ -51,6 +56,8 @@ struct SharedConstants {
 static_assert(offsetof(SharedConstants, booleans) == 256);
 static_assert(offsetof(SharedConstants, half_pixel_offset) == 264);
 static_assert(offsetof(SharedConstants, alpha_threshold) == 272);
+static_assert(offsetof(SharedConstants, vertex_index_base) == 276);
+static_assert(offsetof(SharedConstants, fixed16_output_mask) == 280);
 static_assert(offsetof(SharedConstants, ndc_scale) == 288);
 static_assert(offsetof(SharedConstants, ndc_offset) == 304);
 

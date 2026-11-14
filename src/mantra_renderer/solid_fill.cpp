@@ -170,7 +170,7 @@ NativeCommandProcessor::SolidFillResult NativeCommandProcessor::TrySolidFill(
     }
     const auto color_info = regs.Get<reg::RB_COLOR_INFO>(reg::RB_COLOR_INFO::rt_register_indices[0]);
     if (mantra::RenderTarget* rt =
-            render_targets_.GetColor(cmd, color_info.color_base, surface_info.surface_pitch,
+            GetColorTarget(cmd, color_info.color_base, surface_info.surface_pitch,
                                      surface_info.msaa_samples, color_info.color_format, frame)) {
       const float bias = std::ldexp(1.0f, color_info.color_exp_bias);
       float value[4];
@@ -188,12 +188,21 @@ NativeCommandProcessor::SolidFillResult NativeCommandProcessor::TrySolidFill(
         }
         value[3] = 1.0f;
       }
+      if (color_info.color_format == xenos::ColorRenderTargetFormat::k_16_16 ||
+          color_info.color_format == xenos::ColorRenderTargetFormat::k_16_16_16_16) {
+        for (float& v : value) v *= 1.0f / 32.0f;  // -32...32 in the host SNORM image
+      }
       if (color_info.color_format == xenos::ColorRenderTargetFormat::k_8_8_8_8_GAMMA) {
         for (uint32_t c = 0; c < 3; ++c) {
           value[c] = xenos::LinearToPWLGamma(std::clamp(value[c], 0.0f, 1.0f));
         }
       }
       render_targets_.ClearColorFloat(cmd, *rt, color_info.color_format, rect, value);
+      for (const auto& alias : render_targets_.Aliases(*rt, rect)) {
+        render_targets_.ClearColorFloat(cmd, *alias.rt, color_info.color_format, alias.rect,
+                                        value);
+        render_targets_.MarkWritten(*alias.rt, color_info.color_format);
+      }
       uint64_t route = XXH3_64bits(value, sizeof(value)) ^ (uint64_t(color_info.color_base) << 1) ^
                        (uint64_t(surface_info.surface_pitch) << 13) ^
                        (uint64_t(color_info.color_format) << 29);
@@ -221,8 +230,22 @@ NativeCommandProcessor::SolidFillResult NativeCommandProcessor::TrySolidFill(
       if (depth_info.depth_format == xenos::DepthRenderTargetFormat::kD24FS8) {
         depth *= 0.5f;  // [0, 2) guest range in [0, 1) host depth
       }
+      const uint32_t stencil_ref = regs.Get<reg::RB_STENCILREFMASK>().stencilref;
       render_targets_.ClearDepthStencil(cmd, *rt, rect, write_depth, depth, write_stencil,
-                                        regs.Get<reg::RB_STENCILREFMASK>().stencilref);
+                                        stencil_ref);
+      for (const auto& alias : render_targets_.Aliases(*rt, rect)) {
+        render_targets_.ClearDepthStencil(cmd, *alias.rt, alias.rect, write_depth, depth,
+                                          write_stencil, stencil_ref);
+      }
+      static std::atomic<uint32_t> logged{0};
+      if (logged.fetch_add(1) < 8 || TracingThisFrame()) {
+        MANTRA_INFO("fill depth: base {} pitch {} msaa {} rect {},{} {}x{} depth {} stencil {} "
+                    "({}) aliases {}",
+                    uint32_t(depth_info.depth_base), uint32_t(surface_info.surface_pitch),
+                    uint32_t(surface_info.msaa_samples), x0, y0, x1 - x0, y1 - y0,
+                    write_depth, write_stencil, stencil_ref,
+                    render_targets_.Aliases(*rt, rect).size());
+      }
       ++draw_stats_.fills_depth;
       wrote = true;
     }

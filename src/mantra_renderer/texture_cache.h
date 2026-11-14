@@ -57,6 +57,9 @@ class TextureCache {
     VkImageView view = VK_NULL_HANDLE;  // null: use the placeholder
     VkSampler sampler = VK_NULL_HANDLE;
     Dimension dimension = k2D;
+    // Extra 2^n the shader applies to the fetch (mantraExpAdjust): 16-bit
+    // fixed-point resolves are stored / 32 and read back in range.
+    int32_t exp_bias = 0;
   };
 
   struct Stats {
@@ -97,6 +100,9 @@ class TextureCache {
     VkDeviceMemory memory = VK_NULL_HANDLE;
     VkFormat format = VK_FORMAT_UNDEFINED;
     Dimension dimension = k2D;
+    // A stacked 2D texture (guest 2D tiling per slice) hosted as a 3D image:
+    // games sample them with tfetch3D (color-grading LUTs, for example).
+    bool stacked = false;
     uint32_t width = 0, height = 0, depth = 1, layers = 1, levels = 1;
     uint8_t decode = 0;     // how guest blocks become host texels
     uint8_t host_bpb = 0;   // bytes per host block

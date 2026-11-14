@@ -16,7 +16,7 @@
 // translator.cpp rewrites vk::RawBufferLoad<T>(addr[, align]) into
 // MantraLoad_T(addr[, align]). The shared constants layout is XenosRecomp's:
 // 256 g_Booleans, 260 g_SwappedTexcoords, 264 g_HalfPixelOffset,
-// 272 g_AlphaThreshold (the descriptor index area 0..255 is unused), plus
+// 272 g_AlphaThreshold (mantra: bytes 0..127 hold each fetch slot's exp_adjust), plus
 // mantra's 288 g_NdcScale, 304 g_NdcOffset: translator.cpp replaces the VS's
 // final half-pixel offset with oPos.xyz = oPos.xyz * g_NdcScale +
 // g_NdcOffset * oPos.w (the host viewport transform; Y is pre-negated because
@@ -58,6 +58,8 @@ uint MantraLoad_uint(uint address, uint alignment) { return g_Constants.Load(add
 #define g_SwappedTexcoords         MantraLoad_uint(g_PushConstants.SharedConstants + 260)
 #define g_HalfPixelOffset          MantraLoad_float2(g_PushConstants.SharedConstants + 264)
 #define g_AlphaThreshold           MantraLoad_float(g_PushConstants.SharedConstants + 272)
+#define g_MantraVertexIndexBase    MantraLoad_uint(g_PushConstants.SharedConstants + 276)
+#define g_MantraFixed16OutputMask  MantraLoad_uint(g_PushConstants.SharedConstants + 280)
 #define g_NdcScale                 MantraLoad_float3(g_PushConstants.SharedConstants + 288)
 #define g_NdcOffset                MantraLoad_float3(g_PushConstants.SharedConstants + 304)
 
@@ -85,10 +87,20 @@ uint2 getTexture2DDimensions(Texture2D<float4> texture)
     return dimensions;
 }
 
+// mantra: the fetch constant's exp_adjust (results * 2^exp_adjust, signed),
+// stored per fetch slot in the shared constants' descriptor index area.
+// Games use it to read 16-bit fixed-point (-32...32) render targets back
+// in range.
+float4 mantraExpAdjust(uint slot, float4 value)
+{
+    int e = asint(MantraLoad_uint(g_PushConstants.SharedConstants + slot * 4));
+    return e != 0 ? value * exp2(float(e)) : value;
+}
+
 float4 tfetch2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
 {
     Texture2D<float4> texture = g_Texture2DDescriptorHeap[resourceDescriptorIndex];
-    return texture.MANTRA_SAMPLE(g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord + offset / getTexture2DDimensions(texture));
+    return mantraExpAdjust(resourceDescriptorIndex, texture.MANTRA_SAMPLE(g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord + offset / getTexture2DDimensions(texture)));
 }
 
 float2 getWeights2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
@@ -135,20 +147,20 @@ float4 tfetch2DBicubic(uint resourceDescriptorIndex, uint samplerDescriptorIndex
         g1(fy) * (g0x * texture.MANTRA_SAMPLE(samplerState, float2(px + h0x, py + h1y) / float2(dimensions)) +
             g1x * texture.MANTRA_SAMPLE(samplerState, float2(px + h1x, py + h1y) / float2(dimensions)));
 
-    return r;
+    return mantraExpAdjust(resourceDescriptorIndex, r);
 }
 
 // 1D textures are bound as 2D views of height 1 (the translator points the
 // Texture1D index at the fetch slot, like the others).
 float4 tfetch1D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float texCoord)
 {
-    return g_Texture2DDescriptorHeap[resourceDescriptorIndex].MANTRA_SAMPLE(
-        g_SamplerDescriptorHeap[samplerDescriptorIndex], float2(texCoord, 0.5));
+    return mantraExpAdjust(resourceDescriptorIndex, g_Texture2DDescriptorHeap[resourceDescriptorIndex].MANTRA_SAMPLE(
+        g_SamplerDescriptorHeap[samplerDescriptorIndex], float2(texCoord, 0.5)));
 }
 
 float4 tfetch3D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord)
 {
-    return g_Texture3DDescriptorHeap[resourceDescriptorIndex].MANTRA_SAMPLE(g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord);
+    return mantraExpAdjust(resourceDescriptorIndex, g_Texture3DDescriptorHeap[resourceDescriptorIndex].MANTRA_SAMPLE(g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord));
 }
 
 struct CubeMapData
@@ -159,7 +171,7 @@ struct CubeMapData
 
 float4 tfetchCube(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord, inout CubeMapData cubeMapData)
 {
-    return g_TextureCubeDescriptorHeap[resourceDescriptorIndex].MANTRA_SAMPLE(g_SamplerDescriptorHeap[samplerDescriptorIndex], cubeMapData.cubeMapDirections[texCoord.z]);
+    return mantraExpAdjust(resourceDescriptorIndex, g_TextureCubeDescriptorHeap[resourceDescriptorIndex].MANTRA_SAMPLE(g_SamplerDescriptorHeap[samplerDescriptorIndex], cubeMapData.cubeMapDirections[texCoord.z]));
 }
 
 float4 tfetchR11G11B10(uint4 value)

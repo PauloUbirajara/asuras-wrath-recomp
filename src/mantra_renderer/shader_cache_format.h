@@ -16,7 +16,8 @@ constexpr char kMagic[4] = {'M', 'S', 'H', 'C'};
 //    device addresses), texture_slot_mask / bool_mask.
 // 3: vertex elements, PS outputs; the VS applies the host NDC transform
 //    (SharedConstants ndc_scale / ndc_offset) instead of the half-pixel offset.
-constexpr uint32_t kVersion = 4;
+// 5: vertex_index_divisor (vertex shaders that fetch at vertex index / K).
+constexpr uint32_t kVersion = 5;
 
 struct CacheHeader {
   char magic[4];
@@ -44,8 +45,13 @@ struct CacheEntry {
   uint32_t ps_outputs;         // pixel shaders: bits 0..3 = oC0..3, bit 4 = oDepth
   uint32_t vertex_elements_offset;  // blob offset of vertex_element_count words
   uint32_t vertex_element_count;
+  // Vertex shaders whose vertex fetches index the buffer with
+  // floor(vertex index / divisor) instead of the vertex index (particle
+  // shaders drawing 4 corners per element); 0 = the vertex index.
+  uint32_t vertex_index_divisor;
+  uint32_t reserved;
 };
-static_assert(sizeof(CacheEntry) == 56);
+static_assert(sizeof(CacheEntry) == 64);
 
 // D3D declaration usages (XenosRecomp's DeclUsage).
 enum class DeclUsage : uint32_t {

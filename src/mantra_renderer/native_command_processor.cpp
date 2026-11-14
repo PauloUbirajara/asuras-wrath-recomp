@@ -244,6 +244,61 @@ VkDescriptorPool NativeCommandProcessor::ReserveDescriptorSet() {
   return slot.descriptor_pool;
 }
 
+mantra::RenderTarget* NativeCommandProcessor::GetColorTarget(
+    VkCommandBuffer cmd, uint32_t base_tiles, uint32_t pitch_px, xenos::MsaaSamples msaa,
+    xenos::ColorRenderTargetFormat format, uint64_t frame) {
+  mantra::RenderTarget* from = nullptr;
+  mantra::RenderTarget* rt =
+      render_targets_.GetColor(cmd, base_tiles, pitch_px, msaa, format, frame, &from);
+  if (!rt || !from) {
+    return rt;
+  }
+  if (msaa != xenos::MsaaSamples::k1X) {
+    MANTRA_WARN_ONCE("7e3 <-> 32bpp EDRAM reinterpretation with MSAA is not implemented");
+    return rt;
+  }
+  // Never submit here: the caller keeps using `cmd`.
+  if (!recording_ || CurrentSlot().descriptor_sets_used >= kDescriptorSetsPerSlot) {
+    MANTRA_WARN_ONCE("no descriptor set left for a 7e3 conversion, skipping it");
+    return rt;
+  }
+  ++CurrentSlot().descriptor_sets_used;
+  const bool to_32 = rt->key.cls == mantra::RtClass::kColor32;
+  if (TracingThisFrame()) {
+    MANTRA_INFO("trace: convert 7e3 {} 32bpp at base {} pitch {} (fmt {}, from fmt {})",
+                to_32 ? "->" : "<-", base_tiles, pitch_px, uint32_t(format),
+                uint32_t(from->last_format));
+  }
+  const VkFormat float_format = VK_FORMAT_R16G16B16A16_SFLOAT;
+  const VkFormat bits_format = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
+  const VkFormat src_format = to_32 ? float_format : bits_format;
+  const VkFormat dst_format = to_32 ? bits_format : float_format;
+  const VkImageView src_view = render_targets_.GetView(*from, src_format);
+  const VkImageView dst_view = render_targets_.GetView(*rt, dst_format);
+  if (!src_view || !dst_view) {
+    return rt;
+  }
+  mantra::TransitionImage(vulkan_device_, cmd, from->image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+  mantra::TransitionImage(vulkan_device_, cmd, rt->image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                          mantra::kColorAttachmentStage, mantra::kColorAttachmentAccess);
+  mantra::CopyRect rect;
+  rect.width = std::min(rt->image.width, from->image.width);
+  rect.height = std::min(rt->image.height, from->image.height);
+  mantra::CopyPushConstants constants;
+  constants.mode = to_32 ? 1 : 2;
+  if (copy_pipelines_.Record(cmd, CurrentSlot().descriptor_pool, src_view, false, dst_view,
+                             dst_format, rt->image.width, rt->image.height, rect, constants)) {
+    ++draw_stats_.float7e3_conversions;
+    if (FirstRoute((uint64_t(base_tiles) << 40) ^ (uint64_t(pitch_px) << 20) ^ (to_32 ? 7 : 3) ^
+                   (uint64_t(0x7E3) << 52))) {
+      MANTRA_INFO("edram: 7e3 {} 32bpp at base {} pitch {} ({}x{})", to_32 ? "->" : "<-",
+                  base_tiles, pitch_px, rect.width, rect.height);
+    }
+  }
+  return rt;
+}
+
 void NativeCommandProcessor::DestroyFrameResources() {
   if (!vulkan_device_) {
     return;
@@ -348,13 +403,35 @@ bool NativeCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
     trace_current_draw_ = false;
     outcome = result == DrawResult::kDrawn ? "drawn" : result == DrawResult::kSkipped ? "SKIPPED" : "FAILED";
   }
+  // MANTRA_TRACE_PS=hash: also trace the first few draws with that pixel shader.
+  static const uint64_t trace_ps = [] {
+    const char* env = std::getenv("MANTRA_TRACE_PS");
+    return env ? std::strtoull(env, nullptr, 16) : 0;
+  }();
+  if (trace_ps && !TracingThisFrame()) {
+    static int traced = 0;
+    auto* ps = static_cast<MantraShader*>(active_pixel_shader());
+    if (traced < 4 && ps && ps->cache_entry && ps->cache_entry->exact_hash == trace_ps) {
+      ++traced;
+      TraceDraw(prim_type, index_count, outcome);
+    }
+  }
   if (TracingThisFrame()) {
     TraceDraw(prim_type, index_count, outcome);
-    if (CapturingPasses() && outcome[0] == 'd' && rendering_.active && rendering_.color[0]) {
+    if (CapturingDraws() && outcome[0] == 'd' && rendering_.active && rendering_.depth &&
+        register_file_->Get<reg::RB_DEPTHCONTROL>().stencil_enable &&
+        register_file_->Get<reg::RB_DEPTHCONTROL>().stencilzpass != xenos::StencilOp::kKeep) {
+      mantra::RenderTarget& rt = *rendering_.depth;
+      CaptureImage(rt.image, VK_FORMAT_S8_UINT, rt.image.width, std::min(rt.image.height, 720u),
+                   0x688, fmt::format("s{}_pass_{:03}_stencil_{:016X}", trace_swap_,
+                                      pass_capture_index_++,
+                                      active_vertex_shader()->ucode_data_hash()));
+    }
+    if (CapturingDraws() && outcome[0] == 'd' && rendering_.active && rendering_.color[0]) {
       mantra::RenderTarget& rt = *rendering_.color[0];
       CaptureImage(rt.image, rendering_.color_format[0], rt.image.width, rt.image.height,
                    0x688 /* RGBA */,
-                   fmt::format("pass_{:03}_draw_rt{}_{:016X}", pass_capture_index_++,
+                   fmt::format("s{}_pass_{:03}_draw_rt{}_{:016X}", trace_swap_, pass_capture_index_++,
                                rt.key.base_tiles,
                                active_pixel_shader() ? active_pixel_shader()->ucode_data_hash()
                                                      : 0));
@@ -440,13 +517,64 @@ bool NativeCommandProcessor::Resolve() {
       reg::RB_COLOR_INFO::rt_register_indices[info.rb_copy_control.copy_src_select & 3]);
 
   // Copy.
-  if (copying_depth) {
-    ++draw_stats_.depth_copies_skipped;
-    MANTRA_WARN_ONCE("depth resolves are not implemented yet, skipping");
+  // Debug: MANTRA_NO_DEPTH_RESOLVE=1 leaves depth resolves unimplemented.
+  static const bool no_depth_resolve = std::getenv("MANTRA_NO_DEPTH_RESOLVE") != nullptr;
+  if (copying_depth && info.copy_dest_extent_length && !no_depth_resolve) {
+    // Depth -> an R32_SFLOAT surface with the guest depth values; the
+    // k_24_8 / k_24_8_FLOAT texture decoders copy from it (shadow maps).
+    const auto depth_info = regs.Get<reg::RB_DEPTH_INFO>();
+    const bool depth_float = depth_info.depth_format == xenos::DepthRenderTargetFormat::kD24FS8;
+    mantra::RenderTarget* rt =
+        render_targets_.GetDepth(cmd, info.depth_original_base, pitch_px, msaa, frame);
+    const VkImageView src_view = rt ? render_targets_.GetDepthSampleView(*rt) : VK_NULL_HANDLE;
+    if (src_view) {
+      const auto dest_pitch = regs.Get<reg::RB_COPY_DEST_PITCH>();
+      const uint32_t dest_address =
+          regs[XE_GPU_REG_RB_COPY_DEST_BASE] & (kGuestPhysicalMemorySize - 1);
+      rect.width = std::min<uint32_t>(rect.width, rt->image.width - std::min<uint32_t>(
+                                                                         rect.x, rt->image.width));
+      rect.height = std::min<uint32_t>(
+          rect.height, rt->image.height - std::min<uint32_t>(rect.y, rt->image.height));
+      mantra::ResolvedSurface* surface = resolved_surfaces_.Get(
+          dest_address, std::max<uint32_t>(dest_pitch.copy_dest_pitch, rect.x + rect.width),
+          std::max<uint32_t>(dest_pitch.copy_dest_height, rect.y + rect.height),
+          info.copy_dest_info.copy_dest_format, frame, true);
+      VkDescriptorPool descriptor_pool = ReserveDescriptorSet();
+      cmd = BeginNonDrawCommands();
+      if (surface && descriptor_pool && cmd && rect.width && rect.height) {
+        mantra::CopyPushConstants constants;
+        constants.sample_mask = 1;  // depth: sample 0, no averaging
+        // The host stores 20e4 depth halved (its range is [0, 2)).
+        constants.scale = depth_float ? 2.0f : 1.0f;
+        mantra::TransitionImage(vulkan_device_, cmd, rt->image,
+                                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+        mantra::TransitionImage(vulkan_device_, cmd, surface->image,
+                                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                mantra::kColorAttachmentStage, mantra::kColorAttachmentAccess);
+        if (copy_pipelines_.Record(cmd, descriptor_pool, src_view,
+                                   msaa != xenos::MsaaSamples::k1X, surface->view,
+                                   VK_FORMAT_R32_SFLOAT, surface->image.width,
+                                   surface->image.height, rect, constants)) {
+          ++draw_stats_.depth_copies;
+          ++surface->write_count;
+          surface->last_write_frame = frame;
+          texture_cache_.NoteResolve(dest_address, info.copy_dest_extent_length);
+        }
+        if (FirstRoute((uint64_t(info.depth_original_base) << 40) ^ (uint64_t(pitch_px) << 26) ^
+                       dest_address ^ (uint64_t(3) << 62)))
+          MANTRA_INFO("resolve: depth base {} pitch {} fmt {} rect {},{} {}x{} -> 0x{:08X}",
+                      info.depth_original_base, pitch_px, uint32_t(depth_info.depth_format),
+                      rect.x, rect.y, rect.width, rect.height, dest_address);
+      }
+    } else {
+      ++draw_stats_.depth_copies_skipped;
+    }
+  } else if (copying_depth) {
   } else if (info.copy_dest_extent_length) {
     const xenos::ColorFormat dest_format = info.copy_dest_info.copy_dest_format;
     const VkFormat dest_host_format = mantra::ResolvedSurfaces::HostFormat(dest_format);
-    mantra::RenderTarget* rt = render_targets_.GetColor(
+    mantra::RenderTarget* rt = GetColorTarget(
         cmd, info.color_original_base, pitch_px, msaa, color_info.color_format, frame);
     if (dest_host_format == VK_FORMAT_UNDEFINED) {
       ++draw_stats_.unsupported_dest_format;
@@ -477,6 +605,18 @@ bool NativeCommandProcessor::Resolve() {
           constants.sample_mask = 1;
         }
         constants.scale = std::ldexp(1.0f, info.copy_dest_info.copy_dest_exp_bias);
+        // Fixed-point 16-bit targets are stored / 32 (their -32...32 range);
+        // a float destination gets the values, a fixed one the same bits.
+        if ((color_info.color_format == xenos::ColorRenderTargetFormat::k_16_16 ||
+             color_info.color_format == xenos::ColorRenderTargetFormat::k_16_16_16_16) &&
+            (dest_host_format == VK_FORMAT_R16_SFLOAT ||
+             dest_host_format == VK_FORMAT_R16G16_SFLOAT ||
+             dest_host_format == VK_FORMAT_R16G16B16A16_SFLOAT ||
+             dest_host_format == VK_FORMAT_R32_SFLOAT ||
+             dest_host_format == VK_FORMAT_R32G32_SFLOAT ||
+             dest_host_format == VK_FORMAT_R32G32B32A32_SFLOAT)) {
+          constants.scale *= 32.0f;
+        }
         if (info.copy_dest_info.copy_dest_swap) {
           constants.swizzle[0] = 2;
           constants.swizzle[2] = 0;
@@ -500,7 +640,7 @@ bool NativeCommandProcessor::Resolve() {
           if (TracingThisFrame() && CapturingPasses()) {
             CaptureImage(surface->image, surface->image.format, surface->image.width,
                          surface->image.height, 0x688 /* RGBA */,
-                         fmt::format("pass_{:03}_resolve_{:08X}_fmt{}", pass_capture_index_++,
+                         fmt::format("s{}_pass_{:03}_resolve_{:08X}_fmt{}", trace_swap_, pass_capture_index_++,
                                      dest_address, uint32_t(dest_format)));
             cmd = BeginNonDrawCommands();
           }
@@ -523,7 +663,7 @@ bool NativeCommandProcessor::Resolve() {
     return false;
   }
   if (info.IsClearingColor()) {
-    if (mantra::RenderTarget* rt = render_targets_.GetColor(
+    if (mantra::RenderTarget* rt = GetColorTarget(
             cmd, info.color_original_base, pitch_px, msaa, color_info.color_format, frame)) {
       render_targets_.ClearColor(cmd, *rt, color_info.color_format, clear_rect,
                                  uint64_t(info.rb_color_clear) |
@@ -551,6 +691,16 @@ bool NativeCommandProcessor::CapturingPasses() {
     return dir && *dir;
   }();
   return enabled;
+}
+
+bool NativeCommandProcessor::CapturingDraws() {
+  // MANTRA_CAPTURE_DRAWS=1: also dump the target after every traced draw
+  // (slow: a traced frame then takes many seconds). Resolves always are.
+  static const bool enabled = [] {
+    const char* env = std::getenv("MANTRA_CAPTURE_DRAWS");
+    return env && *env && *env != '0';
+  }();
+  return enabled && CapturingPasses();
 }
 
 bool NativeCommandProcessor::TracingThisFrame() {
@@ -586,6 +736,7 @@ void NativeCommandProcessor::TraceDraw(xenos::PrimitiveType prim_type, uint32_t 
     textures += fmt::format(" t{}={:08X}/f{}/d{}/s{:o}", slot, fetch.base_address << 12,
                             uint32_t(fetch.format), uint32_t(fetch.dimension),
                             uint32_t(fetch.swizzle));
+    if (fetch.exp_adjust) textures += fmt::format("/x{}", int32_t(fetch.exp_adjust));
     // Guest-memory content check: nonzero bytes in the first 64 KB.
     if (const auto* t = memory_->TranslatePhysical<const uint8_t*>((fetch.base_address << 12) &
                                                                    0x1FFFFFFF)) {
@@ -621,6 +772,14 @@ void NativeCommandProcessor::TraceDraw(xenos::PrimitiveType prim_type, uint32_t 
       uint32_t(blend.alpha_destblend), uint32_t(blend.alpha_comb_fcn), uint32_t(depth.z_enable),
       uint32_t(depth.zfunc), color_control.alpha_test_enable ? uint32_t(color_control.alpha_func) : 99,
       textures);
+  MANTRA_INFO("trace:   surf msaa {} depth base {} fmt {} stencil {} zw {} sref {} swmask {:X} sop {}/{}/{}/{}",
+              uint32_t(surface_info.msaa_samples),
+              uint32_t(regs.Get<reg::RB_DEPTH_INFO>().depth_base),
+              uint32_t(regs.Get<reg::RB_DEPTH_INFO>().depth_format), uint32_t(depth.stencil_enable),
+              uint32_t(depth.z_write_enable), uint32_t(regs.Get<reg::RB_STENCILREFMASK>().stencilref),
+              uint32_t(regs.Get<reg::RB_STENCILREFMASK>().stencilwritemask),
+              uint32_t(depth.stencilfail), uint32_t(depth.stencilzpass), uint32_t(depth.stencilzfail),
+              uint32_t(depth.stencilfunc));
   if (vs) {
     std::string inputs;
     for (const auto& in : vs->vertex_inputs) {
@@ -633,10 +792,19 @@ void NativeCommandProcessor::TraceDraw(xenos::PrimitiveType prim_type, uint32_t 
       const auto vfetch = regs.GetVertexFetch(in.fetch_constant);
       const uint32_t base = (uint32_t(vfetch.address) << 2) & 0x1FFFFFFF;
       inputs += fmt::format(" @{:08X} e{}", base, uint32_t(vfetch.endian));
-      for (uint32_t v = 0; v < 3 && in.valid; ++v) {
-        const uint32_t at = base + (v * in.stride_words + uint32_t(in.offset_words)) * 4;
-        if (const auto* w = memory_->TranslatePhysical<const uint8_t*>(at)) {
-          inputs += fmt::format(" {:02X}{:02X}{:02X}{:02X}", w[0], w[1], w[2], w[3]);
+      const uint32_t words = 4;  // (may run into the next element)
+      for (uint32_t v = 0; v < 4 && in.valid; ++v) {
+        inputs += " v";
+        for (uint32_t c = 0; c < words; ++c) {
+          const uint32_t at = base + (v * in.stride_words + uint32_t(in.offset_words) + c) * 4;
+          if (const auto* w = memory_->TranslatePhysical<const uint8_t*>(at)) {
+            uint32_t raw;
+            std::memcpy(&raw, w, 4);
+            raw = xenos::GpuSwap(raw, vfetch.endian);
+            float f;
+            std::memcpy(&f, &raw, 4);
+            inputs += fmt::format("{}{:08X}({:g})", c ? "," : "", raw, f);
+          }
         }
       }
       inputs += "]";
@@ -644,6 +812,14 @@ void NativeCommandProcessor::TraceDraw(xenos::PrimitiveType prim_type, uint32_t 
     MANTRA_INFO("trace:   vs inputs{}", inputs);
     MANTRA_INFO("trace:   vs {:016X} fetches{}", vs->cache_entry ? vs->cache_entry->exact_hash : 0,
                 vs->vfetch_debug);
+    std::string vs_constants;
+    for (uint32_t i = 0; i < 256; i = i == 31 ? 248 : i + 1) {
+      const uint32_t base = XE_GPU_REG_SHADER_CONSTANT_000_X + i * 4;
+      vs_constants += fmt::format(" c{}=({:g} {:g} {:g} {:g})", i, regs.Get<float>(base),
+                                  regs.Get<float>(base + 1), regs.Get<float>(base + 2),
+                                  regs.Get<float>(base + 3));
+    }
+    MANTRA_INFO("trace:   vsc{}", vs_constants);
   }
   // PS float constants c0..c7 (they follow the 256 VS registers).
   std::string constants;
@@ -660,6 +836,17 @@ void NativeCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
                                        uint32_t frontbuffer_height) {
   ++swap_stats_.swaps;
   buffer_cache_.FrameEnded();
+  // MANTRA_TRACE_TRIGGER=<file>: when the file appears, trace the next frame
+  // (and delete the file, so it can be triggered again).
+  static const char* trace_trigger = std::getenv("MANTRA_TRACE_TRIGGER");
+  if (trace_trigger && *trace_trigger && (swap_stats_.swaps & 15) == 0 &&
+      (!trace_swap_ || trace_swap_ <= swap_stats_.swaps)) {
+    std::error_code ec;
+    if (std::filesystem::remove(trace_trigger, ec)) {
+      trace_swap_ = swap_stats_.swaps + 2;
+      MANTRA_INFO("trace: triggered at swap {}, tracing swap {}", swap_stats_.swaps, trace_swap_);
+    }
+  }
   ReportSwapStats();
   if (!graphics_system_ || !vulkan_device_) {
     MANTRA_WARN_ONCE("IssueSwap before the Vulkan device was set up, skipping present");
@@ -758,7 +945,9 @@ void NativeCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
       const int value = every ? std::atoi(every) : 0;
       return value > 0 ? uint32_t(value) : 150u;
     }();
-    if (presented && capture_dir && *capture_dir && swap_stats_.swaps % capture_every == 0) {
+    if (presented && capture_dir && *capture_dir &&
+        (swap_stats_.swaps % capture_every == 0 ||
+         (trace_swap_ && swap_stats_.swaps == trace_swap_))) {
       CaptureSurface(*surface, width, height, fetch.swizzle,
                      fmt::format("frame_{:06}", swap_stats_.swaps));
       resolved_surfaces_.ForEach([&](mantra::ResolvedSurface& other) {
@@ -900,9 +1089,12 @@ void NativeCommandProcessor::CaptureImage(mantra::TrackedImage& image, VkFormat 
     case VK_FORMAT_R16G16_SFLOAT:
     case VK_FORMAT_R32_SFLOAT: texel_size = 4; break;
     case VK_FORMAT_R16G16B16A16_SFLOAT: texel_size = 8; break;
+    case VK_FORMAT_S8_UINT: texel_size = 1; break;  // stencil plane of a depth image
     default: return;
   }
-  if (image.samples != VK_SAMPLE_COUNT_1_BIT || image.aspect != VK_IMAGE_ASPECT_COLOR_BIT) {
+  const bool stencil_plane = format == VK_FORMAT_S8_UINT;
+  if (image.samples != VK_SAMPLE_COUNT_1_BIT ||
+      (!stencil_plane && image.aspect != VK_IMAGE_ASPECT_COLOR_BIT)) {
     return;
   }
   width = std::min(width, image.width);
@@ -928,7 +1120,8 @@ void NativeCommandProcessor::CaptureImage(mantra::TrackedImage& image, VkFormat 
     mantra::TransitionImage(vulkan_device_, cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                             VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
     VkBufferImageCopy region = {};
-    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.aspectMask =
+        stencil_plane ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
     region.imageSubresource.layerCount = 1;
     region.imageExtent = {width, height, 1};
     dfn.vkCmdCopyImageToBuffer(cmd, image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1,
@@ -955,9 +1148,14 @@ void NativeCommandProcessor::CaptureImage(mantra::TrackedImage& image, VkFormat 
           for (uint32_t x = 0; x < width; ++x) {
             const uint8_t* t = bytes + (size_t(y) * width + x) * texel_size;
             float f[4] = {0, 0, 0, 1};
-            uint32_t v;
-            std::memcpy(&v, t, 4);
+            uint32_t v = 0;
+            std::memcpy(&v, t, std::min<uint32_t>(texel_size, 4));
             switch (format) {
+              case VK_FORMAT_S8_UINT:  // 0, 1, 2, 3 -> black, red, green, blue-ish
+                f[0] = (v & 1) ? 1.0f : 0.0f;
+                f[1] = (v & 2) ? 1.0f : 0.0f;
+                f[2] = v > 3 ? 1.0f : 0.0f;
+                break;
               case VK_FORMAT_R8G8B8A8_UNORM:
                 for (uint32_t i = 0; i < 4; ++i) f[i] = float((v >> (8 * i)) & 0xFF) / 255.0f;
                 break;
@@ -1107,13 +1305,14 @@ void NativeCommandProcessor::ReportSwapStats() {
       swap_stats_.swaps, swaps_per_second, swap_stats_.presented, swap_stats_.skipped,
       swap_stats_.refresh_failed, swap_stats_.last_lit_permille / 10.0);
   MANTRA_INFO("  presented {} from resolves, {} from guest memory; draws {}, resolves {} "
-              "(failed {}, color copies {}, depth copies skipped {}, unsupported dest {}), "
-              "clears color {} depth {}; solid fills color {} depth {} skipped {}; {} render targets, "
+              "(failed {}, color copies {}, depth copies {}, skipped {}, unsupported dest {}), "
+              "clears color {} depth {}; 7e3 conversions {}; solid fills color {} depth {} skipped {}; {} render targets, "
               "{} resolved surfaces",
               swap_stats_.presented_gpu, swap_stats_.presented_cpu, draw_stats_.draws,
               draw_stats_.copy_draws, draw_stats_.resolves_failed, draw_stats_.color_copies,
-              draw_stats_.depth_copies_skipped, draw_stats_.unsupported_dest_format,
-              draw_stats_.color_clears, draw_stats_.depth_clears, draw_stats_.fills_color,
+              draw_stats_.depth_copies, draw_stats_.depth_copies_skipped, draw_stats_.unsupported_dest_format,
+              draw_stats_.color_clears, draw_stats_.depth_clears, draw_stats_.float7e3_conversions,
+              draw_stats_.fills_color,
               draw_stats_.fills_depth, draw_stats_.fills_skipped, render_targets_.size(),
               resolved_surfaces_.size());
   MANTRA_INFO("shaders: {} loads, {} unique, {} dumped; cache {} exact, {} normalized, "
@@ -1129,11 +1328,11 @@ void NativeCommandProcessor::ReportSwapStats() {
               constant_stats_.ring_full, shader_interface_.slot_bytes_used() >> 10);
   const GuestDrawStats& g = guest_draw_stats_;
   MANTRA_INFO("guest draws: {} drawn in {} render passes, {} pipelines ({} failed); skipped: "
-              "primitive {}, no target {}, viewport {}, geometry {}; {} zero-fed inputs; "
+              "primitive {}, no target {}, viewport {}, geometry {}; {} zero-fed inputs, {} expanded; "
               "streamed {:.1f} MB vertices, {:.1f} MB indices",
               g.drawn, g.render_passes, draw_pipelines_.size(), draw_pipelines_.creation_failures(),
               g.skipped_primitive, g.skipped_no_target, g.skipped_viewport, g.skipped_geometry,
-              g.missing_inputs, g.vertex_bytes / 1048576.0, g.index_bytes / 1048576.0);
+              g.missing_inputs, g.expanded_inputs, g.vertex_bytes / 1048576.0, g.index_bytes / 1048576.0);
   const auto& bc = buffer_cache_.stats();
   MANTRA_INFO("buffer cache: {} entries in {} blocks; {} hits, {} uploads ({} re-uploads, "
               "{:.1f} MB), {} CPU-write invalidations, {} uncacheable, {} volatile, {} resets",
@@ -1191,6 +1390,7 @@ Shader* NativeCommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32
   if (!lookup.spirv.empty()) {
     shader->cache_entry = lookup.entry;
     shader->ps_outputs = lookup.entry->ps_outputs;
+    shader->vertex_index_divisor = lookup.entry->vertex_index_divisor;
     if (!is_pixel) {
       shader->DecodeVertexInputs(lookup.vertex_elements);
     }

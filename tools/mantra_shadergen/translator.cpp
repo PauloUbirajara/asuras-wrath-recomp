@@ -1,5 +1,8 @@
 #include "translator.h"
 
+#include <array>
+#include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <iterator>
 #include <regex>
@@ -131,6 +134,89 @@ void AdaptInterface(TranslateResult& r) {
   }
 }
 
+// The vertex fetches' index register is normally r0.x, the vertex index
+// XenosRecomp's inputs stand for. Particle shaders instead fetch at r0.y =
+// vertex index * (1 / K) [+ b], b < 1 / K: one element per K vertices (4
+// quad corners). Returns K (0 when the fetches use the vertex index or the
+// computation isn't recognized).
+uint32_t VertexIndexDivisor(const std::string& hlsl, const VertexShader* vertex_shader,
+                            const uint8_t* microcode, size_t microcode_dwords) {
+  if (!vertex_shader->vertexElementCount) return 0;
+  union {
+    VertexElement element;
+    uint32_t value;
+  };
+  value = vertex_shader->vertexElementsAndInterpolators[vertex_shader->field18];
+  const size_t fetch_dword = size_t(element.address) * 3;
+  if (fetch_dword >= microcode_dwords) return 0;
+  const uint8_t* w = microcode + fetch_dword * 4;
+  const uint32_t word0 = uint32_t(w[0]) << 24 | uint32_t(w[1]) << 16 | uint32_t(w[2]) << 8 | w[3];
+  const uint32_t src = (word0 >> 5) & 0x3F, src_component = (word0 >> 30) & 3;
+  if (src == 0 && src_component == 0) return 0;
+  const char component = "xyzw"[src_component];
+  const size_t main_at = hlsl.find("void main(");
+  if (src != 0 || main_at == std::string::npos) {
+    std::fprintf(stderr, "vertex fetch index r%u.%c: not handled\n", src, component);
+    return 0;
+  }
+  std::unordered_map<uint32_t, std::array<float, 4>> literals;
+  static const std::regex kLiteral(
+      R"(\tfloat4 c(\d+) = asfloat\(uint4\((0x[0-9A-F]+), (0x[0-9A-F]+), (0x[0-9A-F]+), (0x[0-9A-F]+)\)\);)");
+  for (std::sregex_iterator it(hlsl.cbegin() + main_at, hlsl.cend(), kLiteral), end; it != end;
+       ++it) {
+    std::array<float, 4> v;
+    for (int i = 0; i < 4; ++i) {
+      const uint32_t bits = uint32_t(std::stoul((*it)[2 + i], nullptr, 16));
+      std::memcpy(&v[i], &bits, 4);
+    }
+    literals[uint32_t(std::stoul((*it)[1]))] = v;
+  }
+  auto literal = [&](const std::string& reg, char c, float& out) {
+    const auto found = literals.find(uint32_t(std::stoul(reg)));
+    if (found == literals.end()) return false;
+    out = found->second[std::string("xyzw").find(c)];
+    return true;
+  };
+  // The first write of r0.<component>: "r0.<mask> = r0.<x..> * cA.<s> [+ cB.<s>];"
+  // or "ps = cA.<c> * r0.x;\n\t\t\tr0.<component> = ps;".
+  float scale = 0.0f, bias = 0.0f;
+  bool found = false;
+  static const std::regex kMad(
+      R"(\br0\.([xyzw]+) = r0\.([x]+) \* c(\d+)\.([xyzw]+)(?: \+ c(\d+)\.([xyzw]+))?;)");
+  static const std::regex kPs(R"(\bps = c(\d+)\.([xyzw]) \* r0\.x;\s*r0\.([xyzw]) = ps;)");
+  static const std::regex kWrite(R"(\br0\.([xyzw]+) =)");
+  for (std::sregex_iterator it(hlsl.cbegin() + main_at, hlsl.cend(), kWrite), end; it != end;
+       ++it) {
+    const std::string mask = (*it)[1];
+    const size_t lane = mask.find(component);
+    if (lane == std::string::npos) continue;
+    std::smatch m;
+    const auto from = hlsl.cbegin() + main_at + it->position();
+    if (std::regex_search(from, hlsl.cend(), m, kMad, std::regex_constants::match_continuous) &&
+        literal(m[3], std::string(m[4])[lane], scale) &&
+        (!m[5].matched || literal(m[5], std::string(m[6])[lane], bias))) {
+      found = true;
+    }
+    break;
+  }
+  if (!found) {
+    std::smatch m;
+    if (std::regex_search(hlsl.cbegin() + main_at, hlsl.cend(), m, kPs) &&
+        std::string(m[3])[0] == component && literal(m[1], std::string(m[2])[0], scale)) {
+      found = true;
+    }
+  }
+  const float divisor = scale > 0.0f ? 1.0f / scale : 0.0f;
+  const uint32_t k = uint32_t(divisor + 0.5f);
+  if (!found || k < 2 || std::abs(divisor - float(k)) > 1e-3f * k || bias < 0.0f ||
+      bias * k >= 1.0f) {
+    std::fprintf(stderr, "vertex fetch index r0.%c: unrecognized (scale %g bias %g)\n", component,
+                 scale, bias);
+    return 0;
+  }
+  return k;
+}
+
 // Vertex inputs and pixel shader outputs, from the container (the same data
 // XenosRecomp declares the entry point from). Vertex inputs XenosRecomp's
 // location table does not cover get free locations from 16 up.
@@ -186,15 +272,25 @@ bool CollectStageInterface(const uint8_t* container, TranslateResult& r) {
       used |= 1u << location;
     }
     out.append(copied, m[0].first);
-    out += m[2].matched ? std::string(m[0]) : "\t[[vk::location(" + std::to_string(location) +
+    std::string declaration = m[2].matched ? std::string(m[0])
+                                           : "\t[[vk::location(" + std::to_string(location) +
                                                  ")]] " + std::string(m[0]).substr(1);
+    // XenosRecomp declares BLENDINDICES uint4 and only converts it to float,
+    // but games put other data there (Asura's Wrath: normalized 8:8:8:8 bone
+    // weights); float4 lets the host vertex format convert it as fetched.
+    bool is_uint = m[3] == "uint4";
+    if (is_uint && declaration.find(": BLENDINDICES") != std::string::npos) {
+      declaration.replace(declaration.find("uint4"), 5, "float4");
+      is_uint = false;
+    }
+    out += declaration;
     copied = m[0].second;
     mantra::shader_cache::VertexElement packed{};
     packed.address = uint32_t(element.address);
     packed.location = location;
     packed.usage = mantra::shader_cache::DeclUsage(uint32_t(element.usage));
     packed.usage_index = uint32_t(element.usageIndex);
-    packed.is_uint = m[3] == "uint4";
+    packed.is_uint = is_uint;
     // The fetch's destination register (vfetch word 0 bits 12-17).
     const size_t fetch_dword = size_t(element.address) * 3;
     if (fetch_dword < microcode_dwords) {
@@ -313,6 +409,95 @@ TranslateResult TranslateContainer(const uint8_t* container) {
   if (!CollectStageInterface(container, result)) {
     result.failure = TranslateResult::Failure::kStageInterface;
     return result;
+  }
+  if (!result.is_pixel) {
+    // Xenos vertex shaders start with the vertex index in r0.x (billboards and
+    // trails expand quads from it); XenosRecomp only provides it in its
+    // Unleashed build.
+    const size_t main_at = result.hlsl.find("void main(\n");
+    const size_t r0_at = result.hlsl.find("\tfloat4 r0 = 0.0;\n", main_at);
+    if (main_at != std::string::npos && r0_at != std::string::npos) {
+      result.hlsl.replace(r0_at, 18,
+                          "\tfloat4 r0 = float4(float(iMantraVertexId + g_MantraVertexIndexBase), "
+                          "0.0, 0.0, 0.0);\n");
+      result.hlsl.insert(main_at + 11, "\tin uint iMantraVertexId : SV_VertexID,\n");
+    }
+  }
+
+  {
+    // A shader's literal constants (def c250..c255 and the like) are not in
+    // the guest constant registers. XenosRecomp uses them as local cN, except
+    // where the constant table declares an array over those registers (shaders
+    // with relative addressing): there it reads ARRAY(i) from the registers.
+    // Point constant-index reads of literal registers back at the literal.
+    const size_t main_at = result.hlsl.find("void main(");
+    if (main_at != std::string::npos) {
+      std::unordered_map<uint32_t, bool> literals;
+      static const std::regex literal_re("\\tfloat4 c(\\d+) = asfloat\\(");
+      for (auto it = std::sregex_iterator(result.hlsl.begin() + main_at, result.hlsl.end(),
+                                          literal_re);
+           it != std::sregex_iterator(); ++it) {
+        literals[uint32_t(std::stoul((*it)[1].str()))] = true;
+      }
+      static const std::regex array_re(
+          "#define (\\w+)\\(INDEX\\) select\\(\\(INDEX\\) < \\d+, MantraLoad_float4\\(g_PushConstants"
+          "\\.\\w+ \\+ \\((\\d+) \\+ min");
+      std::unordered_map<std::string, uint32_t> arrays;
+      for (auto it = std::sregex_iterator(result.hlsl.begin(), result.hlsl.begin() + main_at,
+                                          array_re);
+           it != std::sregex_iterator(); ++it) {
+        arrays[(*it)[1].str()] = uint32_t(std::stoul((*it)[2].str()));
+      }
+      if (!literals.empty() && !arrays.empty()) {
+        static const std::regex use_re("\\b(\\w+)\\((\\d+)\\)");
+        std::string body = result.hlsl.substr(main_at), out;
+        auto last = body.cbegin();
+        for (auto it = std::sregex_iterator(body.begin(), body.end(), use_re);
+             it != std::sregex_iterator(); ++it) {
+          const auto array = arrays.find((*it)[1].str());
+          if (array == arrays.end()) continue;
+          const uint32_t reg = array->second + uint32_t(std::stoul((*it)[2].str()));
+          if (!literals.count(reg)) continue;
+          out.append(last, body.cbegin() + it->position());
+          out += "c" + std::to_string(reg);
+          last = body.cbegin() + it->position() + it->length();
+        }
+        out.append(last, body.cend());
+        result.hlsl.replace(main_at, std::string::npos, out);
+      }
+    }
+  }
+
+  if (!result.is_pixel) {
+    // (After the literal remap: the index computation reads literals.)
+    const auto* shader_container = reinterpret_cast<const ShaderContainer*>(container);
+    const auto* shader =
+        reinterpret_cast<const Shader*>(container + shader_container->shaderOffset);
+    result.vertex_index_divisor = VertexIndexDivisor(
+        result.hlsl, reinterpret_cast<const VertexShader*>(shader),
+        container + shader_container->virtualSize + shader->physicalOffset, shader->size / 4);
+  }
+
+  if (result.is_pixel) {
+    // Fixed-point 16-bit render targets are hosted as SNORM value / 32;
+    // Vulkan clamps outputs to -1...1 before blending, so scale in the shader.
+    const size_t main_at = result.hlsl.find("void main(");
+    if (main_at != std::string::npos) {
+      std::string scale;
+      for (int i = 0; i < 4; ++i) {
+        const std::string n = std::to_string(i);
+        if (result.hlsl.find("oC" + n + " : SV_Target" + n, main_at) != std::string::npos)
+          scale += "if (g_MantraFixed16OutputMask & " + std::to_string(1 << i) + "u) oC" + n +
+                   " *= 0.03125; ";
+      }
+      if (!scale.empty()) {
+        const std::string replacement = "{ " + scale + "return; }";
+        for (size_t at = result.hlsl.find("return;", main_at); at != std::string::npos;
+             at = result.hlsl.find("return;", at + replacement.size())) {
+          result.hlsl.replace(at, 7, replacement);
+        }
+      }
+    }
   }
 
   static DxcCompiler dxc;

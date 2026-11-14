@@ -14,10 +14,14 @@
 #include <bit>
 #include <atomic>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <unordered_set>
 #include <vector>
 
 #include <rex/graphics/format/ucode.h>
+#include <rex/math.h>
 #include <rex/graphics/register_file.h>
 #include <rex/graphics/registers.h>
 #include <rex/graphics/util/draw.h>
@@ -87,6 +91,91 @@ VkFormat VertexAttributeFormat(const MantraShader::VertexInput& in, bool& packed
     // 32-bit integers and 10:11:11 into a float input have no fixed-function
     // equivalent.
     default: return VK_FORMAT_UNDEFINED;
+  }
+}
+
+// Dwords one element of `format` occupies, or 0 if DecodeVertexElement can't
+// decode it.
+uint32_t VertexElementWords(xenos::VertexFormat format) {
+  using F = xenos::VertexFormat;
+  switch (format) {
+    case F::k_8_8_8_8:
+    case F::k_2_10_10_10:
+    case F::k_10_11_11:
+    case F::k_11_11_10:
+    case F::k_16_16:
+    case F::k_16_16_FLOAT:
+    case F::k_32_FLOAT: return 1;
+    case F::k_16_16_16_16:
+    case F::k_16_16_16_16_FLOAT:
+    case F::k_32_32_FLOAT: return 2;
+    case F::k_32_32_32_FLOAT: return 3;
+    case F::k_32_32_32_32_FLOAT: return 4;
+    default: return 0;
+  }
+}
+
+// One vertex element (endian-swapped dwords) to float4, as the vfetch would
+// return it: signedness, normalization and exp_adjust applied; components
+// the format lacks are 0 (Y, Z) and 1 (W).
+void DecodeVertexElement(const MantraShader::VertexInput& in, const uint32_t* w, float* o) {
+  using F = xenos::VertexFormat;
+  o[0] = o[1] = o[2] = 0.0f;
+  o[3] = 1.0f;
+  auto fixed = [&](uint32_t bits, uint32_t width) {
+    if (in.is_signed) {
+      const float v = float(int32_t(bits << (32 - width)) >> (32 - width));
+      return in.normalized ? std::max(v / float((1u << (width - 1)) - 1), -1.0f) : v;
+    }
+    return in.normalized ? float(bits) / float((uint64_t(1) << width) - 1) : float(bits);
+  };
+  auto packed = [&](const uint32_t* widths, uint32_t count) {
+    uint32_t shift = 0;
+    for (uint32_t c = 0; c < count; ++c) {
+      o[c] = fixed((w[0] >> shift) & uint32_t((uint64_t(1) << widths[c]) - 1), widths[c]);
+      shift += widths[c];
+    }
+  };
+  switch (in.format) {
+    case F::k_8_8_8_8: {
+      static constexpr uint32_t kWidths[] = {8, 8, 8, 8};
+      packed(kWidths, 4);
+    } break;
+    case F::k_2_10_10_10: {
+      static constexpr uint32_t kWidths[] = {10, 10, 10, 2};
+      packed(kWidths, 4);
+    } break;
+    case F::k_10_11_11: {
+      static constexpr uint32_t kWidths[] = {11, 11, 10};
+      packed(kWidths, 3);
+    } break;
+    case F::k_11_11_10: {
+      static constexpr uint32_t kWidths[] = {10, 11, 11};
+      packed(kWidths, 3);
+    } break;
+    case F::k_16_16:
+    case F::k_16_16_16_16:
+      for (uint32_t c = 0; c < (in.format == F::k_16_16 ? 2u : 4u); ++c) {
+        o[c] = fixed((w[c >> 1] >> ((c & 1) * 16)) & 0xFFFF, 16);
+      }
+      break;
+    case F::k_16_16_FLOAT:
+    case F::k_16_16_16_16_FLOAT:
+      for (uint32_t c = 0; c < (in.format == F::k_16_16_FLOAT ? 2u : 4u); ++c) {
+        o[c] = rex::xenos_half_to_float(uint16_t(w[c >> 1] >> ((c & 1) * 16)));
+      }
+      break;
+    case F::k_32_FLOAT:
+    case F::k_32_32_FLOAT:
+    case F::k_32_32_32_FLOAT:
+    case F::k_32_32_32_32_FLOAT:
+      std::memcpy(o, w, VertexElementWords(in.format) * 4);
+      break;
+    default: break;
+  }
+  if (in.exp_adjust) {
+    const float scale = std::ldexp(1.0f, in.exp_adjust);
+    for (uint32_t c = 0; c < 4; ++c) o[c] *= scale;
   }
 }
 
@@ -196,6 +285,7 @@ void MantraShader::DecodeVertexInputs(std::span<const uint32_t> packed_elements)
                                   uint32_t(f.data_format()),
                                   f.is_mini_fetch() ? 0u : f.stride(),
                                   f.is_mini_fetch() ? "m" : "");
+      if (f.exp_adjust()) vfetch_debug += fmt::format("/x{}", f.exp_adjust());
     }
   }
   for (uint32_t packed : packed_elements) {
@@ -240,6 +330,7 @@ void MantraShader::DecodeVertexInputs(std::span<const uint32_t> packed_elements)
         in.format = fetch.data_format();
         in.is_signed = fetch.is_signed();
         in.normalized = fetch.is_normalized();
+        in.exp_adjust = fetch.exp_adjust();
       }
     }
     vertex_inputs.push_back(in);
@@ -265,6 +356,7 @@ void NativeCommandProcessor::PrepareTextures(const MantraShader* vs, const Mantr
     const mantra::TextureCache::Binding binding = texture_cache_.Get(fetch, *this);
     out.views[binding.dimension][slot] = binding.view;
     out.samplers[slot] = binding.sampler;
+    out.exp_bias[slot] = binding.exp_bias;
   }
 }
 
@@ -367,8 +459,8 @@ bool NativeCommandProcessor::BeginDrawRendering(VkCommandBuffer cmd, uint32_t co
   auto lookup = [&](bool create) {
     for (uint32_t i = 0; i < color_count; ++i) {
       if (colors[i].host_format == VK_FORMAT_UNDEFINED) continue;
-      color_rts[i] = create ? render_targets_.GetColor(cmd, colors[i].base, pitch, msaa,
-                                                       colors[i].format, frame)
+      color_rts[i] = create ? GetColorTarget(cmd, colors[i].base, pitch, msaa,
+                                             colors[i].format, frame)
                             : nullptr;
     }
     if (use_depth && create) {
@@ -693,6 +785,7 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::UploadGeometry(
     return indices;
   }
   upload.vertex_offset = upload.indexed ? -int32_t(range.min) : 0;
+  upload.vertex_index_base = (upload.indexed ? range.min : 0) + index_base;
   key.primitive_restart = range.restart ? 1 : 0;
 
   // Vertex buffers: one binding per fetch constant, starting at vertex
@@ -708,6 +801,12 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::UploadGeometry(
   uint32_t attribute_count = 0;
   uint32_t zero_binding_attributes[mantra::kMaxVertexAttributes];
   uint32_t zero_attribute_count = 0;
+  struct Expanded {
+    uint32_t attribute;
+    const MantraShader::VertexInput* in;
+  };
+  Expanded expanded[mantra::kMaxVertexAttributes];
+  uint32_t expanded_count = 0;
   for (const MantraShader::VertexInput& in : vs.vertex_inputs) {
     if (attribute_count >= mantra::kMaxVertexAttributes) break;
     auto& attr = key.attributes[attribute_count++];
@@ -716,10 +815,46 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::UploadGeometry(
                                      : VK_FORMAT_UNDEFINED;
     const auto fetch = in.valid ? regs.GetVertexFetch(in.fetch_constant)
                                 : xenos::xe_gpu_vertex_fetch_t{};
+    using VF = xenos::VertexFormat;
+    const bool packed_format = in.format == VF::k_10_11_11 || in.format == VF::k_11_11_10;
+    // XenosRecomp's uint4 inputs (NORMAL, TANGENT, BINORMAL) are asfloat()ed
+    // unless they are packed 10:11:11: give them the fetched floats' bits.
+    const bool uint_as_float_bits =
+        in.is_uint && !packed_format &&
+        (in.format == VF::k_8_8_8_8 || in.format == VF::k_2_10_10_10 ||
+         in.format == VF::k_16_16 || in.format == VF::k_16_16_16_16 ||
+         in.format == VF::k_16_16_FLOAT || in.format == VF::k_16_16_16_16_FLOAT);
+    if (in.valid && fetch.type == xenos::FetchConstantType::kVertex && in.offset_words >= 0 &&
+        (vs.vertex_index_divisor > 1 ||
+         (!in.is_uint && (packed_format || (in.exp_adjust && VertexElementWords(in.format)))) ||
+         uint_as_float_bits || (in.is_uint && in.exp_adjust && !packed_format &&
+                                VertexElementWords(in.format)))) {
+      // No Vulkan vertex format (10:11:11, a scaled fetch, float bits for a
+      // uint input), or fetched at vertex index / divisor: decoded on the
+      // CPU into a float4 binding.
+      if (expanded_count >= mantra::kMaxVertexAttributes) return DrawResult::kSkipped;
+      expanded[expanded_count++] = {attribute_count - 1, &in};
+      attr.format = uint32_t(in.is_uint ? VK_FORMAT_R32G32B32A32_UINT
+                                        : VK_FORMAT_R32G32B32A32_SFLOAT);
+      attr.offset = 0;
+      continue;
+    }
     if (format == VK_FORMAT_UNDEFINED || fetch.type != xenos::FetchConstantType::kVertex ||
         in.offset_words < 0) {
       // Fed zeros from a dedicated binding.
       ++guest_draw_stats_.missing_inputs;
+      {
+        static std::mutex zero_log_mutex;
+        static std::unordered_set<uint64_t> zero_logged;
+        std::lock_guard lock(zero_log_mutex);
+        if (zero_logged.insert(vs.ucode_data_hash() ^ (uint64_t(in.location) << 58)).second) {
+          MANTRA_WARN("zero-fed input: vs {:016X} loc {} usage {} uint {} valid {} fc {} "
+                      "fmt {} signed {} norm {} offset {} stride {} fetch type {}",
+                      vs.ucode_data_hash(), in.location, uint32_t(in.usage), in.is_uint,
+                      in.valid, in.fetch_constant, uint32_t(in.format), in.is_signed,
+                      in.normalized, in.offset_words, in.stride_words, uint32_t(fetch.type));
+        }
+      }
       attr.format = uint32_t(in.is_uint ? VK_FORMAT_R32G32B32A32_UINT
                                         : VK_FORMAT_R32G32B32A32_SFLOAT);
       attr.offset = 0;
@@ -793,6 +928,55 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::UploadGeometry(
     upload.binding_offsets[b] = offset;
     guest_draw_stats_.vertex_bytes += size;
   }
+  for (uint32_t e = 0; e < expanded_count; ++e) {
+    if (binding_count >= mantra::kMaxVertexBindings - 1) {
+      return DrawResult::kSkipped;
+    }
+    const MantraShader::VertexInput& in = *expanded[e].in;
+    const auto fetch = regs.GetVertexFetch(in.fetch_constant);
+    const uint32_t size = vertex_count * 16;
+    if (size > kMaxVertexUpload) {
+      MANTRA_WARN_ONCE("draw with {} bytes of expanded vertex data, skipping", size);
+      return DrawResult::kSkipped;
+    }
+    uint32_t offset;
+    auto* out = reinterpret_cast<float*>(shader_interface_.Allocate(size, offset));
+    if (!out) {
+      return DrawResult::kFailed;
+    }
+    const uint32_t buffer_words = fetch.size;
+    const uint32_t buffer_base = fetch.address;  // in dwords
+    const uint32_t* membase = memory_->TranslatePhysical<const uint32_t*>(0);
+    const uint32_t element_words = VertexElementWords(in.format);
+    for (uint32_t v = 0; v < vertex_count; ++v) {
+      const uint64_t element = vs.vertex_index_divisor > 1
+                                   ? (first_vertex + v) / vs.vertex_index_divisor
+                                   : first_vertex + v;
+      const uint64_t word = element * in.stride_words + uint64_t(in.offset_words);
+      uint32_t words[4] = {};
+      for (uint32_t i = 0; i < element_words; ++i) {
+        if (word + i < buffer_words) {
+          const uint32_t address =
+              ((buffer_base + uint32_t(word + i)) << 2) & kGuestPhysicalMemoryMask;
+          words[i] = xenos::GpuSwap(membase[address >> 2], fetch.endian);
+        }
+      }
+      if (in.is_uint && (in.format == xenos::VertexFormat::k_10_11_11 ||
+                         in.format == xenos::VertexFormat::k_11_11_10)) {
+        // Packed normal: the shader unpacks the raw word itself.
+        std::memcpy(out + v * 4, words, 4);
+      } else {
+        DecodeVertexElement(in, words, out + v * 4);
+      }
+    }
+    const uint32_t b = binding_count++;
+    key.binding_strides[b] = 16;
+    upload.binding_buffers[b] = shader_interface_.ring_buffer();
+    upload.binding_offsets[b] = offset;
+    key.attributes[expanded[e].attribute].binding = uint8_t(b);
+    guest_draw_stats_.vertex_bytes += size;
+    ++guest_draw_stats_.expanded_inputs;
+  }
   if (need_zero_binding) {
     const uint32_t b = binding_count++;
     uint32_t offset;
@@ -832,6 +1016,28 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
   }
   if (!index_count) {
     return DrawResult::kSkipped;
+  }
+  {
+    // Debug: MANTRA_SKIP_SHADERS=<hash>,<hash>... skips draws using any of
+    // these vertex or pixel shaders (exact hashes, as traced).
+    static const std::unordered_set<uint64_t> skip = [] {
+      std::unordered_set<uint64_t> set;
+      if (const char* env = std::getenv("MANTRA_SKIP_SHADERS")) {
+        for (const char* at = env; *at;) {
+          char* end;
+          const uint64_t hash = std::strtoull(at, &end, 16);
+          if (end == at) break;
+          set.insert(hash);
+          at = *end ? end + 1 : end;
+        }
+      }
+      return set;
+    }();
+    if (!skip.empty() &&
+        ((vs->cache_entry && skip.count(vs->cache_entry->exact_hash)) ||
+         (ps && ps->cache_entry && skip.count(ps->cache_entry->exact_hash)))) {
+      return DrawResult::kSkipped;
+    }
   }
   const RegisterFile& regs = *register_file_;
 
@@ -970,6 +1176,27 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
   mantra::SharedConstants shared;
   std::copy_n(viewport.ndc_scale, 3, shared.ndc_scale);
   std::copy_n(viewport.ndc_offset, 3, shared.ndc_offset);
+  {
+    // Fetch results are scaled by 2^exp_adjust in the shader (mantraExpAdjust).
+    uint32_t mask = 0;
+    if (vs->cache_entry) mask |= vs->cache_entry->texture_slot_mask;
+    if (ps && ps->cache_entry) mask |= ps->cache_entry->texture_slot_mask;
+    while (mask) {
+      const uint32_t slot = uint32_t(std::countr_zero(mask));
+      mask &= mask - 1;
+      shared.descriptor_indices[slot] =
+          uint32_t(int32_t(regs.GetTextureFetch(slot).exp_adjust) + textures.exp_bias[slot]);
+    }
+  }
+  // (key.color_count is only filled by BeginDrawRendering, later.)
+  for (uint32_t i = 0; i < 4; ++i) {
+    const auto rt_format =
+        regs.Get<reg::RB_COLOR_INFO>(reg::RB_COLOR_INFO::rt_register_indices[i]).color_format;
+    if (((color_mask >> (i * 4)) & 0xF) && (rt_format == xenos::ColorRenderTargetFormat::k_16_16 ||
+                                 rt_format == xenos::ColorRenderTargetFormat::k_16_16_16_16)) {
+      shared.fixed16_output_mask |= 1u << i;
+    }
+  }
   bool uploaded = false;
   for (int attempt = 0; attempt < 2 && !uploaded; ++attempt) {
     if (!BeginCommands()) {
@@ -988,6 +1215,7 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
       SubmitCommands();
       continue;
     }
+    shared.vertex_index_base = upload.vertex_index_base;
     if (!PrepareDrawConstants(offsets, shared)) {
       return DrawResult::kFailed;
     }
@@ -1034,6 +1262,14 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
     if (!b.enable) {
       b.src_color = b.dst_color = b.color_op = b.src_alpha = b.dst_alpha = b.alpha_op = 0;
     }
+    // Fixed-point 16-bit render targets: the pixel shader scales its output
+    // by 1 / 32 (fixed16_output_mask), which source-alpha factors would see.
+    if ((shared.fixed16_output_mask >> i) & 1 && b.enable &&
+        (b.src_color == VK_BLEND_FACTOR_SRC_ALPHA || b.dst_color == VK_BLEND_FACTOR_SRC_ALPHA ||
+         b.src_color == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA ||
+         b.dst_color == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA)) {
+      MANTRA_WARN_ONCE("source-alpha blend on a fixed-point 16-bit target, alpha / 32");
+    }
   }
 
   const VkPipeline pipeline = draw_pipelines_.Get(key);
@@ -1075,7 +1311,7 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
           : draw_util::kD3D10PolygonOffsetFactorFloat24;
   dfn.vkCmdSetDepthBias(cmd, bias_constant * constant_scale, 0.0f,
                         bias_slope * xenos::kPolygonOffsetScaleSubpixelUnit);
-  const float blend_constants[4] = {
+  float blend_constants[4] = {
       regs.Get<float>(XE_GPU_REG_RB_BLEND_RED), regs.Get<float>(XE_GPU_REG_RB_BLEND_GREEN),
       regs.Get<float>(XE_GPU_REG_RB_BLEND_BLUE), regs.Get<float>(XE_GPU_REG_RB_BLEND_ALPHA)};
   dfn.vkCmdSetBlendConstants(cmd, blend_constants);

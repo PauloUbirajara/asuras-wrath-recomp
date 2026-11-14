@@ -48,11 +48,14 @@ class MantraShader : public Shader {
     xenos::VertexFormat format = xenos::VertexFormat::kUndefined;
     bool is_signed = false;
     bool normalized = true;
+    int32_t exp_adjust = 0;  // results * 2^exp_adjust
   };
   std::vector<VertexInput> vertex_inputs;
   std::string vfetch_debug;  // all vfetches + cache elements (trace)
   // Pixel shaders: bits 0..3 = writes oC0..3, bit 4 = writes oDepth.
   uint32_t ps_outputs = 0;
+  // Vertex fetches read element floor(vertex index / this) when > 1.
+  uint32_t vertex_index_divisor = 0;
 
   void DecodeVertexInputs(std::span<const uint32_t> packed_elements);
 };
@@ -104,6 +107,12 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
   // Reserves a descriptor set slot in the current submission, submitting
   // first if the pool is full. Returns the pool to allocate from.
   VkDescriptorPool ReserveDescriptorSet();
+
+  // RenderTargetPool::GetColor, plus the 7e3 <-> 32bpp conversion it may ask
+  // for, recorded into `cmd` (outside rendering; never submits).
+  mantra::RenderTarget* GetColorTarget(VkCommandBuffer cmd, uint32_t base_tiles,
+                                       uint32_t pitch_px, xenos::MsaaSamples msaa,
+                                       xenos::ColorRenderTargetFormat format, uint64_t frame);
   void DestroyFrameResources();
 
   // --- Interim draw path ----------------------------------------------------
@@ -134,6 +143,7 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
     VkIndexType index_type = VK_INDEX_TYPE_UINT32;
     uint32_t draw_count = 0;    // vertices or indices
     int32_t vertex_offset = 0;  // added to indices (vkCmdDrawIndexed)
+    uint32_t vertex_index_base = 0;  // guest index of host vertex index 0
   };
   struct IndexRange {
     uint32_t min = 0, max = 0;  // referenced vertices (reset indices excluded)
@@ -167,6 +177,7 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
   struct TextureBindings {
     VkImageView views[3][mantra::ShaderInterface::kFetchSlots];
     VkSampler samplers[mantra::ShaderInterface::kFetchSlots];
+    int32_t exp_bias[mantra::ShaderInterface::kFetchSlots];
     bool operator==(const TextureBindings& other) const {
       return std::memcmp(this, &other, sizeof(*this)) == 0;
     }
@@ -202,6 +213,7 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
     uint64_t skipped_geometry = 0;   // vertex/index data unavailable
     uint64_t failed_pipeline = 0;
     uint64_t missing_inputs = 0;     // inputs fed zeros (undecodable fetch / format)
+    uint64_t expanded_inputs = 0;    // inputs decoded on the CPU (10:11:11 into float)
     uint64_t render_passes = 0;
     uint64_t vertex_bytes = 0;
     uint64_t index_bytes = 0;
@@ -263,6 +275,7 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
                     uint32_t height, uint32_t swizzle, const std::string& name);
   // MANTRA_CAPTURE_DIR + traced frame: dumps each pass's output.
   bool CapturingPasses();
+  bool CapturingDraws();
   uint32_t pass_capture_index_ = 0;
   // Set around DrawGuest in a traced frame: logs the draw's fixed-function state.
   bool trace_current_draw_ = false;
@@ -297,6 +310,8 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
     uint64_t copy_draws = 0;  // edram_mode kCopy, executed as resolves
     uint64_t resolves_failed = 0;
     uint64_t color_copies = 0;
+    uint64_t float7e3_conversions = 0;
+    uint64_t depth_copies = 0;
     uint64_t depth_copies_skipped = 0;
     uint64_t unsupported_dest_format = 0;
     uint64_t color_clears = 0;

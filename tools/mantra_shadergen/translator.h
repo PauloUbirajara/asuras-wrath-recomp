@@ -27,6 +27,9 @@ struct TranslateResult {
   // Vertex shaders: one packed mantra::shader_cache::VertexElement per vertex
   // input (ucode address of its vfetch + Vulkan input location).
   std::vector<uint32_t> vertex_elements;
+  // Vertex shaders: the vertex fetches read element floor(index / divisor)
+  // (0 = they read the vertex index).
+  uint32_t vertex_index_divisor = 0;
   std::string hlsl;
   std::vector<uint8_t> spirv;
 };

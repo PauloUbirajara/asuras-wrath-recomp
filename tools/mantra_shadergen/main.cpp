@@ -72,6 +72,7 @@ struct Shader {
   uint32_t bool_mask = 0;
   bool bool_overflow = false;
   uint32_t ps_outputs = 0;
+  uint32_t vertex_index_divisor = 0;
   std::vector<uint32_t> vertex_elements;
   std::vector<uint8_t> spirv;
 };
@@ -83,6 +84,7 @@ struct ChildResult {
   uint32_t bool_mask;
   uint32_t bool_overflow;
   uint32_t ps_outputs;
+  uint32_t vertex_index_divisor;
   uint32_t vertex_element_count;
   uint32_t vertex_elements[32];
 };
@@ -229,6 +231,7 @@ void TranslateAll(std::vector<Shader*>& shaders, const fs::path& work, const fs:
         s.bool_mask = cr.bool_mask;
         s.bool_overflow = cr.bool_overflow != 0;
         s.ps_outputs = cr.ps_outputs;
+        s.vertex_index_divisor = cr.vertex_index_divisor;
         s.vertex_elements.assign(cr.vertex_elements,
                                  cr.vertex_elements + std::min<uint32_t>(cr.vertex_element_count, 32));
       }
@@ -268,7 +271,7 @@ void TranslateAll(std::vector<Shader*>& shaders, const fs::path& work, const fs:
         }
         WriteFile(work / (std::to_string(next) + ".spv"), r.spirv.data(), r.spirv.size());
         ChildResult cr{r.spec_constants_mask, r.texture_slot_mask, r.bool_mask,
-                       uint32_t(r.bool_overflow), r.ps_outputs,
+                       uint32_t(r.bool_overflow), r.ps_outputs, r.vertex_index_divisor,
                        uint32_t(std::min<size_t>(r.vertex_elements.size(), 32)), {}};
         std::copy_n(r.vertex_elements.begin(), cr.vertex_element_count, cr.vertex_elements);
         WriteFile(work / (std::to_string(next) + ".ok"), &cr, sizeof(cr));
@@ -302,6 +305,7 @@ bool WriteCache(const fs::path& path, const std::map<uint64_t, Shader>& shaders)
     e.texture_slot_mask = s.texture_slot_mask;
     e.bool_mask = s.bool_mask;
     e.ps_outputs = s.ps_outputs;
+    e.vertex_index_divisor = s.vertex_index_divisor;
     if (s.translated) {
       e.spirv_offset = uint32_t(blobs.size());
       e.spirv_size = uint32_t(s.spirv.size());
@@ -421,10 +425,19 @@ int main(int argc, char** argv) {
   }
   if (!jobs) {
     jobs = std::max(1u, std::thread::hardware_concurrency());
-    const long pages = sysconf(_SC_AVPHYS_PAGES), page_size = sysconf(_SC_PAGESIZE);
-    if (limits.mem_mb && pages > 0 && page_size > 0) {
-      const uint64_t avail_mb = uint64_t(pages) * uint64_t(page_size) >> 20;
-      jobs = std::clamp<unsigned>(unsigned(avail_mb / limits.mem_mb), 1u, jobs);
+    // MemAvailable (free memory plus reclaimable cache; _SC_AVPHYS_PAGES only
+    // counts free pages). The child limit is an address-space cap, far above
+    // what a translation actually uses, so budget ~1 GB per child.
+    unsigned long long avail_kb = 0;
+    if (std::FILE* meminfo = std::fopen("/proc/meminfo", "r")) {
+      char line[256];
+      while (std::fgets(line, sizeof(line), meminfo)) {
+        if (std::sscanf(line, "MemAvailable: %llu kB", &avail_kb) == 1) break;
+      }
+      std::fclose(meminfo);
+    }
+    if (avail_kb) {
+      jobs = std::clamp<unsigned>(unsigned((avail_kb >> 10) / 1024), 1u, jobs);
     }
   }
   const fs::path cooked = game / "BCGame" / "CookedXbox360";

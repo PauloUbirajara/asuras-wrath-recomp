@@ -105,13 +105,30 @@ RtClass RenderTargetPool::HostColorClass(xenos::ColorRenderTargetFormat format) 
 
 RenderTarget* RenderTargetPool::GetColor(VkCommandBuffer cmd, uint32_t base_tiles,
                                          uint32_t pitch_px, xenos::MsaaSamples msaa,
-                                         xenos::ColorRenderTargetFormat format, uint64_t frame) {
+                                         xenos::ColorRenderTargetFormat format, uint64_t frame,
+                                         RenderTarget** convert_from) {
   RtKey key{base_tiles & (xenos::kEdramTileCount - 1), pitch_px, msaa, HostColorClass(format)};
   auto it = targets_.find(key.Hash());
   RenderTarget* rt = it != targets_.end() ? it->second.get() : Create(cmd, key);
-  if (rt) {
-    rt->last_used_frame = frame;
+  if (!rt) {
+    return nullptr;
   }
+  if (convert_from) {
+    *convert_from = nullptr;
+    RtKey other_key = key;
+    other_key.cls = key.cls == RtClass::kColor32 ? RtClass::kColor64 : RtClass::kColor32;
+    auto other = targets_.find(other_key.Hash());
+    if (other != targets_.end() && other->second->use_serial > rt->use_serial) {
+      RenderTarget* o = other->second.get();
+      // 32bpp after 7e3: the 7e3 bits. 7e3 after any 32bpp format: its bits as 7e3.
+      if (key.cls == RtClass::kColor32 ? IsFloat7e3(o->last_format) : IsFloat7e3(format)) {
+        *convert_from = o;
+      }
+    }
+  }
+  rt->last_used_frame = frame;
+  rt->use_serial = ++use_serial_;
+  rt->last_format = format;
   return rt;
 }
 
@@ -125,6 +142,98 @@ RenderTarget* RenderTargetPool::GetDepth(VkCommandBuffer cmd, uint32_t base_tile
     rt->last_used_frame = frame;
   }
   return rt;
+}
+
+namespace {
+// Samples per pixel along x and y in EDRAM (2x stacks vertically).
+uint32_t SampleScaleX(xenos::MsaaSamples msaa) {
+  return msaa == xenos::MsaaSamples::k4X ? 2 : 1;
+}
+uint32_t SampleScaleY(xenos::MsaaSamples msaa) {
+  return msaa == xenos::MsaaSamples::k1X ? 1 : 2;
+}
+}  // namespace
+
+std::vector<RenderTargetPool::Alias> RenderTargetPool::Aliases(const RenderTarget& rt,
+                                                               const VkRect2D& rect) {
+  std::vector<Alias> result;
+  const uint32_t row_samples = rt.key.pitch_px * SampleScaleX(rt.key.msaa);
+  const uint32_t sx0 = uint32_t(rect.offset.x) * SampleScaleX(rt.key.msaa);
+  const uint32_t sy0 = uint32_t(rect.offset.y) * SampleScaleY(rt.key.msaa);
+  const uint32_t sx1 = sx0 + rect.extent.width * SampleScaleX(rt.key.msaa);
+  const uint32_t sy1 = sy0 + rect.extent.height * SampleScaleY(rt.key.msaa);
+  for (auto& [hash, other] : targets_) {
+    if (other.get() == &rt || other->key.base_tiles != rt.key.base_tiles ||
+        other->key.cls != rt.key.cls ||
+        other->key.pitch_px * SampleScaleX(other->key.msaa) != row_samples) {
+      continue;
+    }
+    const uint32_t ox = SampleScaleX(other->key.msaa), oy = SampleScaleY(other->key.msaa);
+    const uint32_t x0 = sx0 / ox, y0 = sy0 / oy;
+    const uint32_t x1 = std::min((sx1 + ox - 1) / ox, other->image.width);
+    const uint32_t y1 = std::min((sy1 + oy - 1) / oy, other->image.height);
+    if (x1 > x0 && y1 > y0) {
+      result.push_back({other.get(), {{int32_t(x0), int32_t(y0)}, {x1 - x0, y1 - y0}}});
+    }
+  }
+  // Different layouts (pitch, samples per row or base): a rect covering whole
+  // tile rows is a contiguous tile range; clear the same tiles in every other
+  // overlapping target of the class (games clear one surface through
+  // another, e.g. 2x MSAA at half pitch for a 1x full-pitch target).
+  const bool is_64 = rt.key.cls == RtClass::kColor64;
+  const uint32_t pitch_tiles = xenos::GetSurfacePitchTiles(rt.key.pitch_px, rt.key.msaa, is_64);
+  const uint32_t tile_w = (xenos::kEdramTileWidthSamples >> (is_64 ? 1 : 0)) /
+                          SampleScaleX(rt.key.msaa);
+  const uint32_t tile_h = xenos::kEdramTileHeightSamples / SampleScaleY(rt.key.msaa);
+  if (!pitch_tiles || rect.offset.x != 0 || rect.extent.width < pitch_tiles * tile_w ||
+      rect.offset.y % tile_h || rect.extent.height % tile_h) {
+    return result;
+  }
+  const uint32_t first = rt.key.base_tiles + uint32_t(rect.offset.y) / tile_h * pitch_tiles;
+  const uint32_t last = std::min<uint32_t>(
+      first + rect.extent.height / tile_h * pitch_tiles, xenos::kEdramTileCount);
+  for (auto& [hash, other] : targets_) {
+    if (other.get() == &rt || other->key.cls != rt.key.cls) {
+      continue;
+    }
+    bool listed = false;
+    for (const Alias& a : result) listed |= a.rt == other.get();
+    if (listed) {
+      continue;
+    }
+    const uint32_t opt = xenos::GetSurfacePitchTiles(other->key.pitch_px, other->key.msaa, is_64);
+    if (!opt) {
+      continue;
+    }
+    const uint32_t otw = (xenos::kEdramTileWidthSamples >> (is_64 ? 1 : 0)) /
+                         SampleScaleX(other->key.msaa);
+    const uint32_t oth = xenos::kEdramTileHeightSamples / SampleScaleY(other->key.msaa);
+    const uint32_t a = std::max(first, other->key.base_tiles);
+    if (a >= last) {
+      continue;
+    }
+    const uint32_t rel0 = a - other->key.base_tiles, rel1 = last - other->key.base_tiles;
+    auto add = [&](uint32_t col0, uint32_t col1, uint32_t row0, uint32_t row1) {
+      const uint32_t x0 = col0 * otw, x1 = std::min(col1 * otw, other->image.width);
+      const uint32_t y0 = row0 * oth, y1 = std::min(row1 * oth, other->image.height);
+      if (x1 > x0 && y1 > y0) {
+        result.push_back({other.get(), {{int32_t(x0), int32_t(y0)}, {x1 - x0, y1 - y0}}});
+      }
+    };
+    const uint32_t r0 = rel0 / opt, c0 = rel0 % opt, r1 = rel1 / opt, c1 = rel1 % opt;
+    if (r0 == r1) {
+      add(c0, c1, r0, r0 + 1);
+    } else {
+      uint32_t full0 = r0;
+      if (c0) {
+        add(c0, opt, r0, r0 + 1);
+        full0 = r0 + 1;
+      }
+      if (r1 > full0) add(0, opt, full0, r1);
+      if (c1) add(0, c1, r1, r1 + 1);
+    }
+  }
+  return result;
 }
 
 RenderTarget* RenderTargetPool::Create(VkCommandBuffer cmd, const RtKey& key) {
@@ -203,6 +312,20 @@ VkImageView RenderTargetPool::GetView(RenderTarget& rt, VkFormat format) {
     MANTRA_ERROR("failed to create a render target view of format {}", int32_t(format));
   }
   rt.views.emplace(format, view);
+  return view;
+}
+
+VkImageView RenderTargetPool::GetDepthSampleView(RenderTarget& rt) {
+  // Keyed as UNDEFINED in `views` (no other view uses it).
+  if (auto it = rt.views.find(VK_FORMAT_UNDEFINED); it != rt.views.end()) {
+    return it->second;
+  }
+  VkImageView view =
+      CreateImageView(device_, rt.image.image, depth_format_, VK_IMAGE_ASPECT_DEPTH_BIT);
+  if (!view) {
+    MANTRA_ERROR("failed to create a depth sampling view");
+  }
+  rt.views.emplace(VK_FORMAT_UNDEFINED, view);
   return view;
 }
 
@@ -352,8 +475,10 @@ VkFormat ResolvedSurfaces::HostFormat(xenos::ColorFormat format) {
     case F::k_2_10_10_10:
     case F::k_2_10_10_10_AS_16_16_16_16: return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
     case F::k_16: return VK_FORMAT_R16_UNORM;
-    case F::k_16_16: return VK_FORMAT_R16G16_UNORM;
-    case F::k_16_16_16_16: return VK_FORMAT_R16G16B16A16_UNORM;
+    // Signed: resolves from the 16-bit fixed-point targets keep their bits
+    // (textures reinterpret them with their own signedness).
+    case F::k_16_16: return VK_FORMAT_R16G16_SNORM;
+    case F::k_16_16_16_16: return VK_FORMAT_R16G16B16A16_SNORM;
     case F::k_16_FLOAT: return VK_FORMAT_R16_SFLOAT;
     case F::k_16_16_FLOAT: return VK_FORMAT_R16G16_SFLOAT;
     case F::k_16_16_16_16_FLOAT: return VK_FORMAT_R16G16B16A16_SFLOAT;
@@ -399,8 +524,8 @@ ResolvedSurface* ResolvedSurfaces::Find(uint32_t address) {
 }
 
 ResolvedSurface* ResolvedSurfaces::Get(uint32_t address, uint32_t pitch, uint32_t height,
-                                       xenos::ColorFormat format, uint64_t frame) {
-  const VkFormat host_format = HostFormat(format);
+                                       xenos::ColorFormat format, uint64_t frame, bool depth) {
+  const VkFormat host_format = depth ? VK_FORMAT_R32_SFLOAT : HostFormat(format);
   if (host_format == VK_FORMAT_UNDEFINED) {
     return nullptr;
   }
@@ -409,7 +534,7 @@ ResolvedSurface* ResolvedSurfaces::Get(uint32_t address, uint32_t pitch, uint32_
   height = std::clamp<uint32_t>(height, 1, max_dim);
   if (auto it = surfaces_.find(address); it != surfaces_.end()) {
     ResolvedSurface& existing = *it->second;
-    if (existing.format == format && existing.image.width >= pitch &&
+    if (existing.format == format && existing.depth == depth && existing.image.width >= pitch &&
         existing.image.height >= height) {
       existing.pitch = pitch;
       existing.height = height;
@@ -428,6 +553,7 @@ ResolvedSurface* ResolvedSurfaces::Get(uint32_t address, uint32_t pitch, uint32_
   surface->pitch = pitch;
   surface->height = height;
   surface->format = format;
+  surface->depth = depth;
   if (!CreateTrackedImage(device_, host_format, VK_IMAGE_ASPECT_COLOR_BIT, pitch, height,
                           VK_SAMPLE_COUNT_1_BIT,
                           VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |

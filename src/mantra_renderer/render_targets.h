@@ -12,6 +12,7 @@
 // (later) the texture cache read them instead of guest memory.
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -106,12 +107,25 @@ class RenderTargetPool {
     RenderTarget* rt;
     VkRect2D rect;
   };
-  std::vector<Alias> Aliases(const RenderTarget& rt, const VkRect2D& rect);
+  // `cls` selects the class of the aliases (default: `rt`'s own). Depth and
+  // 32bpp color share the tile layout, so a depth clear can be applied to
+  // the 32bpp color targets over the same tiles (kColor32 for a kDepth rt).
+  std::vector<Alias> Aliases(const RenderTarget& rt, const VkRect2D& rect,
+                             std::optional<RtClass> cls = std::nullopt);
   // `rt` now holds the latest data of its EDRAM as `format` (written through
   // an alias): GetColor's 32bpp <-> 64bpp conversions take it as the newest.
   void MarkWritten(RenderTarget& rt, xenos::ColorRenderTargetFormat format) {
     rt.use_serial = ++use_serial_;
     rt.last_format = format;
+  }
+  // Whether the color target's 32bpp <-> 64bpp counterpart (same base, pitch
+  // and samples) was used more recently, i.e. holds the newer EDRAM data.
+  bool CounterpartIsNewer(const RenderTarget& rt) const {
+    if (rt.key.cls == RtClass::kDepth) return false;
+    RtKey other_key = rt.key;
+    other_key.cls = rt.key.cls == RtClass::kColor32 ? RtClass::kColor64 : RtClass::kColor32;
+    const auto it = targets_.find(other_key.Hash());
+    return it != targets_.end() && it->second->use_serial > rt.use_serial;
   }
 
   // Clears `rect` (in pixels) of the render target, with the guest clear

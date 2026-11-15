@@ -328,6 +328,19 @@ void TextureCache::Shutdown() {
   device_ = nullptr;
 }
 
+uint64_t TextureCache::GuestDataHash(const Texture& texture) const {
+  uint64_t hash = 0;
+  if (texture.base_length && uint64_t(texture.base_start) + texture.base_length <= uint64_t(kPhysicalMask) + 1) {
+    if (const uint8_t* src = watcher_->Translate(texture.base_start))
+      hash = XXH3_64bits_withSeed(src, texture.base_length, hash);
+  }
+  if (texture.mip_length && uint64_t(texture.mip_start) + texture.mip_length <= uint64_t(kPhysicalMask) + 1) {
+    if (const uint8_t* src = watcher_->Translate(texture.mip_start))
+      hash = XXH3_64bits_withSeed(src, texture.mip_length, hash);
+  }
+  return hash;
+}
+
 // --- Lookup -----------------------------------------------------------------
 
 TextureCache::Binding TextureCache::Get(const xenos::xe_gpu_texture_fetch_t& fetch, Host& host) {
@@ -397,7 +410,21 @@ TextureCache::Binding TextureCache::Get(const xenos::xe_gpu_texture_fetch_t& fet
       ++stats_.resolve_mismatches;
     }
   }
-  if (!from_resolve && (texture.resolved_image != VK_NULL_HANDLE || !texture.initialized ||
+  // Debug: MANTRA_TEXTURE_HASH_CHECK rehashes the guest data every 16th bind
+  // and reloads (logging the address) when it changed without the page
+  // watch noticing, e.g. data written by host-side file I/O.
+  static const bool hash_check = std::getenv("MANTRA_TEXTURE_HASH_CHECK") != nullptr;
+  bool stale = false;
+  if (hash_check && !from_resolve && texture.initialized &&
+      texture.resolved_image == VK_NULL_HANDLE && (++texture.hash_check_counter & 15) == 0) {
+    const uint64_t hash = GuestDataHash(texture);
+    if (hash != texture.content_hash) {
+      MANTRA_INFO("texture {:08X}: guest data changed without a watch hit; reloading",
+                  texture.base_start);
+      stale = true;
+    }
+  }
+  if (!from_resolve && (stale || texture.resolved_image != VK_NULL_HANDLE || !texture.initialized ||
              !watcher_->RangeUnchanged(texture.base_start, texture.base_length, texture.epoch,
                                        texture.base_checked) ||
              !watcher_->RangeUnchanged(texture.mip_start, texture.mip_length, texture.epoch,
@@ -514,6 +541,7 @@ bool TextureCache::LoadFromMemory(Texture& texture, const xenos::xe_gpu_texture_
   texture.epoch = watcher_->WatchRange(base_address, base_length);
   watcher_->WatchRange(mip_address, mip_length);
   texture.base_checked = texture.mip_checked = texture.epoch;
+  texture.content_hash = GuestDataHash(texture);
 
   // The endian swap applies to memory words, so the whole source range is
   // swapped before untiling.

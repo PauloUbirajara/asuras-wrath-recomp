@@ -339,6 +339,31 @@ void MantraShader::DecodeVertexInputs(std::span<const uint32_t> packed_elements)
 
 // --- Textures ---------------------------------------------------------------------
 
+// Debug: MANTRA_DEBUG_NULL_SLOTS="<ps hash>:<slot>,..." binds the placeholder
+// (transparent black) instead of that pixel shader's texture in that fetch
+// slot; "*" as the hash matches every pixel shader. For isolating which input
+// of a shader causes a wrong colour.
+static bool DebugNullSlot(const MantraShader* ps, uint32_t slot) {
+  static const std::vector<std::pair<uint64_t, uint32_t>> rules = [] {
+    std::vector<std::pair<uint64_t, uint32_t>> out;
+    const char* env = std::getenv("MANTRA_DEBUG_NULL_SLOTS");
+    for (const char* p = env; p && *p;) {
+      const char* colon = std::strchr(p, ':');
+      if (!colon) break;
+      const uint64_t hash = *p == '*' ? 0 : std::strtoull(p, nullptr, 16);
+      out.emplace_back(hash, uint32_t(std::strtoul(colon + 1, nullptr, 10)));
+      p = std::strchr(colon, ',');
+      p = p ? p + 1 : nullptr;
+    }
+    return out;
+  }();
+  if (rules.empty() || !ps || !ps->cache_entry) return false;
+  for (const auto& [hash, s] : rules) {
+    if (s == slot && (hash == 0 || hash == ps->cache_entry->exact_hash)) return true;
+  }
+  return false;
+}
+
 void NativeCommandProcessor::PrepareTextures(const MantraShader* vs, const MantraShader* ps,
                                              TextureBindings& out) {
   std::memset(&out, 0, sizeof(out));
@@ -354,6 +379,10 @@ void NativeCommandProcessor::PrepareTextures(const MantraShader* vs, const Mantr
       continue;
     }
     const mantra::TextureCache::Binding binding = texture_cache_.Get(fetch, *this);
+    if (DebugNullSlot(ps, slot)) {
+      out.samplers[slot] = binding.sampler;
+      continue;  // leave the view null: the placeholder (transparent black)
+    }
     out.views[binding.dimension][slot] = binding.view;
     out.samplers[slot] = binding.sampler;
     out.exp_bias[slot] = binding.exp_bias;

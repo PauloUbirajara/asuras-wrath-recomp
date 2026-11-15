@@ -117,6 +117,10 @@ class TextureCache {
     // Guest data watched for CPU writes.
     uint32_t base_start = 0, base_length = 0, mip_start = 0, mip_length = 0;
     uint32_t epoch = 0, base_checked = 0, mip_checked = 0;
+    // MANTRA_TEXTURE_HASH_CHECK: hash of the guest data when loaded, and a
+    // bind counter for spacing the rechecks.
+    uint64_t content_hash = 0;
+    uint32_t hash_check_counter = 0;
     // When copied from a resolved surface: which one, and its write count.
     VkImage resolved_image = VK_NULL_HANDLE;
     uint64_t resolved_writes = 0;
@@ -129,6 +133,7 @@ class TextureCache {
   };
 
   bool CreateImage(Texture& texture);
+  uint64_t GuestDataHash(const Texture& texture) const;
   bool LoadFromMemory(Texture& texture, const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch,
                       Host& host);
   bool CopyFromResolved(Texture& texture, const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch,

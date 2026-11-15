@@ -735,6 +735,9 @@ void NativeCommandProcessor::TraceDraw(xenos::PrimitiveType prim_type, uint32_t 
                             uint32_t(fetch.format), uint32_t(fetch.dimension),
                             uint32_t(fetch.swizzle));
     if (fetch.exp_adjust) textures += fmt::format("/x{}", int32_t(fetch.exp_adjust));
+    // Sign per component: 0 unsigned, 1 signed, 2 unsigned biased, 3 gamma.
+    textures += fmt::format("/g{}{}{}{}", uint32_t(fetch.sign_x), uint32_t(fetch.sign_y),
+                            uint32_t(fetch.sign_z), uint32_t(fetch.sign_w));
     // Guest-memory content check: nonzero bytes in the first 64 KB.
     if (const auto* t = memory_->TranslatePhysical<const uint8_t*>((fetch.base_address << 12) &
                                                                    0x1FFFFFFF)) {
@@ -819,9 +822,9 @@ void NativeCommandProcessor::TraceDraw(xenos::PrimitiveType prim_type, uint32_t 
     }
     MANTRA_INFO("trace:   vsc{}", vs_constants);
   }
-  // PS float constants c0..c7 (they follow the 256 VS registers).
+  // PS float constants c0..c31 (they follow the 256 VS registers).
   std::string constants;
-  for (uint32_t i = 0; i < 16; ++i) {
+  for (uint32_t i = 0; i < 32; ++i) {
     const uint32_t base = XE_GPU_REG_SHADER_CONSTANT_256_X + i * 4;
     constants += fmt::format(" c{}=({:g} {:g} {:g} {:g})", i, regs.Get<float>(base),
                              regs.Get<float>(base + 1), regs.Get<float>(base + 2),

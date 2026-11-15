@@ -155,8 +155,10 @@ uint32_t SampleScaleY(xenos::MsaaSamples msaa) {
 }  // namespace
 
 std::vector<RenderTargetPool::Alias> RenderTargetPool::Aliases(const RenderTarget& rt,
-                                                               const VkRect2D& rect) {
+                                                               const VkRect2D& rect,
+                                                               std::optional<RtClass> cls) {
   std::vector<Alias> result;
+  const RtClass alias_cls = cls.value_or(rt.key.cls);
   const uint32_t row_samples = rt.key.pitch_px * SampleScaleX(rt.key.msaa);
   const uint32_t sx0 = uint32_t(rect.offset.x) * SampleScaleX(rt.key.msaa);
   const uint32_t sy0 = uint32_t(rect.offset.y) * SampleScaleY(rt.key.msaa);
@@ -164,7 +166,7 @@ std::vector<RenderTargetPool::Alias> RenderTargetPool::Aliases(const RenderTarge
   const uint32_t sy1 = sy0 + rect.extent.height * SampleScaleY(rt.key.msaa);
   for (auto& [hash, other] : targets_) {
     if (other.get() == &rt || other->key.base_tiles != rt.key.base_tiles ||
-        other->key.cls != rt.key.cls ||
+        other->key.cls != alias_cls ||
         other->key.pitch_px * SampleScaleX(other->key.msaa) != row_samples) {
       continue;
     }
@@ -193,7 +195,7 @@ std::vector<RenderTargetPool::Alias> RenderTargetPool::Aliases(const RenderTarge
   const uint32_t last = std::min<uint32_t>(
       first + rect.extent.height / tile_h * pitch_tiles, xenos::kEdramTileCount);
   for (auto& [hash, other] : targets_) {
-    if (other.get() == &rt || other->key.cls != rt.key.cls) {
+    if (other.get() == &rt || other->key.cls != alias_cls) {
       continue;
     }
     bool listed = false;

@@ -3,6 +3,7 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <iterator>
 #include <regex>
@@ -58,6 +59,19 @@ void AdaptInterface(TranslateResult& r) {
   // exp2(log2(x) * n) power term evaluated to 1, e.g. specular/fresnel
   // reflections at full strength) and rcp of a negative value turned
   // positive. Xenos clamps infinities to +-FLT_MAX instead.
+  // LOG and RSQ also take the absolute value of their operand (as D3D9's
+  // log/rsq do); HLSL's log2/rsqrt return NaN for negative inputs, which the
+  // FLT_MIN clamp used to hide.
+  for (const char* fn : {"clamp(log2(", "clamp(rsqrt("}) {
+    const size_t fn_len = std::strlen(fn);
+    for (size_t at = 0; (at = hlsl.find(fn, at)) != std::string::npos;) {
+      const size_t end = hlsl.find("), FLT_MIN, FLT_MAX)", at);
+      if (end == std::string::npos) break;
+      hlsl.insert(end, ")");
+      hlsl.insert(at + fn_len, "abs(");
+      at = end + 5;
+    }
+  }
   for (size_t at = 0; (at = hlsl.find(", FLT_MIN, FLT_MAX)", at)) != std::string::npos;) {
     hlsl.replace(at, 19, ", -FLT_MAX, FLT_MAX)");
     at += 20;
@@ -142,6 +156,17 @@ void AdaptInterface(TranslateResult& r) {
     static const std::regex kHalfPixel(R"(oPos\.xy \+= g_HalfPixelOffset \* oPos\.w;)");
     hlsl = std::regex_replace(hlsl, kHalfPixel,
                               "oPos.xyz = oPos.xyz * g_NdcScale + g_NdcOffset * oPos.w;");
+    // Invariant position: the depth prepass, base pass and additive light
+    // passes are separate vertex shaders running the same position math, and
+    // depth-test each other for equality (GEQUAL, no depth write). Without
+    // `precise` (SPIR-V NoContraction) the driver fuses mul+add into FMAs
+    // differently per shader, the depths differ in the last bits and the
+    // light passes fail on most pixels (unlit, ambient-only characters, and
+    // z-fighting speckles).
+    const std::string kPos = "\tout float4 oPos : SV_Position";
+    if (const size_t at = hlsl.find(kPos); at != std::string::npos) {
+      hlsl.replace(at, kPos.size(), "\tout precise float4 oPos : SV_Position");
+    }
   }
 }
 
@@ -555,6 +580,18 @@ TranslateResult TranslateContainer(const uint8_t* container) {
           result.hlsl.replace(at, 7, replacement);
         }
       }
+    }
+  }
+
+  // Debugging (with --only <hash>): compile this file instead of the generated
+  // HLSL, e.g. an edited copy of the --hlsl output.
+  if (const char* patch = std::getenv("MANTRA_HLSL_PATCH_FILE"); patch && *patch) {
+    if (std::FILE* file = std::fopen(patch, "rb")) {
+      std::string text;
+      char buffer[65536];
+      for (size_t n; (n = std::fread(buffer, 1, sizeof(buffer), file)) > 0;) text.append(buffer, n);
+      std::fclose(file);
+      result.hlsl = std::move(text);
     }
   }
 

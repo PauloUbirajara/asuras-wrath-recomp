@@ -237,6 +237,37 @@ NativeCommandProcessor::SolidFillResult NativeCommandProcessor::TrySolidFill(
         render_targets_.ClearDepthStencil(cmd, *alias.rt, alias.rect, write_depth, depth,
                                           write_stencil, stencil_ref);
       }
+      // Depth and 32bpp color share EDRAM: a depth clear also overwrites the
+      // color data in the same tiles. Games use that to fill color fast
+      // (Asura's Wrath clears its shadow-attenuation buffer to white through
+      // depth 1.0 / stencil 0xFF at the color buffer's base). Only full-word
+      // clears, whose EDRAM value is known: (depth24 << 8) | stencil; and only
+      // into a 32bpp target that already is the newest copy of its EDRAM:
+      // clearing one whose 7e3 (64bpp) counterpart is newer would make the
+      // whole stale image the newest, and the next 7e3 draw would convert
+      // all of it, losing what the clear didn't cover.
+      if (write_depth && write_stencil) {
+        const float guest_depth = std::clamp(z, 0.0f, 1.0f);
+        const uint32_t depth24 =
+            depth_info.depth_format == xenos::DepthRenderTargetFormat::kD24FS8
+                ? xenos::Float32To20e4(guest_depth, true)
+                : uint32_t(std::lround(double(guest_depth) * 0xFFFFFF));
+        const uint64_t word = (uint64_t(depth24 & 0xFFFFFF) << 8) | (stencil_ref & 0xFF);
+        for (const auto& alias : render_targets_.Aliases(*rt, rect, mantra::RtClass::kColor32)) {
+          if (render_targets_.CounterpartIsNewer(*alias.rt)) {
+            continue;
+          }
+          render_targets_.ClearColor(cmd, *alias.rt, alias.rt->last_format, alias.rect, word);
+          render_targets_.MarkWritten(*alias.rt, alias.rt->last_format);
+          if (TracingThisFrame()) {
+            MANTRA_INFO("trace: fill depth -> color alias base {} pitch {} fmt {} rect {},{} {}x{} "
+                        "word {:08X}",
+                        alias.rt->key.base_tiles, alias.rt->key.pitch_px,
+                        uint32_t(alias.rt->last_format), alias.rect.offset.x, alias.rect.offset.y,
+                        alias.rect.extent.width, alias.rect.extent.height, uint32_t(word));
+          }
+        }
+      }
       static std::atomic<uint32_t> logged{0};
       if (logged.fetch_add(1) < 8 || TracingThisFrame()) {
         MANTRA_INFO("fill depth: base {} pitch {} msaa {} rect {},{} {}x{} depth {} stencil {} "

@@ -19,6 +19,8 @@ include(generated/rexglue.cmake)
 # Sources
 set(ASURAWRATH_SOURCES
     src/main.cpp
+    src/ui/game_font.cpp
+    src/ui/game_toast.cpp
 )
 
 if(WIN32)
@@ -34,6 +36,7 @@ add_subdirectory(src/mantra_renderer)
 option(ASURA_BUILD_SHADERGEN "Build the mantra_shadergen tool" ON)
 if(ASURA_BUILD_SHADERGEN AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_subdirectory(tools/mantra_shadergen)
+  add_subdirectory(tools/xxx_unpack)  # .xxx -> UE3 package bodies (asset extraction)
 endif()
 
 rexglue_setup_target(asura_wrath GPU_PLUGINS xenos mantra)

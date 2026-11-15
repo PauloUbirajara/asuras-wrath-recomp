@@ -42,4 +42,12 @@ TranslateResult TranslateContainer(const uint8_t* container);
 // runtime-patched variant of the same shader). False if the sizes differ.
 bool ReplaceMicrocode(std::vector<uint8_t>& container, const std::vector<uint8_t>& microcode);
 
+// Interpolators a vertex shader container declares.
+uint32_t ContainerInterpolatorCount(const std::vector<uint8_t>& container);
+
+// Highest interpolator (o0..o15) a vertex shader's big-endian microcode
+// exports to, or -1. XenosRecomp crashes on exports past the container's
+// interpolator count.
+int MaxInterpolatorExport(const std::vector<uint8_t>& microcode);
+
 }  // namespace mantra_shadergen

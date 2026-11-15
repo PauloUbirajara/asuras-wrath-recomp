@@ -541,6 +541,7 @@ bool NativeCommandProcessor::Resolve() {
           info.copy_dest_info.copy_dest_format, frame, true);
       VkDescriptorPool descriptor_pool = ReserveDescriptorSet();
       cmd = BeginNonDrawCommands();
+      if (surface && cmd) resolved_surfaces_.CopyGrown(cmd, *surface);
       if (surface && descriptor_pool && cmd && rect.width && rect.height) {
         mantra::CopyPushConstants constants;
         constants.sample_mask = 1;  // depth: sample 0, no averaging
@@ -557,7 +558,7 @@ bool NativeCommandProcessor::Resolve() {
                                    VK_FORMAT_R32_SFLOAT, surface->image.width,
                                    surface->image.height, rect, constants)) {
           ++draw_stats_.depth_copies;
-          ++surface->write_count;
+          surface->write_count = ++resolve_serial_;  // unique: surfaces get recreated
           surface->last_write_frame = frame;
           texture_cache_.NoteResolve(dest_address, info.copy_dest_extent_length);
         }
@@ -594,6 +595,7 @@ bool NativeCommandProcessor::Resolve() {
           frame);
       VkDescriptorPool descriptor_pool = ReserveDescriptorSet();
       cmd = BeginNonDrawCommands();  // may have been submitted to free descriptors
+      if (surface && cmd) resolved_surfaces_.CopyGrown(cmd, *surface);
       if (surface && descriptor_pool && cmd && rect.width && rect.height) {
         mantra::CopyPushConstants constants;
         const uint32_t sample_count = 1u << uint32_t(msaa);
@@ -605,16 +607,12 @@ bool NativeCommandProcessor::Resolve() {
           constants.sample_mask = 1;
         }
         constants.scale = std::ldexp(1.0f, info.copy_dest_info.copy_dest_exp_bias);
-        // Fixed-point 16-bit targets are stored / 32 (their -32...32 range);
-        // a float destination gets the values, a fixed one the same bits.
-        if ((color_info.color_format == xenos::ColorRenderTargetFormat::k_16_16 ||
-             color_info.color_format == xenos::ColorRenderTargetFormat::k_16_16_16_16) &&
-            (dest_host_format == VK_FORMAT_R16_SFLOAT ||
-             dest_host_format == VK_FORMAT_R16G16_SFLOAT ||
-             dest_host_format == VK_FORMAT_R16G16B16A16_SFLOAT ||
-             dest_host_format == VK_FORMAT_R32_SFLOAT ||
-             dest_host_format == VK_FORMAT_R32G32_SFLOAT ||
-             dest_host_format == VK_FORMAT_R32G32B32A32_SFLOAT)) {
+        // Fixed-point 16-bit targets are stored / 32 (their -32...32 range).
+        // A float destination gets value * 2^exp_bias; a fixed one is hosted
+        // as value / 32 too, and the game resolves it with exp_bias -5 into
+        // -1...1, the same bits: both are the stored value * 32 * 2^exp_bias.
+        if (color_info.color_format == xenos::ColorRenderTargetFormat::k_16_16 ||
+            color_info.color_format == xenos::ColorRenderTargetFormat::k_16_16_16_16) {
           constants.scale *= 32.0f;
         }
         if (info.copy_dest_info.copy_dest_swap) {
@@ -634,7 +632,7 @@ bool NativeCommandProcessor::Resolve() {
                                    surface->view, dest_host_format, surface->image.width,
                                    surface->image.height, rect, constants)) {
           ++draw_stats_.color_copies;
-          ++surface->write_count;
+          surface->write_count = ++resolve_serial_;  // unique: surfaces get recreated
           surface->last_write_frame = frame;
           texture_cache_.NoteResolve(dest_address, info.copy_dest_extent_length);
           if (TracingThisFrame() && CapturingPasses()) {

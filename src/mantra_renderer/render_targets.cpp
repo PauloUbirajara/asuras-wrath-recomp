@@ -518,6 +518,35 @@ void ResolvedSurfaces::Collect(uint64_t completed_frame) {
   });
 }
 
+void ResolvedSurfaces::Initialize(const rex::ui::vulkan::VulkanDevice* device) {
+  device_ = device;
+  cmd_copy_image_ = reinterpret_cast<PFN_vkCmdCopyImage>(
+      device->vulkan_instance()->functions().vkGetDeviceProcAddr(device->device(),
+                                                                 "vkCmdCopyImage"));
+}
+
+void ResolvedSurfaces::CopyGrown(VkCommandBuffer cmd, ResolvedSurface& surface) {
+  ResolvedSurface* old = surface.grown_from;
+  surface.grown_from = nullptr;
+  if (!old || !cmd || !cmd_copy_image_ || !old->write_count) {
+    return;
+  }
+  TransitionImage(device_, cmd, old->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+  TransitionImage(device_, cmd, surface.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                  /*discard=*/true);
+  VkImageCopy region = {};
+  region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  region.extent = {std::min(old->image.width, surface.image.width),
+                   std::min(old->image.height, surface.image.height), 1};
+  cmd_copy_image_(cmd, old->image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  surface.image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+  surface.write_count = old->write_count;
+  surface.last_write_frame = old->last_write_frame;
+}
+
 ResolvedSurface* ResolvedSurfaces::Find(uint32_t address) {
   auto it = surfaces_.find(address);
   return it != surfaces_.end() ? it->second.get() : nullptr;
@@ -532,6 +561,7 @@ ResolvedSurface* ResolvedSurfaces::Get(uint32_t address, uint32_t pitch, uint32_
   const uint32_t max_dim = device_->properties().maxImageDimension2D;
   pitch = std::clamp<uint32_t>(pitch, 1, max_dim);
   height = std::clamp<uint32_t>(height, 1, max_dim);
+  ResolvedSurface* grown_from = nullptr;
   if (auto it = surfaces_.find(address); it != surfaces_.end()) {
     ResolvedSurface& existing = *it->second;
     if (existing.format == format && existing.depth == depth && existing.image.width >= pitch &&
@@ -544,11 +574,16 @@ ResolvedSurface* ResolvedSurfaces::Get(uint32_t address, uint32_t pitch, uint32_
     // use by in-flight submissions.
     pitch = std::max(pitch, existing.image.width);
     height = std::max(height, existing.image.height);
+    const bool grows = existing.format == format && existing.depth == depth;
     retired_.emplace_back(frame, std::move(it->second));
     surfaces_.erase(it);
+    if (grows) {
+      grown_from = retired_.back().second.get();
+    }
   }
 
   auto surface = std::make_unique<ResolvedSurface>();
+  surface->grown_from = grown_from;
   surface->address = address;
   surface->pitch = pitch;
   surface->height = height;

@@ -60,6 +60,7 @@ uint MantraLoad_uint(uint address, uint alignment) { return g_Constants.Load(add
 #define g_AlphaThreshold           MantraLoad_float(g_PushConstants.SharedConstants + 272)
 #define g_MantraVertexIndexBase    MantraLoad_uint(g_PushConstants.SharedConstants + 276)
 #define g_MantraFixed16OutputMask  MantraLoad_uint(g_PushConstants.SharedConstants + 280)
+#define g_MantraFloat7e3OutputMask MantraLoad_uint(g_PushConstants.SharedConstants + 284)
 #define g_NdcScale                 MantraLoad_float3(g_PushConstants.SharedConstants + 288)
 #define g_NdcOffset                MantraLoad_float3(g_PushConstants.SharedConstants + 304)
 

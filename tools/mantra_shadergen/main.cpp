@@ -492,8 +492,9 @@ int main(int argc, char** argv) {
   // a game shader of the same size is translated from that shader's container
   // with the dumped microcode, and cached under its exact hash.
   if (!dumps.empty()) {
-    std::unordered_map<uint64_t, const Shader*> by_normalized;
-    for (const auto& [hash, s] : shaders) by_normalized.emplace(s.normalized_hash, &s);
+    // (In exact hash order: the first candidate is the one taken before.)
+    std::unordered_map<uint64_t, std::vector<const Shader*>> by_normalized;
+    for (const auto& [hash, s] : shaders) by_normalized[s.normalized_hash].push_back(&s);
     size_t variants = 0;
     std::vector<std::pair<uint64_t, Shader>> added;
     for (const auto& entry : fs::directory_iterator(dumps)) {
@@ -501,11 +502,30 @@ int main(int argc, char** argv) {
       const auto code = ReadFile(entry.path());
       const uint64_t exact = mantra::shader_key::ExactHash(code.data(), code.size());
       if (shaders.count(exact)) continue;
-      auto base = by_normalized.find(mantra::shader_key::NormalizedHash(code.data(), code.size()));
-      if (base == by_normalized.end()) continue;
-      const Shader& original = *base->second;
       const bool is_pixel = entry.path().filename().string().rfind("ps", 0) == 0;
-      if (original.is_pixel != is_pixel || original.microcode_dwords * 4 != code.size()) continue;
+      // Several game shaders can share a normalized hash; take one that
+      // declares every interpolator the patched code exports to.
+      const int max_export = is_pixel ? -1 : MaxInterpolatorExport(code);
+      const Shader* found = nullptr;
+      const auto candidates =
+          by_normalized.find(mantra::shader_key::NormalizedHash(code.data(), code.size()));
+      if (candidates == by_normalized.end()) continue;
+      for (const Shader* candidate_ptr : candidates->second) {
+        const Shader& candidate = *candidate_ptr;
+        if (candidate.is_pixel != is_pixel || candidate.microcode_dwords * 4 != code.size()) continue;
+        if (!found) found = &candidate;
+        if (is_pixel || int(ContainerInterpolatorCount(candidate.container)) > max_export) {
+          found = &candidate;
+          break;
+        }
+      }
+      if (!found) continue;
+      if (!is_pixel && int(ContainerInterpolatorCount(found->container)) <= max_export) {
+        std::fprintf(stderr, "%s exports o%d, past its container's %u interpolators\n",
+                     entry.path().filename().c_str(), max_export,
+                     ContainerInterpolatorCount(found->container));
+      }
+      const Shader& original = *found;
       Shader variant = original;
       variant.exact_hash = exact;
       variant.source = "patched " + entry.path().filename().string() + " of " + original.source;

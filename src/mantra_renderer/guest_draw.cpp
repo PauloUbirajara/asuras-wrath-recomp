@@ -1196,6 +1196,11 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
                                  rt_format == xenos::ColorRenderTargetFormat::k_16_16_16_16)) {
       shared.fixed16_output_mask |= 1u << i;
     }
+    if (((color_mask >> (i * 4)) & 0xF) &&
+        (rt_format == xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT ||
+         rt_format == xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT_AS_16_16_16_16)) {
+      shared.float7e3_output_mask |= 1u << i;
+    }
   }
   bool uploaded = false;
   for (int attempt = 0; attempt < 2 && !uploaded; ++attempt) {

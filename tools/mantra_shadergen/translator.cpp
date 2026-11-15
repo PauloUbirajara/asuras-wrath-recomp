@@ -52,6 +52,17 @@ void AdaptInterface(TranslateResult& r) {
   static const std::regex kTexture1DIndex(R"((\w+)_Texture1DDescriptorIndex\b)");
   hlsl = std::regex_replace(hlsl, kTexture1DIndex, "$1_SamplerDescriptorIndex");
 
+  // XenosRecomp lowers LOG/RCP/RSQ (and their _CLAMP/_FF forms) to
+  // clamp(op(x), FLT_MIN, FLT_MAX). FLT_MIN is the smallest positive float,
+  // so negative results were lost: log2 of anything below 1 became ~0 (every
+  // exp2(log2(x) * n) power term evaluated to 1, e.g. specular/fresnel
+  // reflections at full strength) and rcp of a negative value turned
+  // positive. Xenos clamps infinities to +-FLT_MAX instead.
+  for (size_t at = 0; (at = hlsl.find(", FLT_MIN, FLT_MAX)", at)) != std::string::npos;) {
+    hlsl.replace(at, 19, ", -FLT_MAX, FLT_MAX)");
+    at += 20;
+  }
+
   // vk::RawBufferLoad<T>( -> MantraLoad_T(
   static const std::regex kRawLoad(R"(vk::RawBufferLoad<(\w+)>\()");
   hlsl = std::regex_replace(hlsl, kRawLoad, "MantraLoad_$1(");
@@ -376,6 +387,49 @@ void LinkInterpolatorsByRegister(const uint8_t* container, TranslateResult& r) {
 
 }  // namespace
 
+uint32_t ContainerInterpolatorCount(const std::vector<uint8_t>& container) {
+  const auto* shader_container = reinterpret_cast<const ShaderContainer*>(container.data());
+  const auto* shader =
+      reinterpret_cast<const Shader*>(container.data() + shader_container->shaderOffset);
+  return (shader->interpolatorInfo >> 5) & 0x1F;
+}
+
+int MaxInterpolatorExport(const std::vector<uint8_t>& microcode) {
+  const size_t dwords = microcode.size() / 4;
+  auto word = [&](size_t i) {
+    const uint8_t* w = microcode.data() + i * 4;
+    return uint32_t(w[0]) << 24 | uint32_t(w[1]) << 16 | uint32_t(w[2]) << 8 | w[3];
+  };
+  const size_t instructions = dwords / 3;
+  std::vector<int8_t> is_alu(instructions, 0);
+  size_t first = instructions;
+  for (size_t cf = 0; cf < first && cf * 3 + 2 < dwords; ++cf) {
+    const uint64_t a = word(cf * 3), b = word(cf * 3 + 1), c = word(cf * 3 + 2);
+    const uint64_t pair[2] = {a | (b & 0xFFFF) << 32, (b >> 16) | c << 16};
+    for (const uint64_t instr : pair) {
+      const uint32_t opcode = uint32_t(instr >> 44) & 0xF;
+      if (opcode < 1 || opcode > 8 || opcode == 5 || opcode == 6) continue;  // exec variants
+      const uint32_t address = uint32_t(instr) & 0xFFF, count = uint32_t(instr >> 12) & 7,
+                     sequence = uint32_t(instr >> 16) & 0xFFF;
+      if (!count) continue;
+      first = std::min<size_t>(first, address);
+      for (uint32_t i = 0; i < count && address + i < instructions; ++i) {
+        is_alu[address + i] = ((sequence >> (i * 2)) & 1) == 0;
+      }
+    }
+  }
+  int highest = -1;
+  for (size_t i = 0; i < instructions; ++i) {
+    if (!is_alu[i]) continue;
+    const uint32_t w0 = word(i * 3);
+    if (!((w0 >> 15) & 1)) continue;
+    const uint32_t vector_dest = w0 & 0x3F, scalar_dest = (w0 >> 8) & 0x3F;
+    if (((w0 >> 16) & 0xF) && vector_dest < 16) highest = std::max(highest, int(vector_dest));
+    if (((w0 >> 20) & 0xF) && scalar_dest < 16) highest = std::max(highest, int(scalar_dest));
+  }
+  return highest;
+}
+
 bool ReplaceMicrocode(std::vector<uint8_t>& container, const std::vector<uint8_t>& microcode) {
   if (container.size() < sizeof(ShaderContainer)) {
     return false;
@@ -481,6 +535,8 @@ TranslateResult TranslateContainer(const uint8_t* container) {
   if (result.is_pixel) {
     // Fixed-point 16-bit render targets are hosted as SNORM value / 32;
     // Vulkan clamps outputs to -1...1 before blending, so scale in the shader.
+    // 7e3 float targets are hosted as RGBA16F: clamp to the 7e3 range
+    // (0...31.875, alpha 0...1, NaN -> 0) like the guest conversion does.
     const size_t main_at = result.hlsl.find("void main(");
     if (main_at != std::string::npos) {
       std::string scale;
@@ -488,7 +544,9 @@ TranslateResult TranslateContainer(const uint8_t* container) {
         const std::string n = std::to_string(i);
         if (result.hlsl.find("oC" + n + " : SV_Target" + n, main_at) != std::string::npos)
           scale += "if (g_MantraFixed16OutputMask & " + std::to_string(1 << i) + "u) oC" + n +
-                   " *= 0.03125; ";
+                   " *= 0.03125; " + "if (g_MantraFloat7e3OutputMask & " +
+                   std::to_string(1 << i) + "u) oC" + n + " = select(oC" + n +
+                   " > 0.0, min(oC" + n + ", float4(31.875, 31.875, 31.875, 1.0)), 0.0); ";
       }
       if (!scale.empty()) {
         const std::string replacement = "{ " + scale + "return; }";

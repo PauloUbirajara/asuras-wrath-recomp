@@ -45,7 +45,9 @@ struct SharedConstants {
   // mantra: bit i = color output i goes to a fixed-point 16-bit target; the
   // pixel shader writes it / 32 (the host SNORM image holds -32...32 / 32).
   uint32_t fixed16_output_mask = 0;
-  uint32_t pad = 0;
+  // mantra: bit i = color output i goes to a 7e3 float target (hosted as
+  // RGBA16F); the pixel shader clamps it to 0...31.875 (NaN -> 0).
+  uint32_t float7e3_output_mask = 0;
   // mantra: host viewport transform applied by the VS
   // (draw_util::ViewportInfo ndc_scale / ndc_offset).
   float ndc_scale[3] = {1.0f, 1.0f, 1.0f};
@@ -58,6 +60,7 @@ static_assert(offsetof(SharedConstants, half_pixel_offset) == 264);
 static_assert(offsetof(SharedConstants, alpha_threshold) == 272);
 static_assert(offsetof(SharedConstants, vertex_index_base) == 276);
 static_assert(offsetof(SharedConstants, fixed16_output_mask) == 280);
+static_assert(offsetof(SharedConstants, float7e3_output_mask) == 284);
 static_assert(offsetof(SharedConstants, ndc_scale) == 288);
 static_assert(offsetof(SharedConstants, ndc_offset) == 304);
 

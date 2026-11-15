@@ -60,7 +60,12 @@ struct ResolvedSurface {
   TrackedImage image;
   VkImageView view = VK_NULL_HANDLE;
   uint64_t last_write_frame = 0;
-  uint64_t write_count = 0;
+  uint64_t write_count = 0;  // serial of the last resolve into it (0 = never)
+  // Set when this surface replaced a smaller one of the same format (a resolve
+  // to a larger rect of the same address); the caller copies the old texels
+  // over with ResolvedSurfaces::CopyGrown before writing. Points into the
+  // retired list (alive until this frame's submission completes).
+  ResolvedSurface* grown_from = nullptr;
 };
 
 class RenderTargetPool {
@@ -139,7 +144,7 @@ class RenderTargetPool {
 
 class ResolvedSurfaces {
  public:
-  void Initialize(const rex::ui::vulkan::VulkanDevice* device) { device_ = device; }
+  void Initialize(const rex::ui::vulkan::VulkanDevice* device);
   void Shutdown();
 
   // Host format a resolve to `format` is stored in, or UNDEFINED if not
@@ -153,6 +158,10 @@ class ResolvedSurfaces {
                        xenos::ColorFormat format, uint64_t frame, bool depth = false);
   // The surface last resolved to `address`, if any.
   ResolvedSurface* Find(uint32_t address);
+  // If `surface` grew from an older one (see grown_from), copies the old
+  // contents into it so partial resolves (e.g. one page half after the
+  // other) keep what was resolved before. Call before the new write.
+  void CopyGrown(VkCommandBuffer cmd, ResolvedSurface& surface);
 
   // Destroys replaced surfaces whose last use is <= `completed_frame`.
   void Collect(uint64_t completed_frame);
@@ -167,6 +176,7 @@ class ResolvedSurfaces {
   void Destroy(ResolvedSurface& surface);
 
   const rex::ui::vulkan::VulkanDevice* device_ = nullptr;
+  PFN_vkCmdCopyImage cmd_copy_image_ = nullptr;  // not in the SDK's function table
   std::unordered_map<uint32_t, std::unique_ptr<ResolvedSurface>> surfaces_;
   std::vector<std::pair<uint64_t, std::unique_ptr<ResolvedSurface>>> retired_;
 };

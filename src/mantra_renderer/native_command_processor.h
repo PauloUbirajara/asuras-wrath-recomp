@@ -127,6 +127,9 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
   // frame's draws are logged.
   bool TracingThisFrame();
   uint64_t trace_swap_ = 0;
+  // Serial of the last resolve; a resolved surface's write_count is the
+  // serial of its last write (unique across recreated surfaces).
+  uint64_t resolve_serial_ = 0;
   void TraceDraw(xenos::PrimitiveType prim_type, uint32_t index_count, const char* outcome);
   // Draws with the translated shaders and a pipeline from the guest state.
   DrawResult DrawGuest(xenos::PrimitiveType prim_type, uint32_t index_count,

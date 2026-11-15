@@ -196,11 +196,21 @@ const ImFontLoader* Loader() {
 
 std::filesystem::path GameUiDir() {
   if (const char* dir = std::getenv("ASURA_UI_DIR"); dir && *dir) return dir;
+  std::vector<std::filesystem::path> candidates;
   if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg) {
-    return std::filesystem::path(xdg) / "asura_wrath" / "ui";
+    candidates.push_back(std::filesystem::path(xdg) / "asura_wrath" / "ui");
   }
-  const char* home = std::getenv("HOME");
-  return std::filesystem::path(home ? home : ".") / ".cache" / "asura_wrath" / "ui";
+  if (const char* home = std::getenv("HOME"); home && *home) {
+    candidates.push_back(std::filesystem::path(home) / ".cache" / "asura_wrath" / "ui");
+  }
+  // The repository's out/assets/ui, from out/build/<preset>/asura_wrath.
+  std::error_code ec;
+  const auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
+  if (!ec) candidates.push_back(exe.parent_path().parent_path().parent_path() / "assets" / "ui");
+  for (const auto& dir : candidates) {
+    if (std::filesystem::is_directory(dir, ec)) return dir;
+  }
+  return candidates.empty() ? std::filesystem::path("ui") : candidates.front();
 }
 
 ImFont* AddGameFont(ImFontAtlas* atlas, const std::filesystem::path& path) {
@@ -222,7 +232,9 @@ ImFont* AddGameFont(ImFontAtlas* atlas, const std::filesystem::path& path) {
   config.FontLoader = Loader();
   config.SizePixels = float(check.line_height);
   std::snprintf(config.Name, sizeof(config.Name), "%s", path.stem().string().c_str());
-  return atlas->AddFont(&config);
+  ImFont* font = atlas->AddFont(&config);
+  REXLOG_INFO("UI font {} {}", path.string(), font ? "loaded" : "failed to load");
+  return font;
 }
 
 }  // namespace asura::ui

@@ -1,4 +1,5 @@
 #include "native_command_processor.h"
+#include "memexport.h"
 #include "mantra_log.h"
 
 #include <algorithm>
@@ -396,6 +397,32 @@ bool NativeCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
     return IssueCopy();
   }
   ++draw_stats_.draws;
+  // Memexport (VS writing to memory, e.g. the game's GPU memcpy): run it on
+  // the CPU. Such draws have no color writes, so nothing else is drawn.
+  if (auto* mvs = static_cast<MantraShader*>(active_vertex_shader());
+      mvs && mvs->memexport_eM_written()) {
+    uint32_t lo = UINT32_MAX, hi = 0;
+    mantra::MemExportIndices indices;
+    if (index_buffer_info) {
+      indices.guest_base = index_buffer_info->guest_base;
+      indices.count = index_buffer_info->count;
+      indices.is_32bit = index_buffer_info->format == xenos::IndexFormat::kInt32;
+      indices.endianness = index_buffer_info->endianness;
+    }
+    const bool ran = mantra::RunMemExportDraw(
+        *register_file_, *memory_, *mvs, index_count, index_buffer_info ? &indices : nullptr,
+        memexport_stats_,
+        [&](uint32_t start, uint32_t length) {
+          lo = std::min(lo, start);
+          hi = std::max(hi, start + length);
+        });
+    if (hi > lo) buffer_cache_.NotifyGpuWrite(lo, hi - lo);
+    if (TracingThisFrame()) {
+      MANTRA_INFO("trace: memexport vs {:016X} n {} ran {} wrote {:08X}..{:08X}",
+                  mvs->ucode_data_hash(), index_count, ran, lo, hi);
+    }
+    if (ran && !register_file_->Get<reg::RB_COLOR_MASK>().value) return true;
+  }
   const char* outcome = "fill";
   if (TrySolidFill(prim_type, edram_mode) == SolidFillResult::kNotSolidFill) {
     trace_current_draw_ = TracingThisFrame();
@@ -738,6 +765,9 @@ void NativeCommandProcessor::TraceDraw(xenos::PrimitiveType prim_type, uint32_t 
     // Sign per component: 0 unsigned, 1 signed, 2 unsigned biased, 3 gamma.
     textures += fmt::format("/g{}{}{}{}", uint32_t(fetch.sign_x), uint32_t(fetch.sign_y),
                             uint32_t(fetch.sign_z), uint32_t(fetch.sign_w));
+    textures += fmt::format("/w{:08X}.{:08X}.{:08X}.{:08X}.{:08X}.{:08X}", fetch.dword_0,
+                            fetch.dword_1, fetch.dword_2, fetch.dword_3, fetch.dword_4,
+                            fetch.dword_5);
     // Guest-memory content check: nonzero bytes in the first 64 KB.
     if (const auto* t = memory_->TranslatePhysical<const uint8_t*>((fetch.base_address << 12) &
                                                                    0x1FFFFFFF)) {
@@ -846,6 +876,17 @@ void NativeCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
     if (std::filesystem::remove(trace_trigger, ec)) {
       trace_swap_ = swap_stats_.swaps + 2;
       MANTRA_INFO("trace: triggered at swap {}, tracing swap {}", swap_stats_.swaps, trace_swap_);
+      // Debug: MANTRA_DUMP_PHYSICAL=<file> also writes all 512 MB of guest
+      // physical memory, for offline searches.
+      if (const char* dump = std::getenv("MANTRA_DUMP_PHYSICAL"); dump && *dump) {
+        if (const auto* mem = memory_->TranslatePhysical<const uint8_t*>(0)) {
+          if (std::FILE* file = std::fopen(dump, "wb")) {
+            std::fwrite(mem, 1, 0x20000000, file);
+            std::fclose(file);
+            MANTRA_INFO("trace: dumped guest physical memory to {}", dump);
+          }
+        }
+      }
     }
   }
   ReportSwapStats();
@@ -1334,6 +1375,9 @@ void NativeCommandProcessor::ReportSwapStats() {
               g.drawn, g.render_passes, draw_pipelines_.size(), draw_pipelines_.creation_failures(),
               g.skipped_primitive, g.skipped_no_target, g.skipped_viewport, g.skipped_geometry,
               g.missing_inputs, g.expanded_inputs, g.vertex_bytes / 1048576.0, g.index_bytes / 1048576.0);
+  MANTRA_INFO("memexport: {} draws, {} vertices, {} elements ({:.1f} MB), {} unsupported",
+              memexport_stats_.draws, memexport_stats_.vertices, memexport_stats_.elements,
+              memexport_stats_.bytes / 1048576.0, memexport_stats_.unsupported);
   const auto& bc = buffer_cache_.stats();
   MANTRA_INFO("buffer cache: {} entries in {} blocks; {} hits, {} uploads ({} re-uploads, "
               "{:.1f} MB), {} CPU-write invalidations, {} uncacheable, {} volatile, {} resets",

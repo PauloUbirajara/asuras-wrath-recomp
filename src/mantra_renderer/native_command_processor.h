@@ -15,6 +15,7 @@
 #include <rex/ui/vulkan/api.h>
 
 #include "buffer_cache.h"
+#include "memexport.h"
 #include "copy_pipelines.h"
 #include "draw_pipelines.h"
 #include "render_targets.h"
@@ -324,6 +325,7 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
     uint64_t fills_skipped = 0;
   };
   DrawStats draw_stats_;
+  mantra::MemExportStats memexport_stats_;
   // Distinct fill / resolve routes already logged (debug).
   std::unordered_map<uint64_t, uint64_t> logged_routes_;
   bool FirstRoute(uint64_t key) { return logged_routes_.emplace(key, 0).second; }

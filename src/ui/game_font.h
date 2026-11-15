@@ -14,7 +14,8 @@ struct ImFontAtlas;
 namespace asura::ui {
 
 // Directory of the extracted/user-made UI files (.awf fonts, toast images):
-// $ASURA_UI_DIR, else $XDG_CACHE_HOME (or ~/.cache)/asura_wrath/ui.
+// $ASURA_UI_DIR, else the first existing of $XDG_CACHE_HOME/asura_wrath/ui,
+// ~/.cache/asura_wrath/ui and the repository's out/assets/ui.
 std::filesystem::path GameUiDir();
 
 // Adds an .awf font to `atlas` through a custom ImFontLoader (glyphs are

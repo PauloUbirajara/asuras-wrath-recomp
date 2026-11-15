@@ -85,6 +85,9 @@ class BufferCache {
   // `checked_epoch` (initialize it to `epoch`) skips the page scan while
   // nothing at all was written.
   bool RangeUnchanged(uint32_t start, uint32_t length, uint32_t epoch, uint32_t& checked_epoch);
+  // The GPU (or its CPU emulation, memexport) wrote the range: entries and
+  // watched ranges covering it become invalid, as after a CPU write.
+  void NotifyGpuWrite(uint32_t start, uint32_t length) { InvalidationCallback(start, length); }
   // Host pointer of guest physical memory.
   const uint8_t* Translate(uint32_t physical_address) const;
   // The current epoch (a later WatchRange result is at least this).

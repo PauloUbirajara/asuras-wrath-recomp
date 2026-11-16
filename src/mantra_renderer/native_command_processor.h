@@ -50,6 +50,10 @@ class MantraShader : public Shader {
     bool is_signed = false;
     bool normalized = true;
     int32_t exp_adjust = 0;  // results * 2^exp_adjust
+    // Non-zero when the runtime fetch's destination swizzle differs from the
+    // container's the translation reads the input with: the input is rebuilt
+    // as SharedConstants::input_remap describes (12 bits; 0 = as fetched).
+    uint32_t remap = 0;
   };
   std::vector<VertexInput> vertex_inputs;
   std::string vfetch_debug;  // all vfetches + cache elements (trace)
@@ -58,7 +62,10 @@ class MantraShader : public Shader {
   // Vertex fetches read element floor(vertex index / this) when > 1.
   uint32_t vertex_index_divisor = 0;
 
-  void DecodeVertexInputs(std::span<const uint32_t> packed_elements);
+  // `container_swizzles`: per element, its fetch's destination swizzle in the
+  // translated microcode (empty for caches before v7).
+  void DecodeVertexInputs(std::span<const uint32_t> packed_elements,
+                          std::span<const uint32_t> container_swizzles);
 };
 
 class NativeCommandProcessor : public CommandProcessor, private mantra::TextureCache::Host {

@@ -6,6 +6,7 @@
 //   blobs                     (offsets relative to the end of the entry table):
 //                             SPIR-V, and per vertex shader its VertexElement
 //                             words followed by its interpolator export words
+//                             and (v7) its elements' container swizzles
 
 #include <cstdint>
 
@@ -20,7 +21,12 @@ constexpr char kMagic[4] = {'M', 'S', 'H', 'C'};
 // 6: per vertex shader, its interpolator exports (shader_key::
 //    InterpolatorExports) after the vertex elements. Version 5 caches still
 //    load (no exports: normalized matches aren't remapped).
-constexpr uint32_t kVersion = 6;
+// 7: per vertex shader, after the exports, one word per vertex element: the
+//    destination swizzle (vfetch word 1 bits 0..11) of its fetch in the
+//    container microcode. The D3D runtime patches formats and swizzles into
+//    the fetches of some shaders; the VS remaps an input whose runtime
+//    swizzle differs (SharedConstants::input_remap).
+constexpr uint32_t kVersion = 7;
 constexpr uint32_t kMinVersion = 5;
 
 struct CacheHeader {

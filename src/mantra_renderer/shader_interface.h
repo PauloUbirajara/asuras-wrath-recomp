@@ -51,12 +51,17 @@ struct SharedConstants {
   // mantra: host viewport transform applied by the VS
   // (draw_util::ViewportInfo ndc_scale / ndc_offset).
   float ndc_scale[3] = {1.0f, 1.0f, 1.0f};
-  // mantra: bit per VS input location fetched as 16-bit floats. The vertex
-  // data is endian-swapped 8in32, so the host format reads each dword's two
-  // halves in reverse order; the VS swaps such inputs back (.yxwz).
-  uint32_t half_input_mask = 0;
+  // mantra: bit per VS input location whose input_remap applies.
+  uint32_t input_remap_mask = 0;
   float ndc_offset[3] = {};
   float pad3 = 0.0f;
+  // mantra: per VS input location (16 bits each, location 2i in the low half
+  // of word i), how the VS rebuilds the input: component j takes component
+  // ((m >> 3j) & 7) of the fetched value (0..3 = xyzw, 4 = 0, 5 = 1). The D3D
+  // runtime patches the formats and destination swizzles of some shaders'
+  // vertex fetches (e.g. .yx for 16:16 floats, .zyxw for D3DCOLOR); the
+  // translation reads the input with the container's swizzle.
+  uint32_t input_remap[16] = {};
 };
 static_assert(offsetof(SharedConstants, booleans) == 256);
 static_assert(offsetof(SharedConstants, half_pixel_offset) == 264);
@@ -65,7 +70,8 @@ static_assert(offsetof(SharedConstants, vertex_index_base) == 276);
 static_assert(offsetof(SharedConstants, fixed16_output_mask) == 280);
 static_assert(offsetof(SharedConstants, float7e3_output_mask) == 284);
 static_assert(offsetof(SharedConstants, ndc_scale) == 288);
-static_assert(offsetof(SharedConstants, half_input_mask) == 300);
+static_assert(offsetof(SharedConstants, input_remap_mask) == 300);
+static_assert(offsetof(SharedConstants, input_remap) == 320);
 static_assert(offsetof(SharedConstants, ndc_offset) == 304);
 
 class ShaderInterface {

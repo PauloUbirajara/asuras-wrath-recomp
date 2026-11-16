@@ -26,6 +26,9 @@ class ShaderCache {
     // shader_key::InterpolatorExports of the translated microcode (vertex
     // shaders, cache v6).
     std::vector<uint32_t> exports;
+    // Per vertex element, the destination swizzle of its fetch in the
+    // translated (container) microcode (vertex shaders, cache v7).
+    std::vector<uint32_t> vertex_swizzles;
     // Normalized matches: how many game shaders shared the hash, and whether
     // none of them exports everything the runtime code does.
     uint32_t candidates = 0;
@@ -44,6 +47,7 @@ class ShaderCache {
 
  private:
   std::vector<uint8_t> data_;
+  uint32_t version_ = 0;
   std::vector<shader_cache::CacheEntry> entries_;
   const uint8_t* blobs_ = nullptr;
   size_t blobs_size_ = 0;

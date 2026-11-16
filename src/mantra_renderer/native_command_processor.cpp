@@ -1512,7 +1512,7 @@ Shader* NativeCommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32
     shader->ps_outputs = lookup.entry->ps_outputs;
     shader->vertex_index_divisor = lookup.entry->vertex_index_divisor;
     if (!is_pixel) {
-      shader->DecodeVertexInputs(lookup.vertex_elements);
+      shader->DecodeVertexInputs(lookup.vertex_elements, lookup.vertex_swizzles);
     }
     std::span<const uint8_t> spirv = lookup.spirv;
     std::vector<uint8_t> remapped;

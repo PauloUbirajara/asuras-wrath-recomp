@@ -49,6 +49,7 @@ bool ShaderCache::Load(const std::filesystem::path& path) {
                 path.string(), header.version);
     return false;
   }
+  version_ = header.version;
   const size_t table_end = sizeof(header) + size_t(header.entry_count) * sizeof(CacheEntry);
   if (table_end > data_.size()) {
     MANTRA_WARN("shader cache {} is truncated", path.string());
@@ -62,10 +63,12 @@ bool ShaderCache::Load(const std::filesystem::path& path) {
 
   for (size_t i = 0; i < entries_.size(); ++i) {
     const CacheEntry& e = entries_[i];
+    const uint64_t swizzle_words =
+        version_ >= 7 && !(e.flags & kEntryPixelShader) ? e.vertex_element_count : 0;
     if (!(e.flags & kEntryFailed) &&
         (uint64_t(e.spirv_offset) + e.spirv_size > blobs_size_ ||
          uint64_t(e.vertex_elements_offset) +
-                 (uint64_t(e.vertex_element_count) + e.export_count) * 4 >
+                 (uint64_t(e.vertex_element_count) + e.export_count + swizzle_words) * 4 >
              blobs_size_)) {
       MANTRA_WARN("shader cache {}: entry {} points past the end", path.string(), i);
       entries_.clear();
@@ -103,6 +106,13 @@ ShaderCache::Lookup ShaderCache::Find(const void* microcode_be, size_t byte_coun
       std::memcpy(result.exports.data(),
                   blobs_ + e.vertex_elements_offset + e.vertex_element_count * sizeof(uint32_t),
                   e.export_count * sizeof(uint32_t));
+      if (version_ >= 7 && !(e.flags & kEntryPixelShader)) {
+        result.vertex_swizzles.resize(e.vertex_element_count);
+        std::memcpy(result.vertex_swizzles.data(),
+                    blobs_ + e.vertex_elements_offset +
+                        (e.vertex_element_count + e.export_count) * sizeof(uint32_t),
+                    e.vertex_element_count * sizeof(uint32_t));
+      }
     }
     return result;
   };

@@ -289,8 +289,8 @@ bool CollectStageInterface(const uint8_t* container, TranslateResult& r) {
   }
   std::string out(hlsl.cbegin(), hlsl.cbegin() + main_at);
   auto copied = hlsl.cbegin() + main_at;
-  // Per-input half-float swaps for the top of main.
-  std::string half_swaps;
+  // Per-input remaps for the top of main.
+  std::string input_remaps;
   for (uint32_t i = 0; i < count; ++i) {
     union {
       VertexElement element;
@@ -323,15 +323,17 @@ bool CollectStageInterface(const uint8_t* container, TranslateResult& r) {
     }
     out += declaration;
     copied = m[0].second;
-    // The D3D runtime patches the vertex formats into the fetches, so whether
-    // an input is 16-bit float is only known per draw: guest_draw.cpp sets
-    // g_MantraHalfInputMask (see mantra_shader_common.hlsl). XenosRecomp's
-    // own g_SwappedTexcoords covers TEXCOORDs only (UE3 also feeds half2
-    // lightmap UVs through COLOR) and stays 0.
+    // The D3D runtime patches formats and destination swizzles into the
+    // fetches of some shaders (the container has format 0 and a default
+    // swizzle), so the swizzle the translation reads an input with may be
+    // wrong; guest_draw.cpp compares it with the runtime fetch's and sets a
+    // remap (see mantra_shader_common.hlsl). XenosRecomp's own
+    // g_SwappedTexcoords stays 0.
     {
       const std::string name = m[4];
-      half_swaps += "\tif (g_MantraHalfInputMask & (1u << " + std::to_string(location) + ")) " +
-                    name + " = " + name + ".yxwz;\n";
+      const std::string loc = std::to_string(location);
+      input_remaps += "\tif (g_MantraInputRemapMask & (1u << " + loc + ")) " + name +
+                      " = MantraRemapInput(" + name + ", " + loc + ");\n";
     }
     mantra::shader_cache::VertexElement packed{};
     packed.address = uint32_t(element.address);
@@ -348,12 +350,12 @@ bool CollectStageInterface(const uint8_t* container, TranslateResult& r) {
     r.vertex_elements.push_back(packed.Pack());
   }
   out.append(copied, hlsl.cend());
-  if (!half_swaps.empty()) {
+  if (!input_remaps.empty()) {
     const size_t body = out.find("\n{\n", out.find("void main("));
     if (body == std::string::npos) {
       return false;
     }
-    out.insert(body + 3, half_swaps);
+    out.insert(body + 3, input_remaps);
   }
   hlsl = std::move(out);
   return true;

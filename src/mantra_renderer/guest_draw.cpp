@@ -228,7 +228,28 @@ bool IsBlendable(VkFormat format) {
 
 // --- Vertex inputs ---------------------------------------------------------------
 
-void MantraShader::DecodeVertexInputs(std::span<const uint32_t> packed_elements) {
+namespace {
+// The remap that makes a fetch read with `container` (as the translation
+// does) return what one with the runtime swizzle `runtime` writes: component
+// c the container reads for destination i takes the runtime's source for i.
+// 0 when they agree.
+uint32_t InputRemap(uint32_t container, uint32_t runtime) {
+  uint32_t source[4] = {0, 1, 2, 3};
+  bool set[4] = {};
+  for (uint32_t i = 0; i < 4; ++i) {
+    const uint32_t c = (container >> (i * 3)) & 7, r = (runtime >> (i * 3)) & 7;
+    // 0..3 = xyzw, 4 = 0, 5 = 1, 6/7 = not written.
+    if (c > 3 || r > 5 || set[c]) continue;
+    source[c] = r;
+    set[c] = true;
+  }
+  const uint32_t remap = source[0] | source[1] << 3 | source[2] << 6 | source[3] << 9;
+  return remap == 0x688 ? 0 : remap;
+}
+}  // namespace
+
+void MantraShader::DecodeVertexInputs(std::span<const uint32_t> packed_elements,
+                                      std::span<const uint32_t> container_swizzles) {
   vertex_inputs.clear();
   const uint32_t* code = ucode_dwords();
   const size_t dword_count = ucode_dword_count();
@@ -288,8 +309,9 @@ void MantraShader::DecodeVertexInputs(std::span<const uint32_t> packed_elements)
       if (f.exp_adjust()) vfetch_debug += fmt::format("/x{}", f.exp_adjust());
     }
   }
-  for (uint32_t packed : packed_elements) {
-    const auto element = mantra::shader_cache::VertexElement::Unpack(packed);
+  for (size_t element_index = 0; element_index < packed_elements.size(); ++element_index) {
+    const auto element =
+        mantra::shader_cache::VertexElement::Unpack(packed_elements[element_index]);
     vfetch_debug += fmt::format(" | loc{}:a{}/r{}", element.location, element.address,
                                 element.dest);
     VertexInput in;
@@ -331,6 +353,9 @@ void MantraShader::DecodeVertexInputs(std::span<const uint32_t> packed_elements)
         in.is_signed = fetch.is_signed();
         in.normalized = fetch.is_normalized();
         in.exp_adjust = fetch.exp_adjust();
+        if (element_index < container_swizzles.size()) {
+          in.remap = InputRemap(container_swizzles[element_index], fetch.dest_swizzle());
+        }
       }
     }
     vertex_inputs.push_back(in);
@@ -1220,10 +1245,10 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
     }
   }
   for (const MantraShader::VertexInput& in : vs->vertex_inputs) {
-    if (in.valid && in.location < 32 &&
-        (in.format == xenos::VertexFormat::k_16_16_FLOAT ||
-         in.format == xenos::VertexFormat::k_16_16_16_16_FLOAT)) {
-      shared.half_input_mask |= 1u << in.location;
+    if (in.valid && in.remap && in.location < 32 &&
+        !(shared.input_remap_mask & (1u << in.location))) {
+      shared.input_remap_mask |= 1u << in.location;
+      shared.input_remap[in.location >> 1] |= in.remap << ((in.location & 1) * 16);
     }
   }
   // (key.color_count is only filled by BeginDrawRendering, later.)

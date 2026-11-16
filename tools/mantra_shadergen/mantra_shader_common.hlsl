@@ -17,9 +17,10 @@
 // MantraLoad_T(addr[, align]). The shared constants layout is XenosRecomp's:
 // 256 g_Booleans, 260 g_SwappedTexcoords, 264 g_HalfPixelOffset,
 // 272 g_AlphaThreshold (mantra: bytes 0..127 hold each fetch slot's exp_adjust), plus
-// mantra's 288 g_NdcScale, 300 g_MantraHalfInputMask (VS input locations
-// fetched as 16-bit floats, swapped back to .yxwz at the top of main),
-// 304 g_NdcOffset: translator.cpp replaces the VS's
+// mantra's 288 g_NdcScale, 300 g_MantraInputRemapMask and 320 the per-input
+// remaps (VS inputs whose runtime fetch swizzle differs from the container's,
+// rebuilt at the top of main by MantraRemapInput), 304 g_NdcOffset:
+// translator.cpp replaces the VS's
 // final half-pixel offset with oPos.xyz = oPos.xyz * g_NdcScale +
 // g_NdcOffset * oPos.w (the host viewport transform; Y is pre-negated because
 // DXC's -fvk-invert-y negates oPos.y afterwards).
@@ -65,7 +66,29 @@ uint MantraLoad_uint(uint address, uint alignment) { return g_Constants.Load(add
 #define g_MantraFloat7e3OutputMask MantraLoad_uint(g_PushConstants.SharedConstants + 284)
 #define g_NdcScale                 MantraLoad_float3(g_PushConstants.SharedConstants + 288)
 #define g_NdcOffset                MantraLoad_float3(g_PushConstants.SharedConstants + 304)
-#define g_MantraHalfInputMask      MantraLoad_uint(g_PushConstants.SharedConstants + 300)
+#define g_MantraInputRemapMask     MantraLoad_uint(g_PushConstants.SharedConstants + 300)
+
+// mantra: SharedConstants::input_remap for input `location`.
+uint MantraInputRemap(uint location)
+{
+    return (MantraLoad_uint(g_PushConstants.SharedConstants + 320 + (location >> 1) * 4) >>
+            ((location & 1) * 16)) & 0xFFF;
+}
+
+float4 MantraRemapInput(float4 v, uint location)
+{
+    uint m = MantraInputRemap(location);
+    float s[6] = { v.x, v.y, v.z, v.w, 0.0, 1.0 };
+    return float4(s[m & 7], s[(m >> 3) & 7], s[(m >> 6) & 7], s[(m >> 9) & 7]);
+}
+
+// uint4 inputs hold float bits (asfloat()ed by the translation).
+uint4 MantraRemapInput(uint4 v, uint location)
+{
+    uint m = MantraInputRemap(location);
+    uint s[6] = { v.x, v.y, v.z, v.w, 0u, 0x3F800000u };
+    return uint4(s[m & 7], s[(m >> 3) & 7], s[(m >> 6) & 7], s[(m >> 9) & 7]);
+}
 
 [[vk::constant_id(0)]] const uint g_SpecConstants = 0;
 

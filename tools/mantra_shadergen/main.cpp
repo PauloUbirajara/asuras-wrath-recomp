@@ -324,6 +324,19 @@ bool WriteCache(const fs::path& path, const std::map<uint64_t, Shader>& shaders)
         e.export_count = uint32_t(exports.size());
         const auto* export_words = reinterpret_cast<const uint8_t*>(exports.data());
         blobs.insert(blobs.end(), export_words, export_words + exports.size() * sizeof(uint32_t));
+        // v7: the destination swizzle of each element's container fetch.
+        std::vector<uint32_t> swizzles;
+        for (uint32_t packed : s.vertex_elements) {
+          const size_t at = (size_t(VertexElement::Unpack(packed).address) * 3 + 1) * 4;
+          uint32_t swizzle = 0x688;  // xyzw
+          if (at + 4 <= microcode.size()) {
+            const uint8_t* w = microcode.data() + at;
+            swizzle = (uint32_t(w[2]) << 8 | w[3]) & 0xFFF;  // big-endian word 1, bits 0..11
+          }
+          swizzles.push_back(swizzle);
+        }
+        const auto* swizzle_words = reinterpret_cast<const uint8_t*>(swizzles.data());
+        blobs.insert(blobs.end(), swizzle_words, swizzle_words + swizzles.size() * sizeof(uint32_t));
       }
     }
     entries.push_back(e);

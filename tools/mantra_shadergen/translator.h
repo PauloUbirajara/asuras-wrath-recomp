@@ -42,6 +42,9 @@ TranslateResult TranslateContainer(const uint8_t* container);
 // runtime-patched variant of the same shader). False if the sizes differ.
 bool ReplaceMicrocode(std::vector<uint8_t>& container, const std::vector<uint8_t>& microcode);
 
+// The container's microcode (big-endian), empty if the header is invalid.
+std::vector<uint8_t> ContainerMicrocode(const std::vector<uint8_t>& container);
+
 // Interpolators a vertex shader container declares.
 uint32_t ContainerInterpolatorCount(const std::vector<uint8_t>& container);
 

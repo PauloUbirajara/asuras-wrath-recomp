@@ -315,6 +315,16 @@ bool WriteCache(const fs::path& path, const std::map<uint64_t, Shader>& shaders)
       e.vertex_element_count = uint32_t(s.vertex_elements.size());
       const auto* words = reinterpret_cast<const uint8_t*>(s.vertex_elements.data());
       blobs.insert(blobs.end(), words, words + s.vertex_elements.size() * sizeof(uint32_t));
+      if (!s.is_pixel) {
+        // The exports of the microcode this was translated from, for
+        // renumbering the outputs of normalized matches at runtime.
+        const std::vector<uint8_t> microcode = ContainerMicrocode(s.container);
+        const std::vector<uint32_t> exports =
+            mantra::shader_key::InterpolatorExports(microcode.data(), microcode.size());
+        e.export_count = uint32_t(exports.size());
+        const auto* export_words = reinterpret_cast<const uint8_t*>(exports.data());
+        blobs.insert(blobs.end(), export_words, export_words + exports.size() * sizeof(uint32_t));
+      }
     }
     entries.push_back(e);
   }

@@ -1,5 +1,7 @@
 #include "shader_cache.h"
 
+#include <algorithm>
+
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -42,7 +44,7 @@ bool ShaderCache::Load(const std::filesystem::path& path) {
     return false;
   }
   std::memcpy(&header, data_.data(), sizeof(header));
-  if (std::memcmp(header.magic, kMagic, 4) || header.version != kVersion) {
+  if (std::memcmp(header.magic, kMagic, 4) || header.version < kMinVersion || header.version > kVersion) {
     MANTRA_WARN("shader cache {} has an unknown format (version {}); rerun mantra_shadergen",
                 path.string(), header.version);
     return false;
@@ -62,7 +64,9 @@ bool ShaderCache::Load(const std::filesystem::path& path) {
     const CacheEntry& e = entries_[i];
     if (!(e.flags & kEntryFailed) &&
         (uint64_t(e.spirv_offset) + e.spirv_size > blobs_size_ ||
-         uint64_t(e.vertex_elements_offset) + uint64_t(e.vertex_element_count) * 4 > blobs_size_)) {
+         uint64_t(e.vertex_elements_offset) +
+                 (uint64_t(e.vertex_element_count) + e.export_count) * 4 >
+             blobs_size_)) {
       MANTRA_WARN("shader cache {}: entry {} points past the end", path.string(), i);
       entries_.clear();
       by_exact_.clear();
@@ -71,7 +75,7 @@ bool ShaderCache::Load(const std::filesystem::path& path) {
     }
     by_exact_.emplace(e.exact_hash, i);
     if (!(e.flags & (kEntryFailed | kEntryPixelShader))) {
-      by_normalized_.emplace(e.normalized_hash, i);
+      by_normalized_[e.normalized_hash].push_back(i);
     }
   }
   return true;
@@ -95,6 +99,10 @@ ShaderCache::Lookup ShaderCache::Find(const void* microcode_be, size_t byte_coun
       result.vertex_elements.resize(e.vertex_element_count);
       std::memcpy(result.vertex_elements.data(), blobs_ + e.vertex_elements_offset,
                   e.vertex_element_count * sizeof(uint32_t));
+      result.exports.resize(e.export_count);
+      std::memcpy(result.exports.data(),
+                  blobs_ + e.vertex_elements_offset + e.vertex_element_count * sizeof(uint32_t),
+                  e.export_count * sizeof(uint32_t));
     }
     return result;
   };
@@ -105,7 +113,30 @@ ShaderCache::Lookup ShaderCache::Find(const void* microcode_be, size_t byte_coun
   if (!is_pixel) {
     if (auto it = by_normalized_.find(shader_key::NormalizedHash(microcode_be, byte_count));
         it != by_normalized_.end()) {
-      return make(it->second, Match::kNormalized);
+      const std::vector<size_t>& candidates = it->second;
+      if (candidates.size() == 1) {
+        return make(candidates[0], Match::kNormalized);
+      }
+      // An output the translation doesn't write would leave the pixel
+      // shader's input undefined (e.g. a texture coordinate of 0).
+      const std::vector<uint32_t> runtime = shader_key::InterpolatorExports(microcode_be, byte_count);
+      for (size_t index : candidates) {
+        const CacheEntry& e = entries_[index];
+        const auto* exports = reinterpret_cast<const uint32_t*>(
+            blobs_ + e.vertex_elements_offset + e.vertex_element_count * sizeof(uint32_t));
+        const std::span<const uint32_t> translated(exports, e.export_count);
+        const bool covers = std::all_of(runtime.begin(), runtime.end(), [&](uint32_t r) {
+          return std::any_of(translated.begin(), translated.end(),
+                             [&](uint32_t t) { return (t & ~0xFu) == (r & ~0xFu); });
+        });
+        if (covers) {
+          result.candidates = uint32_t(candidates.size());
+          return make(index, Match::kNormalized);
+        }
+      }
+      result.candidates = uint32_t(candidates.size());
+      result.uncovered = true;
+      return make(candidates[0], Match::kNormalized);
     }
   }
   return result;

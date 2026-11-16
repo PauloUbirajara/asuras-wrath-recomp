@@ -9,7 +9,7 @@ import sys
 
 HDR = struct.Struct('<4sIII')
 ENTRY = struct.Struct('<QQ12I')  # 64 bytes, see shader_cache_format.h
-SPIRV_OFF, SPIRV_SIZE, VE_OFF, VE_COUNT = 2, 3, 8, 9  # indices into the 12 uints
+SPIRV_OFF, SPIRV_SIZE, VE_OFF, VE_COUNT, EXPORTS = 2, 3, 8, 9, 11  # indices into the 12 uints
 
 
 def load(path):
@@ -32,7 +32,8 @@ def main():
             continue
         u = e[2:]
         spirv = pblobs[u[SPIRV_OFF]:u[SPIRV_OFF] + u[SPIRV_SIZE]]
-        ve = pblobs[u[VE_OFF]:u[VE_OFF] + u[VE_COUNT] * 4]
+        # Vertex elements, then (v6) the interpolator export words.
+        ve = pblobs[u[VE_OFF]:u[VE_OFF] + (u[VE_COUNT] + (u[EXPORTS] if pversion >= 6 else 0)) * 4]
         u[SPIRV_OFF] = len(blobs); blobs += spirv
         u[VE_OFF] = len(blobs); blobs += ve
         entries[index[e[0]]] = e[:2] + u

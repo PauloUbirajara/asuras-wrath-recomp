@@ -17,7 +17,9 @@
 // MantraLoad_T(addr[, align]). The shared constants layout is XenosRecomp's:
 // 256 g_Booleans, 260 g_SwappedTexcoords, 264 g_HalfPixelOffset,
 // 272 g_AlphaThreshold (mantra: bytes 0..127 hold each fetch slot's exp_adjust), plus
-// mantra's 288 g_NdcScale, 304 g_NdcOffset: translator.cpp replaces the VS's
+// mantra's 288 g_NdcScale, 300 g_MantraHalfInputMask (VS input locations
+// fetched as 16-bit floats, swapped back to .yxwz at the top of main),
+// 304 g_NdcOffset: translator.cpp replaces the VS's
 // final half-pixel offset with oPos.xyz = oPos.xyz * g_NdcScale +
 // g_NdcOffset * oPos.w (the host viewport transform; Y is pre-negated because
 // DXC's -fvk-invert-y negates oPos.y afterwards).
@@ -63,6 +65,7 @@ uint MantraLoad_uint(uint address, uint alignment) { return g_Constants.Load(add
 #define g_MantraFloat7e3OutputMask MantraLoad_uint(g_PushConstants.SharedConstants + 284)
 #define g_NdcScale                 MantraLoad_float3(g_PushConstants.SharedConstants + 288)
 #define g_NdcOffset                MantraLoad_float3(g_PushConstants.SharedConstants + 304)
+#define g_MantraHalfInputMask      MantraLoad_uint(g_PushConstants.SharedConstants + 300)
 
 [[vk::constant_id(0)]] const uint g_SpecConstants = 0;
 

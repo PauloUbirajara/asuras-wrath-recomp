@@ -5,7 +5,7 @@
 //   CacheEntry[entry_count]   (sorted by exact_hash)
 //   blobs                     (offsets relative to the end of the entry table):
 //                             SPIR-V, and per vertex shader its VertexElement
-//                             words
+//                             words followed by its interpolator export words
 
 #include <cstdint>
 
@@ -17,7 +17,11 @@ constexpr char kMagic[4] = {'M', 'S', 'H', 'C'};
 // 3: vertex elements, PS outputs; the VS applies the host NDC transform
 //    (SharedConstants ndc_scale / ndc_offset) instead of the half-pixel offset.
 // 5: vertex_index_divisor (vertex shaders that fetch at vertex index / K).
-constexpr uint32_t kVersion = 5;
+// 6: per vertex shader, its interpolator exports (shader_key::
+//    InterpolatorExports) after the vertex elements. Version 5 caches still
+//    load (no exports: normalized matches aren't remapped).
+constexpr uint32_t kVersion = 6;
+constexpr uint32_t kMinVersion = 5;
 
 struct CacheHeader {
   char magic[4];
@@ -49,7 +53,9 @@ struct CacheEntry {
   // floor(vertex index / divisor) instead of the vertex index (particle
   // shaders drawing 4 corners per element); 0 = the vertex index.
   uint32_t vertex_index_divisor;
-  uint32_t reserved;
+  // Vertex shaders: interpolator export words (v6) right after the vertex
+  // elements in the blob.
+  uint32_t export_count;
 };
 static_assert(sizeof(CacheEntry) == 64);
 

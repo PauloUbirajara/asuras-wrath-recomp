@@ -1,6 +1,7 @@
 #include "native_command_processor.h"
 #include "memexport.h"
 #include "mantra_log.h"
+#include "shader_key.h"
 
 #include <algorithm>
 #include <atomic>
@@ -9,7 +10,9 @@
 #include <cstdlib>
 #include <cmath>
 #include <cstring>
+#include <span>
 #include <string>
+#include <unordered_set>
 #include <vector>
 #include <filesystem>
 
@@ -453,6 +456,13 @@ bool NativeCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
                    0x688, fmt::format("s{}_pass_{:03}_stencil_{:016X}", trace_swap_,
                                       pass_capture_index_++,
                                       active_vertex_shader()->ucode_data_hash()));
+      // The depth it was tested against (alpha column of the stats = raw depth).
+      CaptureImage(rt.image,
+                   rt.image.format == VK_FORMAT_D24_UNORM_S8_UINT ? VK_FORMAT_X8_D24_UNORM_PACK32
+                                                                  : VK_FORMAT_D32_SFLOAT,
+                   rt.image.width, std::min(rt.image.height, 720u), 0x688,
+                   fmt::format("s{}_pass_{:03}_depth_{:016X}", trace_swap_,
+                               pass_capture_index_++, active_vertex_shader()->ucode_data_hash()));
     }
     if (CapturingDraws() && outcome[0] == 'd' && rendering_.active && rendering_.color[0]) {
       mantra::RenderTarget& rt = *rendering_.color[0];
@@ -803,6 +813,9 @@ void NativeCommandProcessor::TraceDraw(xenos::PrimitiveType prim_type, uint32_t 
       uint32_t(blend.alpha_destblend), uint32_t(blend.alpha_comb_fcn), uint32_t(depth.z_enable),
       uint32_t(depth.zfunc), color_control.alpha_test_enable ? uint32_t(color_control.alpha_func) : 99,
       textures);
+  MANTRA_INFO("trace:   surf clip {:08X} mode {:08X} depthctl {:08X} sref_bf {:08X}",
+              regs[XE_GPU_REG_PA_CL_CLIP_CNTL], regs[XE_GPU_REG_PA_SU_SC_MODE_CNTL],
+              regs[XE_GPU_REG_RB_DEPTHCONTROL], regs[XE_GPU_REG_RB_STENCILREFMASK_BF]);
   MANTRA_INFO("trace:   surf msaa {} depth base {} fmt {} stencil {} zw {} sref {} swmask {:X} sop {}/{}/{}/{}",
               uint32_t(surface_info.msaa_samples),
               uint32_t(regs.Get<reg::RB_DEPTH_INFO>().depth_base),
@@ -1130,13 +1143,20 @@ void NativeCommandProcessor::CaptureImage(mantra::TrackedImage& image, VkFormat 
     case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
     case VK_FORMAT_R16G16_SFLOAT:
     case VK_FORMAT_R32_SFLOAT: texel_size = 4; break;
-    case VK_FORMAT_R16G16B16A16_SFLOAT: texel_size = 8; break;
+    case VK_FORMAT_R16G16B16A16_SFLOAT:
+    case VK_FORMAT_R16G16B16A16_UNORM:
+    case VK_FORMAT_R16G16B16A16_SNORM: texel_size = 8; break;  // SNORM: fixed16 stored /32
     case VK_FORMAT_S8_UINT: texel_size = 1; break;  // stencil plane of a depth image
+    // Depth plane of a depth image (X8_D24: D24_UNORM_S8; D32: D32_SFLOAT_S8).
+    case VK_FORMAT_X8_D24_UNORM_PACK32:
+    case VK_FORMAT_D32_SFLOAT: texel_size = 4; break;
     default: return;
   }
   const bool stencil_plane = format == VK_FORMAT_S8_UINT;
+  const bool depth_plane =
+      format == VK_FORMAT_X8_D24_UNORM_PACK32 || format == VK_FORMAT_D32_SFLOAT;
   if (image.samples != VK_SAMPLE_COUNT_1_BIT ||
-      (!stencil_plane && image.aspect != VK_IMAGE_ASPECT_COLOR_BIT)) {
+      (!stencil_plane && !depth_plane && image.aspect != VK_IMAGE_ASPECT_COLOR_BIT)) {
     return;
   }
   width = std::min(width, image.width);
@@ -1162,8 +1182,9 @@ void NativeCommandProcessor::CaptureImage(mantra::TrackedImage& image, VkFormat 
     mantra::TransitionImage(vulkan_device_, cmd, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                             VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
     VkBufferImageCopy region = {};
-    region.imageSubresource.aspectMask =
-        stencil_plane ? VK_IMAGE_ASPECT_STENCIL_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.aspectMask = stencil_plane ? VK_IMAGE_ASPECT_STENCIL_BIT
+                                         : depth_plane ? VK_IMAGE_ASPECT_DEPTH_BIT
+                                                       : VK_IMAGE_ASPECT_COLOR_BIT;
     region.imageSubresource.layerCount = 1;
     region.imageExtent = {width, height, 1};
     dfn.vkCmdCopyImageToBuffer(cmd, image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1,
@@ -1198,6 +1219,14 @@ void NativeCommandProcessor::CaptureImage(mantra::TrackedImage& image, VkFormat 
                 f[1] = (v & 2) ? 1.0f : 0.0f;
                 f[2] = v > 3 ? 1.0f : 0.0f;
                 break;
+              case VK_FORMAT_X8_D24_UNORM_PACK32:  // depth, x50 so reversed-Z far range shows
+                f[3] = float(v & 0xFFFFFF) / 16777215.0f;
+                f[0] = f[1] = f[2] = f[3] * 50.0f;
+                break;
+              case VK_FORMAT_D32_SFLOAT:
+                std::memcpy(&f[3], &v, 4);
+                f[0] = f[1] = f[2] = f[3] * 50.0f;
+                break;
               case VK_FORMAT_R8G8B8A8_UNORM:
                 for (uint32_t i = 0; i < 4; ++i) f[i] = float((v >> (8 * i)) & 0xFF) / 255.0f;
                 break;
@@ -1214,6 +1243,18 @@ void NativeCommandProcessor::CaptureImage(mantra::TrackedImage& image, VkFormat 
                 std::memcpy(&f[0], &v, 4);
                 f[1] = f[2] = f[0];
                 break;
+              case VK_FORMAT_R16G16B16A16_UNORM: {
+                uint16_t n[4];
+                std::memcpy(n, t, 8);
+                for (uint32_t i = 0; i < 4; ++i) f[i] = float(n[i]) / 65535.0f;
+                break;
+              }
+              case VK_FORMAT_R16G16B16A16_SNORM: {  // fixed16 render targets hold value/32
+                int16_t n[4];
+                std::memcpy(n, t, 8);
+                for (uint32_t i = 0; i < 4; ++i) f[i] = std::max(float(n[i]) / 32767.0f, -1.0f) * 32.0f;
+                break;
+              }
               default: {  // R16G16B16A16_SFLOAT
                 uint16_t h[4];
                 std::memcpy(h, t, 8);
@@ -1357,10 +1398,10 @@ void NativeCommandProcessor::ReportSwapStats() {
               draw_stats_.fills_color,
               draw_stats_.fills_depth, draw_stats_.fills_skipped, render_targets_.size(),
               resolved_surfaces_.size());
-  MANTRA_INFO("shaders: {} loads, {} unique, {} dumped; cache {} exact, {} normalized, "
-              "{} failed, {} miss; {} modules ({} failed)",
+  MANTRA_INFO("shaders: {} loads, {} unique, {} dumped; cache {} exact, {} normalized "
+              "({} remapped), {} failed, {} miss; {} modules ({} failed)",
               shader_stats_.loads, shader_stats_.unique, shader_stats_.dumped,
-              shader_stats_.cache_exact, shader_stats_.cache_normalized,
+              shader_stats_.cache_exact, shader_stats_.cache_normalized, shader_stats_.remapped,
               shader_stats_.cache_failed, shader_stats_.cache_miss, shader_stats_.modules,
               shader_stats_.module_failures);
   MANTRA_INFO("constants: {} draws prepared, {} without translation; {} uploads ({:.1f} MB), "
@@ -1398,6 +1439,40 @@ void NativeCommandProcessor::ReportSwapStats() {
     ReportDrawCensus();
   }
 }
+
+namespace {
+
+// Renumbers the Location decorations of a SPIR-V module's Output variables
+// below 16 through `map`. Returns the number of decorations changed.
+uint32_t RemapOutputLocations(std::vector<uint8_t>& module, const uint8_t (&map)[16]) {
+  const size_t words = module.size() / 4;
+  auto* code = reinterpret_cast<uint32_t*>(module.data());
+  constexpr uint32_t kOpDecorate = 71, kOpVariable = 59, kDecorationLocation = 30,
+                     kStorageClassOutput = 3;
+  std::unordered_set<uint32_t> outputs;
+  for (size_t at = 5; at < words;) {
+    const uint32_t count = code[at] >> 16, opcode = code[at] & 0xFFFF;
+    if (!count || at + count > words) break;
+    if (opcode == kOpVariable && count >= 4 && code[at + 3] == kStorageClassOutput) {
+      outputs.insert(code[at + 2]);
+    }
+    at += count;
+  }
+  uint32_t changed = 0;
+  for (size_t at = 5; at < words;) {
+    const uint32_t count = code[at] >> 16, opcode = code[at] & 0xFFFF;
+    if (!count || at + count > words) break;
+    if (opcode == kOpDecorate && count == 4 && code[at + 2] == kDecorationLocation &&
+        outputs.count(code[at + 1]) && code[at + 3] < 16) {
+      if (map[code[at + 3]] != code[at + 3]) ++changed;
+      code[at + 3] = map[code[at + 3]];
+    }
+    at += count;
+  }
+  return changed;
+}
+
+}  // namespace
 
 Shader* NativeCommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32_t guest_address,
                                            const uint32_t* host_address, uint32_t dword_count) {
@@ -1439,7 +1514,46 @@ Shader* NativeCommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32
     if (!is_pixel) {
       shader->DecodeVertexInputs(lookup.vertex_elements);
     }
-    shader->module = shader_interface_.CreateModule(lookup.spirv);
+    std::span<const uint8_t> spirv = lookup.spirv;
+    std::vector<uint8_t> remapped;
+    if (!is_pixel && lookup.match == mantra::ShaderCache::Match::kNormalized &&
+        !lookup.exports.empty()) {
+      // The driver patched this shader's exports for the pixel shader it is
+      // drawn with: renumber the translation's interpolator outputs to match.
+      uint8_t map[16];
+      const std::vector<uint32_t> runtime_exports =
+          mantra::shader_key::InterpolatorExports(host_address, byte_count);
+      if (!mantra::shader_key::InterpolatorLocationMap(lookup.exports, runtime_exports, map)) {
+        // Identity, or exports that don't correspond (then left as is).
+        auto list = [](const std::vector<uint32_t>& exports) {
+          std::string s;
+          for (uint32_t e : exports) {
+            s += fmt::format(" {}:{}{}", e >> 8, (e >> 4) & 1 ? 's' : 'v', e & 0xF);
+          }
+          return s;
+        };
+        if (lookup.uncovered) {
+          MANTRA_WARN("vs {:016X} (cached {:016X}, {} candidates): runtime exports not all "
+                      "translated; translated{} | runtime{}",
+                      hash, lookup.entry->exact_hash, lookup.candidates, list(lookup.exports),
+                      list(runtime_exports));
+        }
+      } else {
+        remapped.assign(spirv.begin(), spirv.end());
+        const uint32_t patched = RemapOutputLocations(remapped, map);
+        spirv = remapped;
+        ++shader_stats_.remapped;
+        std::string text;
+        for (uint32_t i = 0; i < 16; ++i) {
+          if (map[i] != i) text += fmt::format(" o{}->{}", i, map[i]);
+        }
+        MANTRA_INFO("vs {:016X} (cached {:016X}, {} candidates{}): interpolators{} ({} "
+                    "decorations)",
+                    hash, lookup.entry->exact_hash, lookup.candidates,
+                    lookup.uncovered ? ", exports not all translated" : "", text, patched);
+      }
+    }
+    shader->module = shader_interface_.CreateModule(spirv);
     if (shader->module) {
       ++shader_stats_.modules;
     } else {

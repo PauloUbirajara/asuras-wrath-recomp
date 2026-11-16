@@ -23,6 +23,13 @@ class ShaderCache {
     std::span<const uint8_t> spirv;
     // Packed shader_cache::VertexElement words (vertex shaders).
     std::vector<uint32_t> vertex_elements;
+    // shader_key::InterpolatorExports of the translated microcode (vertex
+    // shaders, cache v6).
+    std::vector<uint32_t> exports;
+    // Normalized matches: how many game shaders shared the hash, and whether
+    // none of them exports everything the runtime code does.
+    uint32_t candidates = 0;
+    bool uncovered = false;
   };
 
   // Default location: $MANTRA_SHADER_CACHE, else
@@ -41,8 +48,10 @@ class ShaderCache {
   const uint8_t* blobs_ = nullptr;
   size_t blobs_size_ = 0;
   std::unordered_map<uint64_t, size_t> by_exact_;
-  // Only translated vertex shaders; first one wins on collisions.
-  std::unordered_map<uint64_t, size_t> by_normalized_;
+  // Only translated vertex shaders, in entry order. Game shaders that differ
+  // only in their exports share a normalized hash; Find takes the first one
+  // whose translation exports everything the runtime code does.
+  std::unordered_map<uint64_t, std::vector<size_t>> by_normalized_;
 };
 
 }  // namespace mantra

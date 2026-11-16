@@ -113,14 +113,15 @@ bool ShaderInterface::CreateRing(uint32_t frame_slots) {
 bool ShaderInterface::CreatePlaceholders() {
   const auto& dfn = device_->functions();
   const VkDevice vk_device = device_->device();
-  for (uint32_t i = 0; i < 3; ++i) {
+  for (uint32_t i = 0; i < kPlaceholderCount; ++i) {
+    const uint32_t d = i % 3;  // dimension
     VkImageCreateInfo info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-    info.flags = i == 2 ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
-    info.imageType = i == 1 ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
+    info.flags = d == 2 ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
+    info.imageType = d == 1 ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
     info.format = VK_FORMAT_R8G8B8A8_UNORM;
     info.extent = {1, 1, 1};
     info.mipLevels = 1;
-    info.arrayLayers = i == 2 ? 6 : 1;
+    info.arrayLayers = d == 2 ? 6 : 1;
     info.samples = VK_SAMPLE_COUNT_1_BIT;
     info.tiling = VK_IMAGE_TILING_OPTIMAL;
     info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
@@ -133,8 +134,8 @@ bool ShaderInterface::CreatePlaceholders() {
     }
     VkImageViewCreateInfo view_info = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     view_info.image = placeholder_images_[i];
-    view_info.viewType = i == 0   ? VK_IMAGE_VIEW_TYPE_2D
-                         : i == 1 ? VK_IMAGE_VIEW_TYPE_3D
+    view_info.viewType = d == 0   ? VK_IMAGE_VIEW_TYPE_2D
+                         : d == 1 ? VK_IMAGE_VIEW_TYPE_3D
                                   : VK_IMAGE_VIEW_TYPE_CUBE;
     view_info.format = info.format;
     view_info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, info.arrayLayers};
@@ -243,8 +244,8 @@ void ShaderInterface::InitializeResources(VkCommandBuffer cmd) {
   }
   placeholders_initialized_ = true;
   const auto& dfn = device_->functions();
-  VkImageMemoryBarrier barriers[3] = {};
-  for (uint32_t i = 0; i < 3; ++i) {
+  VkImageMemoryBarrier barriers[kPlaceholderCount] = {};
+  for (uint32_t i = 0; i < kPlaceholderCount; ++i) {
     barriers[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     barriers[i].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     barriers[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -252,16 +253,19 @@ void ShaderInterface::InitializeResources(VkCommandBuffer cmd) {
     barriers[i].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barriers[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barriers[i].image = placeholder_images_[i];
-    barriers[i].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, i == 2 ? 6u : 1u};
+    barriers[i].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, i % 3 == 2 ? 6u : 1u};
   }
   dfn.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 3,
-                           barriers);
-  // Transparent black, like an unbound fetch on the guest.
-  const VkClearColorValue white = {{0.0f, 0.0f, 0.0f, 0.0f}};
-  for (uint32_t i = 0; i < 3; ++i) {
+                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr,
+                           kPlaceholderCount, barriers);
+  // 0-2: transparent black, for textures that failed to load. 3-5: opaque
+  // black, D3D's unbound texture, for fetch constants that aren't textures
+  // (UE3's shadow frustum stencil pass alpha-tests one; alpha 0 killed it).
+  const VkClearColorValue transparent = {{0.0f, 0.0f, 0.0f, 0.0f}};
+  const VkClearColorValue opaque = {{0.0f, 0.0f, 0.0f, 1.0f}};
+  for (uint32_t i = 0; i < kPlaceholderCount; ++i) {
     dfn.vkCmdClearColorImage(cmd, placeholder_images_[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                             &white, 1, &barriers[i].subresourceRange);
+                             i < 3 ? &transparent : &opaque, 1, &barriers[i].subresourceRange);
     barriers[i].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     barriers[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
     barriers[i].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
@@ -270,7 +274,7 @@ void ShaderInterface::InitializeResources(VkCommandBuffer cmd) {
   dfn.vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
                            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
                                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                           0, 0, nullptr, 0, nullptr, 3, barriers);
+                           0, 0, nullptr, 0, nullptr, kPlaceholderCount, barriers);
 }
 
 void ShaderInterface::Shutdown() {
@@ -284,7 +288,7 @@ void ShaderInterface::Shutdown() {
     if (pool) dfn.vkDestroyDescriptorPool(vk_device, pool, nullptr);
   }
   if (placeholder_sampler_) dfn.vkDestroySampler(vk_device, placeholder_sampler_, nullptr);
-  for (uint32_t i = 0; i < 3; ++i) {
+  for (uint32_t i = 0; i < kPlaceholderCount; ++i) {
     if (placeholder_views_[i]) dfn.vkDestroyImageView(vk_device, placeholder_views_[i], nullptr);
     if (placeholder_images_[i]) dfn.vkDestroyImage(vk_device, placeholder_images_[i], nullptr);
     if (placeholder_memory_[i]) dfn.vkFreeMemory(vk_device, placeholder_memory_[i], nullptr);

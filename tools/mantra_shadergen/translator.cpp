@@ -268,7 +268,7 @@ bool CollectStageInterface(const uint8_t* container, TranslateResult& r) {
   const size_t microcode_dwords = shader->size / 4;
   // The entry point's input declarations, in vertex element order.
   static const std::regex kInput(
-      R"(\t(\[\[vk::location\((\d+)\)\]\] )?in (float4|uint4) i\w+ : \w+,\n)");
+      R"(\t(\[\[vk::location\((\d+)\)\]\] )?in (float4|uint4) (i\w+) : \w+,\n)");
   std::string& hlsl = r.hlsl;
   const size_t main_at = hlsl.find("void main(");
   if (main_at == std::string::npos) {
@@ -289,6 +289,8 @@ bool CollectStageInterface(const uint8_t* container, TranslateResult& r) {
   }
   std::string out(hlsl.cbegin(), hlsl.cbegin() + main_at);
   auto copied = hlsl.cbegin() + main_at;
+  // Per-input half-float swaps for the top of main.
+  std::string half_swaps;
   for (uint32_t i = 0; i < count; ++i) {
     union {
       VertexElement element;
@@ -321,6 +323,16 @@ bool CollectStageInterface(const uint8_t* container, TranslateResult& r) {
     }
     out += declaration;
     copied = m[0].second;
+    // The D3D runtime patches the vertex formats into the fetches, so whether
+    // an input is 16-bit float is only known per draw: guest_draw.cpp sets
+    // g_MantraHalfInputMask (see mantra_shader_common.hlsl). XenosRecomp's
+    // own g_SwappedTexcoords covers TEXCOORDs only (UE3 also feeds half2
+    // lightmap UVs through COLOR) and stays 0.
+    {
+      const std::string name = m[4];
+      half_swaps += "\tif (g_MantraHalfInputMask & (1u << " + std::to_string(location) + ")) " +
+                    name + " = " + name + ".yxwz;\n";
+    }
     mantra::shader_cache::VertexElement packed{};
     packed.address = uint32_t(element.address);
     packed.location = location;
@@ -336,6 +348,13 @@ bool CollectStageInterface(const uint8_t* container, TranslateResult& r) {
     r.vertex_elements.push_back(packed.Pack());
   }
   out.append(copied, hlsl.cend());
+  if (!half_swaps.empty()) {
+    const size_t body = out.find("\n{\n", out.find("void main("));
+    if (body == std::string::npos) {
+      return false;
+    }
+    out.insert(body + 3, half_swaps);
+  }
   hlsl = std::move(out);
   return true;
 }
@@ -471,6 +490,24 @@ bool ReplaceMicrocode(std::vector<uint8_t>& container, const std::vector<uint8_t
   }
   std::memcpy(container.data() + at, microcode.data(), microcode.size());
   return true;
+}
+
+std::vector<uint8_t> ContainerMicrocode(const std::vector<uint8_t>& container) {
+  if (container.size() < sizeof(ShaderContainer)) {
+    return {};
+  }
+  const auto* shader_container = reinterpret_cast<const ShaderContainer*>(container.data());
+  const size_t shader_at = shader_container->shaderOffset;
+  if (shader_at + sizeof(Shader) > container.size()) {
+    return {};
+  }
+  const auto* shader = reinterpret_cast<const Shader*>(container.data() + shader_at);
+  const size_t at = size_t(shader_container->virtualSize) + shader->physicalOffset;
+  const size_t size = uint32_t(shader->size);
+  if (at + size > container.size()) {
+    return {};
+  }
+  return {container.begin() + at, container.begin() + at + size};
 }
 
 TranslateResult TranslateContainer(const uint8_t* container) {

@@ -670,12 +670,15 @@ bool TextureCache::LoadFromMemory(Texture& texture, const xenos::xe_gpu_texture_
   if (const char* dump_dir = std::getenv("MANTRA_TEXTURE_DUMP_DIR");
       dump_dir && texture.format == VK_FORMAT_R8_UNORM && host_levels &&
       (texture.dump_counter++ % 60) == 0) {
-    const std::string path = fmt::format("{}/tex_{:08X}_{:05}.pgm", dump_dir, base_address,
-                                         texture.dump_counter - 1);
-    if (std::FILE* file = std::fopen(path.c_str(), "wb")) {
-      std::fprintf(file, "P5\n%u %u\n255\n", host_width, host_height);
-      std::fwrite(staging + level_offsets[0], 1, size_t(host_width) * host_height, file);
-      std::fclose(file);
+    for (uint32_t h = 0; h < host_levels; ++h) {
+      const uint32_t lw = std::max(host_width >> h, 1u), lh = std::max(host_height >> h, 1u);
+      const std::string path = fmt::format("{}/tex_{:08X}_{:05}_m{}.pgm", dump_dir, base_address,
+                                           texture.dump_counter - 1, mip_min + h);
+      if (std::FILE* file = std::fopen(path.c_str(), "wb")) {
+        std::fprintf(file, "P5\n%u %u\n255\n", lw, lh);
+        std::fwrite(staging + level_offsets[h], 1, size_t(lw) * lh, file);
+        std::fclose(file);
+      }
     }
   }
   // Debug: and the raw level 0 blocks of BC1 textures, once per address.
@@ -914,7 +917,13 @@ VkSampler TextureCache::GetSampler(const xenos::xe_gpu_texture_fetch_t& fetch) {
     info.maxAnisotropy = std::min(float(1u << (aniso - 1)), props.maxSamplerAnisotropy);
   }
   info.minLod = 0.0f;
-  info.maxLod = fetch.mip_filter == TF::kBaseMap ? 0.25f : VK_LOD_CLAMP_NONE;
+  // Debug: MANTRA_TEXTURE_BASE_ONLY=1 samples only the base level (mip A/B).
+  static const bool base_only = [] {
+    const char* v = std::getenv("MANTRA_TEXTURE_BASE_ONLY");
+    return v && *v && *v != '0';
+  }();
+  info.maxLod =
+      (base_only || fetch.mip_filter == TF::kBaseMap) ? 0.25f : VK_LOD_CLAMP_NONE;
   info.borderColor = fetch.border_color == xenos::BorderColor::k_ABGR_White
                          ? VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE
                          : VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;

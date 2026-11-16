@@ -51,7 +51,10 @@ struct SharedConstants {
   // mantra: host viewport transform applied by the VS
   // (draw_util::ViewportInfo ndc_scale / ndc_offset).
   float ndc_scale[3] = {1.0f, 1.0f, 1.0f};
-  float pad2 = 0.0f;
+  // mantra: bit per VS input location fetched as 16-bit floats. The vertex
+  // data is endian-swapped 8in32, so the host format reads each dword's two
+  // halves in reverse order; the VS swaps such inputs back (.yxwz).
+  uint32_t half_input_mask = 0;
   float ndc_offset[3] = {};
   float pad3 = 0.0f;
 };
@@ -62,6 +65,7 @@ static_assert(offsetof(SharedConstants, vertex_index_base) == 276);
 static_assert(offsetof(SharedConstants, fixed16_output_mask) == 280);
 static_assert(offsetof(SharedConstants, float7e3_output_mask) == 284);
 static_assert(offsetof(SharedConstants, ndc_scale) == 288);
+static_assert(offsetof(SharedConstants, half_input_mask) == 300);
 static_assert(offsetof(SharedConstants, ndc_offset) == 304);
 
 class ShaderInterface {
@@ -101,6 +105,11 @@ class ShaderInterface {
   // get the placeholders. VK_NULL_HANDLE when the pool is exhausted.
   VkDescriptorSet AllocateTextureSet(const VkImageView views[3][kFetchSlots],
                                      const VkSampler samplers[kFetchSlots]);
+  // Opaque black (D3D's unbound texture) for heap `dimension` (0 = 2D, 1 = 3D,
+  // 2 = cube): what a fetch from a non-texture fetch constant reads.
+  VkImageView NullTextureView(uint32_t dimension) const {
+    return placeholder_views_[3 + dimension];
+  }
 
   // Creates a module from cached SPIR-V (VK_NULL_HANDLE on failure).
   VkShaderModule CreateModule(std::span<const uint8_t> spirv) const;
@@ -127,11 +136,12 @@ class ShaderInterface {
   VkDeviceSize cursor_ = 0;
   VkDeviceSize flushed_ = 0;
 
-  // Placeholder textures (opaque white) bound to every fetch slot until the
-  // texture cache exists; index: 0 = 2D, 1 = 3D, 2 = cube.
-  VkImage placeholder_images_[3] = {};
-  VkDeviceMemory placeholder_memory_[3] = {};
-  VkImageView placeholder_views_[3] = {};
+  // Placeholder textures; index % 3: 0 = 2D, 1 = 3D, 2 = cube. 0-2 are
+  // transparent black (null views), 3-5 opaque black (NullTextureView).
+  static constexpr uint32_t kPlaceholderCount = 6;
+  VkImage placeholder_images_[kPlaceholderCount] = {};
+  VkDeviceMemory placeholder_memory_[kPlaceholderCount] = {};
+  VkImageView placeholder_views_[kPlaceholderCount] = {};
   VkSampler placeholder_sampler_ = VK_NULL_HANDLE;
   bool placeholders_initialized_ = false;
 

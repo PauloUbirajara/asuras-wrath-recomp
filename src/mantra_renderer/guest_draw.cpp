@@ -376,6 +376,8 @@ void NativeCommandProcessor::PrepareTextures(const MantraShader* vs, const Mantr
     mask &= mask - 1;
     const auto fetch = regs.GetTextureFetch(slot);
     if (fetch.type != xenos::FetchConstantType::kTexture) {
+      // Unbound (D3D marks the slot invalid): reads opaque black.
+      for (uint32_t d = 0; d < 3; ++d) out.views[d][slot] = shader_interface_.NullTextureView(d);
       continue;
     }
     const mantra::TextureCache::Binding binding = texture_cache_.Get(fetch, *this);
@@ -1215,6 +1217,13 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
       mask &= mask - 1;
       shared.descriptor_indices[slot] =
           uint32_t(int32_t(regs.GetTextureFetch(slot).exp_adjust) + textures.exp_bias[slot]);
+    }
+  }
+  for (const MantraShader::VertexInput& in : vs->vertex_inputs) {
+    if (in.valid && in.location < 32 &&
+        (in.format == xenos::VertexFormat::k_16_16_FLOAT ||
+         in.format == xenos::VertexFormat::k_16_16_16_16_FLOAT)) {
+      shared.half_input_mask |= 1u << in.location;
     }
   }
   // (key.color_count is only filled by BeginDrawRendering, later.)

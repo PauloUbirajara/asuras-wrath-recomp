@@ -339,6 +339,7 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
     // Unique shaders by cache result.
     uint64_t cache_exact = 0;
     uint64_t cache_normalized = 0;
+    uint64_t remapped = 0;  // normalized matches with renumbered interpolators
     uint64_t cache_failed = 0;
     uint64_t cache_miss = 0;
     uint64_t modules = 0;          // VkShaderModules created

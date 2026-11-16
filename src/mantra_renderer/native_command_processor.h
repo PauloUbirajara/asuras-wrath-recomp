@@ -139,6 +139,9 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
   // serial of its last write (unique across recreated surfaces).
   uint64_t resolve_serial_ = 0;
   void TraceDraw(xenos::PrimitiveType prim_type, uint32_t index_count, const char* outcome);
+  // While tracing with MANTRA_CAPTURE_DIR: writes the draw's guest index and
+  // vertex buffers (raw, as in memory) for offline geometry checks.
+  void DumpDrawBuffers(uint32_t index_count, const IndexBufferInfo* index_buffer_info);
   // Draws with the translated shaders and a pipeline from the guest state.
   DrawResult DrawGuest(xenos::PrimitiveType prim_type, uint32_t index_count,
                        IndexBufferInfo* index_buffer_info);

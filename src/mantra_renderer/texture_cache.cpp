@@ -424,12 +424,53 @@ TextureCache::Binding TextureCache::Get(const xenos::xe_gpu_texture_fetch_t& fet
       stale = true;
     }
   }
-  if (!from_resolve && (stale || texture.resolved_image != VK_NULL_HANDLE || !texture.initialized ||
-             !watcher_->RangeUnchanged(texture.base_start, texture.base_length, texture.epoch,
-                                       texture.base_checked) ||
-             !watcher_->RangeUnchanged(texture.mip_start, texture.mip_length, texture.epoch,
-                                       texture.mip_checked))) {
-    if (texture.initialized && texture.resolved_image == VK_NULL_HANDLE) {
+  const bool from_memory = !from_resolve && texture.initialized &&
+                           texture.resolved_image == VK_NULL_HANDLE;
+  bool cpu_written = false;
+  if (from_memory && texture.volatile_data) {
+    // Hashed instead of watched (see Texture::volatile_data).
+    const uint64_t submission = host.CurrentSubmission();
+    if (texture.hashed_submission != submission) {
+      texture.hashed_submission = submission;
+      ++stats_.volatile_hashes;
+      if (GuestDataHash(texture) != texture.content_hash) {
+        stale = true;
+        texture.unchanged_hashes = 0;
+      } else if (++texture.unchanged_hashes >= kVolatileSettle) {
+        // Settled: watch it again, then confirm nothing changed meanwhile.
+        texture.volatile_data = false;
+        texture.quick_reloads = 0;
+        texture.epoch = watcher_->WatchRange(texture.base_start, texture.base_length);
+        watcher_->WatchRange(texture.mip_start, texture.mip_length);
+        texture.base_checked = texture.mip_checked = texture.epoch;
+        stale = GuestDataHash(texture) != texture.content_hash;
+      }
+    }
+  } else if (from_memory && !stale) {
+    cpu_written = !watcher_->RangeUnchanged(texture.base_start, texture.base_length,
+                                            texture.epoch, texture.base_checked) ||
+                  !watcher_->RangeUnchanged(texture.mip_start, texture.mip_length, texture.epoch,
+                                            texture.mip_checked);
+  }
+  if (cpu_written) {
+    const uint64_t submission = host.CurrentSubmission();
+    texture.quick_reloads = submission - texture.last_reload_submission <= kVolatileGap
+                                ? uint8_t(std::min<uint32_t>(texture.quick_reloads + 1u, 255u))
+                                : 1;
+    texture.last_reload_submission = submission;
+    // Debug: MANTRA_NO_VOLATILE_TEXTURES=1 keeps page-watching them.
+    static const bool no_volatile = std::getenv("MANTRA_NO_VOLATILE_TEXTURES") != nullptr;
+    if (!no_volatile && texture.quick_reloads >= kVolatileReloads) {
+      texture.volatile_data = true;
+      texture.unchanged_hashes = 0;
+      texture.hashed_submission = submission;  // the reload below hashes it
+      ++stats_.volatile_marks;
+      MANTRA_DEBUG("texture {:08X}: rewritten every frame; hashing instead of watching",
+                   texture.base_start);
+    }
+  }
+  if (!from_resolve && (stale || cpu_written || !from_memory)) {
+    if (from_memory) {
       ++stats_.reloads;
     }
     ready = LoadFromMemory(texture, fetch, host);
@@ -538,8 +579,12 @@ bool TextureCache::LoadFromMemory(Texture& texture, const xenos::xe_gpu_texture_
   texture.base_length = base_length;
   texture.mip_start = mip_address;
   texture.mip_length = mip_length;
-  texture.epoch = watcher_->WatchRange(base_address, base_length);
-  watcher_->WatchRange(mip_address, mip_length);
+  if (texture.volatile_data) {
+    texture.epoch = watcher_->epoch();  // hashed per submission instead
+  } else {
+    texture.epoch = watcher_->WatchRange(base_address, base_length);
+    watcher_->WatchRange(mip_address, mip_length);
+  }
   texture.base_checked = texture.mip_checked = texture.epoch;
   texture.content_hash = GuestDataHash(texture);
 

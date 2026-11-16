@@ -10,6 +10,8 @@
 // same math as the SDK's texture cache) into ring staging space, and copied
 // into a device-local image. The guest pages are write-watched through the
 // buffer cache; a CPU write makes the next use reload the texture in place.
+// Textures the CPU rewrites every frame (video) are hashed per submission
+// instead of watched, since every watched write costs a page fault.
 //
 // Resolve destinations are rendered on the GPU (ResolvedSurfaces) and never
 // written back to guest memory, so a texture at a resolve address samples the
@@ -70,6 +72,8 @@ class TextureCache {
     uint64_t resolve_mismatches = 0;  // resolved surface not copyable (format): memory used
     uint64_t unsupported = 0;     // format/dimension not handled (placeholder)
     uint64_t failures = 0;        // creation/staging failures (placeholder)
+    uint64_t volatile_marks = 0;  // textures switched from page watching to hashing
+    uint64_t volatile_hashes = 0; // guest data hashes of volatile textures
   };
 
   bool Initialize(const rex::ui::vulkan::VulkanDevice* device, BufferCache* watcher,
@@ -121,6 +125,16 @@ class TextureCache {
     // bind counter for spacing the rechecks.
     uint64_t content_hash = 0;
     uint32_t hash_check_counter = 0;
+    // Data the CPU rewrites every frame (video frames) is not page-watched:
+    // each write would fault, and the SDK's fault path is slow. Such a texture
+    // is hashed once per submission instead, and watched again after it stays
+    // unchanged for a while. `quick_reloads` counts CPU-write reloads at most
+    // kVolatileGap submissions apart.
+    bool volatile_data = false;
+    uint8_t quick_reloads = 0;
+    uint32_t unchanged_hashes = 0;
+    uint64_t last_reload_submission = 0;
+    uint64_t hashed_submission = ~uint64_t(0);
     // When copied from a resolved surface: which one, and its write count.
     VkImage resolved_image = VK_NULL_HANDLE;
     uint64_t resolved_writes = 0;
@@ -131,6 +145,10 @@ class TextureCache {
     uint32_t epoch = 0;
     uint32_t checked = 0;
   };
+
+  static constexpr uint8_t kVolatileReloads = 4;   // quick reloads before hashing
+  static constexpr uint64_t kVolatileGap = 8;       // submissions
+  static constexpr uint32_t kVolatileSettle = 240;  // unchanged hashes before watching again
 
   bool CreateImage(Texture& texture);
   uint64_t GuestDataHash(const Texture& texture) const;

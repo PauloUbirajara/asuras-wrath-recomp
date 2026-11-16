@@ -448,6 +448,7 @@ bool NativeCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
   }
   if (TracingThisFrame()) {
     TraceDraw(prim_type, index_count, outcome);
+    DumpDrawBuffers(index_count, index_buffer_info);
     if (CapturingDraws() && outcome[0] == 'd' && rendering_.active && rendering_.depth &&
         register_file_->Get<reg::RB_DEPTHCONTROL>().stencil_enable &&
         register_file_->Get<reg::RB_DEPTHCONTROL>().stencilzpass != xenos::StencilOp::kKeep) {
@@ -748,6 +749,50 @@ bool NativeCommandProcessor::TracingThisFrame() {
     trace_swap_ = env_swap;
   }
   return trace_swap_ && swap_stats_.swaps + 1 == trace_swap_;
+}
+
+void NativeCommandProcessor::DumpDrawBuffers(uint32_t index_count,
+                                             const IndexBufferInfo* index_buffer_info) {
+  const char* dir = std::getenv("MANTRA_CAPTURE_DIR");
+  if (!dir || !*dir) return;
+  // Each buffer once per traced frame; files are named by swap and address.
+  static uint64_t dumped_swap = 0;
+  static std::unordered_set<uint64_t> dumped;
+  if (dumped_swap != trace_swap_) {
+    dumped_swap = trace_swap_;
+    dumped.clear();
+  }
+  const auto dump = [&](const char* kind, uint32_t address, uint32_t length) -> std::string {
+    length = std::min<uint32_t>(length, 8u << 20);
+    const std::string name =
+        fmt::format("s{}_{}_{:08X}_{:X}.bin", trace_swap_, kind, address, length);
+    if (!length || !dumped.insert(uint64_t(address) << 32 | length).second) return name;
+    const auto* src = memory_->TranslatePhysical<const uint8_t*>(address);
+    if (!src || uint64_t(address) + length > 0x20000000u) return name;
+    if (std::FILE* file = std::fopen((std::filesystem::path(dir) / name).c_str(), "wb")) {
+      std::fwrite(src, 1, length, file);
+      std::fclose(file);
+    }
+    return name;
+  };
+  std::string files;
+  if (index_buffer_info && index_buffer_info->guest_base) {
+    const bool is_32 = index_buffer_info->format == xenos::IndexFormat::kInt32;
+    files += fmt::format(" ib e{} {}", uint32_t(index_buffer_info->endianness),
+                         dump("ib", index_buffer_info->guest_base & 0x1FFFFFFF,
+                              index_count * (is_32 ? 4 : 2)));
+  }
+  if (auto* vs = static_cast<MantraShader*>(active_vertex_shader())) {
+    std::unordered_set<uint32_t> fetches;
+    for (const auto& in : vs->vertex_inputs) {
+      if (!in.valid || !fetches.insert(in.fetch_constant).second) continue;
+      const auto fetch = register_file_->GetVertexFetch(in.fetch_constant);
+      files += fmt::format(" vf{} e{} {}", in.fetch_constant, uint32_t(fetch.endian),
+                           dump("vb", (uint32_t(fetch.address) << 2) & 0x1FFFFFFF,
+                                uint32_t(fetch.size) << 2));
+    }
+  }
+  if (!files.empty()) MANTRA_INFO("trace:   buffers{}", files);
 }
 
 void NativeCommandProcessor::TraceDraw(xenos::PrimitiveType prim_type, uint32_t index_count,
@@ -1427,11 +1472,11 @@ void NativeCommandProcessor::ReportSwapStats() {
               bc.not_cacheable, bc.volatile_skips, bc.resets);
   const auto& tc = texture_cache_.stats();
   MANTRA_INFO("textures: {} cached, {} samplers; {} loads ({} after CPU writes, {:.1f} MB), "
-              "{} from resolves ({} not copyable), {} unsupported, {} failed; descriptor sets {} "
-              "({} reused)",
+              "{} from resolves ({} not copyable), {} unsupported, {} failed; {} volatile "
+              "({} hashes); descriptor sets {} ({} reused)",
               texture_cache_.size(), texture_cache_.sampler_count(), tc.loads, tc.reloads,
               tc.load_bytes / 1048576.0, tc.resolved_binds, tc.resolve_mismatches, tc.unsupported, tc.failures,
-              g.texture_sets, g.texture_sets_reused);
+              tc.volatile_marks, tc.volatile_hashes, g.texture_sets, g.texture_sets_reused);
   swap_stats_.last_report_time = now;
   swap_stats_.swaps_at_last_report = swap_stats_.swaps;
   // The draw census every 30 seconds.

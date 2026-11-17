@@ -18,6 +18,7 @@
 #include "memexport.h"
 #include "copy_pipelines.h"
 #include "draw_pipelines.h"
+#include "pipeline_store.h"
 #include "render_targets.h"
 #include "shader_cache.h"
 #include "shader_interface.h"
@@ -436,6 +437,11 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
 
   mantra::CopyPipelines copy_pipelines_;
   mantra::DrawPipelines draw_pipelines_;
+  // Pipelines from earlier runs (MANTRA_PIPELINE_WARMUP=0 skips building them).
+  mantra::PipelineStore pipeline_store_;
+  void StartPipelineWarmUp();
+  void RecordPipeline(const MantraShader& vs, const MantraShader* ps,
+                      const mantra::PipelineKey& key);
   mantra::BufferCache buffer_cache_;
   mantra::TextureCache texture_cache_;
   mantra::ShaderInterface shader_interface_;

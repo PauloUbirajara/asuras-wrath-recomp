@@ -37,6 +37,7 @@ namespace mantra {
 
 class BufferCache;
 class ResolvedSurfaces;
+struct ResolvedSurface;
 
 class TextureCache {
  public:
@@ -69,6 +70,8 @@ class TextureCache {
     uint64_t reloads = 0;         // of those, after a CPU write
     uint64_t load_bytes = 0;      // guest bytes read
     uint64_t resolved_binds = 0;  // bound from a resolved surface
+    uint64_t resolved_direct = 0;  // of those, sampling the surface itself
+    uint64_t resolved_copies = 0;  // surface-to-texture copies recorded
     uint64_t resolve_mismatches = 0;  // resolved surface not copyable (format): memory used
     uint64_t unsupported = 0;     // format/dimension not handled (placeholder)
     uint64_t failures = 0;        // creation/staging failures (placeholder)
@@ -154,9 +157,14 @@ class TextureCache {
   uint64_t GuestDataHash(const Texture& texture) const;
   bool LoadFromMemory(Texture& texture, const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch,
                       Host& host);
+  // Makes the resolved surface at `address` readable as `texture`: sampled
+  // directly (`direct` set) when it has the texture's format and size, else
+  // copied into the texture's image.
   bool CopyFromResolved(Texture& texture, const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch,
-                        uint32_t address, Host& host);
+                        uint32_t address, Host& host, ResolvedSurface*& direct);
   VkImageView GetView(Texture& texture, uint32_t swizzle);
+  VkImageView GetSurfaceView(ResolvedSurface& surface, const Texture& texture, uint32_t swizzle);
+  VkImageViewCreateInfo ViewInfo(const Texture& texture, VkImage image, uint32_t swizzle) const;
   VkSampler GetSampler(const rex::graphics::xenos::xe_gpu_texture_fetch_t& fetch);
   // The resolved surface backing `address`, if still newer than the memory.
   bool ResolvedValid(uint32_t address);

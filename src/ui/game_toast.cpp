@@ -26,6 +26,8 @@ constexpr ImVec4 kTitle(1.00f, 0.78f, 0.36f, 1.0f);  // gold
 constexpr ImVec4 kText(0.95f, 0.89f, 0.76f, 1.0f);   // parchment
 constexpr ImVec4 kScore(0.78f, 0.62f, 0.36f, 1.0f);  // dim gold
 
+constexpr float kToastWidth = 300.0f, kToastHeight = 70.0f;
+
 ImU32 Faded(ImVec4 c, float alpha) { return ImGui::GetColorU32(ImVec4(c.x, c.y, c.z, c.w * alpha)); }
 
 }  // namespace
@@ -45,7 +47,7 @@ GameToastDialog::~GameToastDialog() = default;
 
 GameToastDialog::Image GameToastDialog::LoadImage(const char* name) {
   Image image;
-  const auto path = GameUiDir() / name;
+  const auto path = GameUiFile(name);
   std::ifstream file(path, std::ios::binary);
   if (!file) return image;
   const std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(file)), {});
@@ -89,10 +91,11 @@ void GameToastDialog::OnDraw(ImGuiIO& io) {
   const float alpha =
       std::clamp(std::min(age / kFadeIn, (kDisplaySeconds - age) / kFadeOut), 0.0f, 1.0f);
 
-  // Size: the background art's, else a panel that fits two text lines.
-  const float margin = 16.0f, pad = 10.0f;
-  const ImVec2 size = background_.texture ? ImVec2(background_.width, background_.height)
-                                          : ImVec2(360.0f, 84.0f);
+  // A fixed 300x70 toast at 720p, scaled with the window height; the
+  // background art is stretched to fit it.
+  const float scale = std::max(io.DisplaySize.y / 720.0f, 0.5f);
+  const float margin = 16.0f * scale, pad = 8.0f * scale;
+  const ImVec2 size(kToastWidth * scale, kToastHeight * scale);
   const ImVec2 pos(io.DisplaySize.x - size.x - margin, io.DisplaySize.y - size.y - margin);
 
   ImGui::SetNextWindowPos(pos, ImGuiCond_Always);
@@ -124,22 +127,33 @@ void GameToastDialog::OnDraw(ImGuiIO& io) {
       x += w + pad;
     }
     if (rex::ui::ImmediateTexture* icon = icon_cache_.GetIcon(event.achievement)) {
-      const float s = std::min(inner_h, 64.0f);
+      const float s = inner_h;
       const float y = pos.y + (size.y - s) * 0.5f;
       draw->AddImage(reinterpret_cast<ImTextureID>(icon), ImVec2(x, y), ImVec2(x + s, y + s),
                      ImVec2(0, 0), ImVec2(1, 1), tint);
       x += s + pad;
     }
 
-    // Two text lines, vertically centred.
-    if (font_) ImGui::PushFont(font_, 20.0f);
+    // Two text lines, vertically centred; the font shrinks for long names.
+    const std::string& name = event.achievement.label;
+    const std::string score = " (" + std::to_string(event.achievement.gamerscore) + "G)";
+    const float avail = pos.x + size.x - pad - x;
+    float font_size = 18.0f * scale;
+    if (font_) ImGui::PushFont(font_, font_size);
+    const float wide = std::max(ImGui::CalcTextSize("Achievement Unlocked").x,
+                                ImGui::CalcTextSize((name + score).c_str()).x);
+    if (wide > avail && avail > 0) {
+      font_size = std::max(font_size * avail / wide, 11.0f * scale);
+      if (font_) {
+        ImGui::PopFont();
+        ImGui::PushFont(font_, font_size);
+      }
+    }
     const float line = ImGui::GetTextLineHeight();
     float y = pos.y + (size.y - 2 * line - 4.0f) * 0.5f;
     draw->AddText(ImVec2(x, y), Faded(kTitle, alpha), "Achievement Unlocked");
     y += line + 4.0f;
-    const std::string& name = event.achievement.label;
     draw->AddText(ImVec2(x, y), Faded(kText, alpha), name.c_str());
-    const std::string score = " (" + std::to_string(event.achievement.gamerscore) + "G)";
     draw->AddText(ImVec2(x + ImGui::CalcTextSize(name.c_str()).x, y), Faded(kScore, alpha),
                   score.c_str());
     if (font_) ImGui::PopFont();

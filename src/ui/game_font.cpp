@@ -8,6 +8,7 @@
 #include <fstream>
 #include <iterator>
 #include <unordered_map>
+#include <string_view>
 #include <vector>
 
 #include <imgui.h>
@@ -194,23 +195,33 @@ const ImFontLoader* Loader() {
 
 }  // namespace
 
-std::filesystem::path GameUiDir() {
-  if (const char* dir = std::getenv("ASURA_UI_DIR"); dir && *dir) return dir;
-  std::vector<std::filesystem::path> candidates;
+std::vector<std::filesystem::path> GameUiDirs() {
+  std::vector<std::filesystem::path> dirs;
+  if (const char* dir = std::getenv("ASURA_UI_DIR"); dir && *dir) dirs.emplace_back(dir);
   if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg) {
-    candidates.push_back(std::filesystem::path(xdg) / "asura_wrath" / "ui");
+    dirs.push_back(std::filesystem::path(xdg) / "asura_wrath" / "ui");
   }
   if (const char* home = std::getenv("HOME"); home && *home) {
-    candidates.push_back(std::filesystem::path(home) / ".cache" / "asura_wrath" / "ui");
+    dirs.push_back(std::filesystem::path(home) / ".cache" / "asura_wrath" / "ui");
   }
-  // The repository's out/assets/ui, from out/build/<preset>/asura_wrath.
   std::error_code ec;
   const auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
-  if (!ec) candidates.push_back(exe.parent_path().parent_path().parent_path() / "assets" / "ui");
-  for (const auto& dir : candidates) {
-    if (std::filesystem::is_directory(dir, ec)) return dir;
+  if (!ec) {
+    // The repository's out/assets/ui (extracted game files), from out/build/<preset>/.
+    dirs.push_back(exe.parent_path().parent_path().parent_path() / "assets" / "ui");
+    // The project's own art (assets/ui), staged next to the executable at build time.
+    dirs.push_back(exe.parent_path() / "assets" / "ui");
   }
-  return candidates.empty() ? std::filesystem::path("ui") : candidates.front();
+  return dirs;
+}
+
+std::filesystem::path GameUiFile(std::string_view name) {
+  const auto dirs = GameUiDirs();
+  std::error_code ec;
+  for (const auto& dir : dirs) {
+    if (std::filesystem::is_regular_file(dir / name, ec)) return dir / name;
+  }
+  return dirs.empty() ? std::filesystem::path(name) : dirs.front() / name;
 }
 
 ImFont* AddGameFont(ImFontAtlas* atlas, const std::filesystem::path& path) {

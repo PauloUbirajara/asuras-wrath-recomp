@@ -401,11 +401,13 @@ TextureCache::Binding TextureCache::Get(const xenos::xe_gpu_texture_fetch_t& fet
   const uint32_t base_address = (fetch.base_address << 12) & kPhysicalMask;
   bool ready = texture.initialized;
   bool from_resolve = false;
+  ResolvedSurface* direct = nullptr;
   if (base_address && ResolvedValid(base_address)) {
-    from_resolve = CopyFromResolved(texture, fetch, base_address, host);
+    from_resolve = CopyFromResolved(texture, fetch, base_address, host, direct);
     if (from_resolve) {
       ready = true;
       ++stats_.resolved_binds;
+      stats_.resolved_direct += direct != nullptr;
     } else {
       ++stats_.resolve_mismatches;
     }
@@ -478,7 +480,8 @@ TextureCache::Binding TextureCache::Get(const xenos::xe_gpu_texture_fetch_t& fet
   if (!ready) {
     return binding;
   }
-  binding.view = GetView(texture, fetch.swizzle);
+  binding.view = direct ? GetSurfaceView(*direct, texture, fetch.swizzle)
+                        : GetView(texture, fetch.swizzle);
   if (from_resolve) {
     using F = xenos::TextureFormat;
     const F base = rex::graphics::GetBaseFormat(fetch.format);
@@ -800,7 +803,8 @@ bool TextureCache::ResolvedValid(uint32_t address) {
 }
 
 bool TextureCache::CopyFromResolved(Texture& texture, const xenos::xe_gpu_texture_fetch_t& fetch,
-                                    uint32_t address, Host& host) {
+                                    uint32_t address, Host& host, ResolvedSurface*& direct) {
+  direct = nullptr;
   ResolvedSurface* surface = resolved_->Find(address);
   if (!surface || !surface->write_count || !cmd_copy_image_ ||
       (texture.dimension == k3D && !texture.stacked)) {
@@ -824,14 +828,35 @@ bool TextureCache::CopyFromResolved(Texture& texture, const xenos::xe_gpu_textur
       return false;
     }
   }
-  if (texture.resolved_image == surface->image.image &&
-      texture.resolved_writes == surface->write_count) {
-    return true;
-  }
   uint32_t width_minus_1, height_minus_1, depth_minus_1;
   texture_util::GetSubresourcesFromFetchConstant(fetch, &width_minus_1, &height_minus_1,
                                                  &depth_minus_1, nullptr, nullptr, nullptr,
                                                  nullptr);
+  // Same format and size: sample the surface itself (normalized coordinates
+  // need the exact size). Saves a full-surface copy per resolve.
+  // Debug: MANTRA_RESOLVE_COPY=1 always copies.
+  static const bool always_copy = std::getenv("MANTRA_RESOLVE_COPY") != nullptr;
+  if (!always_copy && texture.dimension == k2D && !texture.stacked &&
+      surface->image.format == texture.format && surface->image.width == width_minus_1 + 1 &&
+      surface->image.height == height_minus_1 + 1) {
+    const bool readable = surface->image.layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
+                          !(surface->image.access & ~VK_ACCESS_SHADER_READ_BIT);
+    if (!readable) {
+      // A barrier can't go inside a render pass: this ends the current one.
+      VkCommandBuffer cmd = host.BeginTransferCommands();
+      if (!cmd) {
+        return false;
+      }
+      TransitionImage(device_, cmd, surface->image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      kShaderStages, VK_ACCESS_SHADER_READ_BIT);
+    }
+    direct = surface;
+    return true;
+  }
+  if (texture.resolved_image == surface->image.image &&
+      texture.resolved_writes == surface->write_count) {
+    return true;
+  }
   // Stacked slices sit array_slice_stride apart in the resolved surface's rows.
   uint32_t slice_rows = 0;
   if (texture.stacked) {
@@ -890,6 +915,7 @@ bool TextureCache::CopyFromResolved(Texture& texture, const xenos::xe_gpu_textur
     region.extent = {std::min(texture.width, surface->image.width),
                      std::min(texture.height, surface->image.height - z * slice_rows), 1};
   }
+  ++stats_.resolved_copies;
   cmd_copy_image_(cmd, surface->image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                      texture.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region_count, regions);
   barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -906,12 +932,46 @@ bool TextureCache::CopyFromResolved(Texture& texture, const xenos::xe_gpu_textur
 
 // --- Views and samplers ---------------------------------------------------------
 
+VkImageView TextureCache::GetSurfaceView(ResolvedSurface& surface, const Texture& texture,
+                                         uint32_t swizzle) {
+  // Packed swizzle plus the channel mapping it's resolved through.
+  uint32_t key = swizzle & 0xFFF;
+  for (uint32_t i = 0; i < 4; ++i) key |= uint32_t(texture.channels[i] & 7) << (12 + i * 3);
+  key |= uint32_t(texture.component_count & 7) << 24;
+  if (auto it = surface.sample_views.find(key); it != surface.sample_views.end()) {
+    return it->second;
+  }
+  VkImageViewCreateInfo info = ViewInfo(texture, surface.image.image, swizzle);
+  info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  VkImageView view = VK_NULL_HANDLE;
+  if (device_->functions().vkCreateImageView(device_->device(), &info, nullptr, &view) !=
+      VK_SUCCESS) {
+    ++stats_.failures;
+    return VK_NULL_HANDLE;
+  }
+  surface.sample_views.emplace(key, view);
+  return view;
+}
+
 VkImageView TextureCache::GetView(Texture& texture, uint32_t swizzle) {
   if (auto it = texture.views.find(swizzle); it != texture.views.end()) {
     return it->second;
   }
+  const VkImageViewCreateInfo info = ViewInfo(texture, texture.image, swizzle);
+  VkImageView view = VK_NULL_HANDLE;
+  if (device_->functions().vkCreateImageView(device_->device(), &info, nullptr, &view) !=
+      VK_SUCCESS) {
+    ++stats_.failures;
+    return VK_NULL_HANDLE;
+  }
+  texture.views.emplace(swizzle, view);
+  return view;
+}
+
+VkImageViewCreateInfo TextureCache::ViewInfo(const Texture& texture, VkImage image,
+                                             uint32_t swizzle) const {
   VkImageViewCreateInfo info = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-  info.image = texture.image;
+  info.image = image;
   info.viewType = texture.dimension == kCube ? VK_IMAGE_VIEW_TYPE_CUBE
                   : texture.dimension == k3D ? VK_IMAGE_VIEW_TYPE_3D
                                              : VK_IMAGE_VIEW_TYPE_2D;
@@ -924,14 +984,7 @@ VkImageView TextureCache::GetView(Texture& texture, uint32_t swizzle) {
   info.components.a =
       SwizzleComponent((swizzle >> 9) & 7, texture.channels, texture.component_count);
   info.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, texture.levels, 0, texture.layers};
-  VkImageView view = VK_NULL_HANDLE;
-  if (device_->functions().vkCreateImageView(device_->device(), &info, nullptr, &view) !=
-      VK_SUCCESS) {
-    ++stats_.failures;
-    return VK_NULL_HANDLE;
-  }
-  texture.views.emplace(swizzle, view);
-  return view;
+  return info;
 }
 
 VkSampler TextureCache::GetSampler(const xenos::xe_gpu_texture_fetch_t& fetch) {

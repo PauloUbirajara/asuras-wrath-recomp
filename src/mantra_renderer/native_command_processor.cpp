@@ -141,7 +141,99 @@ bool NativeCommandProcessor::SetupContext() {
     MANTRA_WARN("no shader cache at {}; run mantra_shadergen --game <extracted> --out <path>",
                 cache_path.string());
   }
+  StartPipelineWarmUp();
   return true;
+}
+
+// --- Pipelines from earlier runs ---------------------------------------------
+
+namespace {
+std::filesystem::path PipelineDir() {
+  if (const char* dir = std::getenv("MANTRA_PIPELINE_DIR"); dir && *dir) return dir;
+  if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg) {
+    return std::filesystem::path(xdg) / "asura_wrath" / "pipelines";
+  }
+  if (const char* home = std::getenv("HOME"); home && *home) {
+    return std::filesystem::path(home) / ".cache" / "asura_wrath" / "pipelines";
+  }
+  return {};
+}
+}  // namespace
+
+void NativeCommandProcessor::StartPipelineWarmUp() {
+  const std::filesystem::path dir = PipelineDir();
+  if (dir.empty()) {
+    return;
+  }
+  VkPhysicalDeviceProperties properties;
+  vulkan_device_->vulkan_instance()->functions().vkGetPhysicalDeviceProperties(
+      vulkan_device_->physical_device(), &properties);
+  std::string uuid;
+  for (uint8_t b : properties.pipelineCacheUUID) uuid += fmt::format("{:02x}", b);
+  // Keys per GPU model (formats depend on it); driver cache per driver build.
+  draw_pipelines_.OpenCache(dir / fmt::format("{}.vkcache", uuid));
+  std::vector<mantra::StoredShader> shaders;
+  std::vector<mantra::StoredPipeline> pipelines;
+  const auto path =
+      dir / fmt::format("{:04x}_{:04x}.mpso", properties.vendorID, properties.deviceID);
+  if (!pipeline_store_.Open(path, shaders, pipelines)) {
+    return;
+  }
+  const char* env = std::getenv("MANTRA_PIPELINE_WARMUP");
+  if (env && *env == '0') {
+    return;
+  }
+  const auto t0 = std::chrono::steady_clock::now();
+  for (const mantra::StoredShader& s : shaders) {
+    LoadShader(s.is_pixel ? xenos::ShaderType::kPixel : xenos::ShaderType::kVertex, 0,
+               s.ucode.data(), uint32_t(s.ucode.size()));
+  }
+  auto module = [&](int type, uint64_t hash) -> uint64_t {
+    auto it = shaders_[type].find(hash);
+    if (it == shaders_[type].end()) return 0;
+    return uint64_t(static_cast<MantraShader*>(it->second.get())->module);
+  };
+  std::vector<mantra::PipelineKey> keys;
+  keys.reserve(pipelines.size());
+  for (const mantra::StoredPipeline& p : pipelines) {
+    mantra::PipelineKey key;
+    std::memcpy(&key, &p.key, sizeof(key));
+    key.vertex_module = module(0, p.vs);
+    key.pixel_module = p.ps ? module(1, p.ps) : 0;
+    if (!key.vertex_module || (p.ps && !key.pixel_module)) continue;
+    keys.push_back(key);
+  }
+  MANTRA_INFO("pipeline store {}: {} shaders ({:.0f} ms to load), {} pipelines", path.string(),
+              shaders.size(),
+              std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0)
+                  .count(),
+              keys.size());
+  draw_pipelines_.WarmUp(std::move(keys));
+}
+
+void NativeCommandProcessor::RecordPipeline(const MantraShader& vs, const MantraShader* ps,
+                                            const mantra::PipelineKey& key) {
+  if (!pipeline_store_.is_open()) {
+    return;
+  }
+  // Back to the raw big-endian microcode the hashes are over.
+  auto add = [&](const MantraShader& shader) {
+    const auto& ucode = shader.ucode_data();
+    std::vector<uint32_t> raw(ucode.size());
+    for (size_t i = 0; i < ucode.size(); ++i) raw[i] = __builtin_bswap32(ucode[i]);
+    if (XXH3_64bits(raw.data(), raw.size() * sizeof(uint32_t)) != shader.ucode_data_hash()) {
+      MANTRA_WARN_ONCE("pipeline store: shader {:016X} doesn't match its hash, not stored",
+                       shader.ucode_data_hash());
+      return false;
+    }
+    pipeline_store_.AddShader(shader.type() == xenos::ShaderType::kPixel, shader.ucode_data_hash(),
+                              raw.data(), raw.size());
+    return true;
+  };
+  if (!add(vs) || (ps && !add(*ps))) {
+    return;
+  }
+  pipeline_store_.AddPipeline(vs.ucode_data_hash(), ps ? ps->ucode_data_hash() : 0, key);
 }
 
 void NativeCommandProcessor::ShutdownContext() {
@@ -1800,7 +1892,7 @@ void NativeCommandProcessor::EndFrameTiming() {
   FrameTiming& t = frame_timing_;
   const auto now = std::chrono::steady_clock::now();
   const auto ms = [](uint64_t ns) { return double(ns) / 1e6; };
-  const size_t pipelines = draw_pipelines_.size();
+  const uint64_t pipelines = draw_pipelines_.created();
   const uint64_t modules = shader_stats_.modules;
   const uint64_t texture_bytes = texture_cache_.stats().load_bytes;
   const uint64_t buffer_bytes = buffer_cache_.stats().upload_bytes;
@@ -1869,6 +1961,7 @@ void NativeCommandProcessor::ReportSwapStats() {
                 t.copy_ms / n, t.swap_ms / n,
                 (t.total_ms - t.draw_ms - t.copy_ms - t.swap_ms) / n);
     ReportGpuProfile(double(t.frames));
+    draw_pipelines_.SaveCacheIfChanged();
     t.frames = t.over_50 = t.over_100 = 0;
     t.max_ms = t.total_ms = t.fence_ms = t.draw_ms = t.copy_ms = t.swap_ms = 0;
   }
@@ -1895,6 +1988,10 @@ void NativeCommandProcessor::ReportSwapStats() {
               constant_stats_.bytes / 1048576.0, constant_stats_.reused,
               constant_stats_.ring_full, shader_interface_.slot_bytes_used() >> 10);
   const GuestDrawStats& g = guest_draw_stats_;
+  MANTRA_INFO("pipelines: {} in use, {} created in game ({} failed); warm-up {}/{} built, {} used",
+              draw_pipelines_.size(), draw_pipelines_.created(),
+              draw_pipelines_.creation_failures(), draw_pipelines_.warm_done(),
+              draw_pipelines_.warm_total(), draw_pipelines_.warm_hits());
   MANTRA_INFO("guest draws: {} drawn in {} render passes, {} pipelines ({} failed); skipped: "
               "primitive {}, no target {}, viewport {}, geometry {}; {} zero-fed inputs, {} expanded; "
               "streamed {:.1f} MB vertices, {:.1f} MB indices",
@@ -1912,10 +2009,11 @@ void NativeCommandProcessor::ReportSwapStats() {
               bc.not_cacheable, bc.volatile_skips, bc.resets);
   const auto& tc = texture_cache_.stats();
   MANTRA_INFO("textures: {} cached, {} samplers; {} loads ({} after CPU writes, {:.1f} MB), "
-              "{} from resolves ({} not copyable), {} unsupported, {} failed; {} volatile "
+              "{} from resolves ({} sampled directly, {} copies, {} not copyable), {} unsupported, {} failed; {} volatile "
               "({} hashes); descriptor sets {} ({} reused)",
               texture_cache_.size(), texture_cache_.sampler_count(), tc.loads, tc.reloads,
-              tc.load_bytes / 1048576.0, tc.resolved_binds, tc.resolve_mismatches, tc.unsupported, tc.failures,
+              tc.load_bytes / 1048576.0, tc.resolved_binds, tc.resolved_direct, tc.resolved_copies,
+              tc.resolve_mismatches, tc.unsupported, tc.failures,
               tc.volatile_marks, tc.volatile_hashes, g.texture_sets, g.texture_sets_reused);
   swap_stats_.last_report_time = now;
   swap_stats_.swaps_at_last_report = swap_stats_.swaps;

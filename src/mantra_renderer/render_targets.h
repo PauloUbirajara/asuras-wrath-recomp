@@ -70,6 +70,8 @@ struct ResolvedSurface {
   // Cleared to zero before the first write: a resolve may cover only part of
   // the surface, and the rest would otherwise be sampled as garbage.
   bool initialized = false;
+  // Views for sampling the surface directly as a texture, by packed swizzle.
+  std::unordered_map<uint32_t, VkImageView> sample_views;
 };
 
 class RenderTargetPool {

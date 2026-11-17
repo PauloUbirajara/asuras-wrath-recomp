@@ -69,7 +69,7 @@ class AsuraWrathApp : public rex::ReXApp {
   // bitmap font (from the game data, see ui/game_font.h), optional
   // background/portrait art, the achievement's icon.
   void OnConfigureFonts(ImFontAtlas* atlas) override {
-    toast_font_ = asura::ui::AddGameFont(atlas, asura::ui::GameUiDir() / "MediumFont.awf");
+    toast_font_ = asura::ui::AddGameFont(atlas, asura::ui::GameUiFile("MediumFont.awf"));
   }
   std::unique_ptr<rex::ui::AchievementNotificationDialog> CreateAchievementNotificationDialog()
       override {

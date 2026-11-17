@@ -1415,7 +1415,11 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
     }
   }
 
+  const size_t known_pipelines = draw_pipelines_.size();
   const VkPipeline pipeline = draw_pipelines_.Get(key);
+  if (pipeline && draw_pipelines_.size() != known_pipelines) {
+    RecordPipeline(*vs, ps, key);
+  }
   if (!pipeline) {
     ++guest_draw_stats_.failed_pipeline;
     return DrawResult::kFailed;

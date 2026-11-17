@@ -49,3 +49,9 @@ if(UNIX AND NOT APPLE)
           $<TARGET_FILE:rexruntime> $<TARGET_FILE_DIR:asura_wrath>
       VERBATIM)
 endif()
+
+# The project's own UI art (assets/), staged next to the executable.
+add_custom_command(TARGET asura_wrath POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_CURRENT_SOURCE_DIR}/assets $<TARGET_FILE_DIR:asura_wrath>/assets
+    VERBATIM)

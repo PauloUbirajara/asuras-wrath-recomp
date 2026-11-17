@@ -496,6 +496,10 @@ void ResolvedSurfaces::Destroy(ResolvedSurface& surface) {
     device_->functions().vkDestroyImageView(device_->device(), surface.view, nullptr);
     surface.view = VK_NULL_HANDLE;
   }
+  for (auto& [swizzle, view] : surface.sample_views) {
+    device_->functions().vkDestroyImageView(device_->device(), view, nullptr);
+  }
+  surface.sample_views.clear();
   DestroyTrackedImage(device_, surface.image);
 }
 

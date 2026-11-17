@@ -7,16 +7,21 @@
 // assets: they are read from the user's cache, never shipped.
 
 #include <filesystem>
+#include <vector>
+#include <string_view>
 
 struct ImFont;
 struct ImFontAtlas;
 
 namespace asura::ui {
 
-// Directory of the extracted/user-made UI files (.awf fonts, toast images):
-// $ASURA_UI_DIR, else the first existing of $XDG_CACHE_HOME/asura_wrath/ui,
-// ~/.cache/asura_wrath/ui and the repository's out/assets/ui.
-std::filesystem::path GameUiDir();
+// UI file lookup (.awf fonts, toast images), first match per file:
+// $ASURA_UI_DIR, $XDG_CACHE_HOME/asura_wrath/ui, ~/.cache/asura_wrath/ui,
+// the repository's out/assets/ui (extracted game files), then <exe dir>/assets/ui
+// (the project's own art from assets/ui, copied there at build time). Earlier
+// directories override later ones, so a cache copy replaces the shipped art.
+std::vector<std::filesystem::path> GameUiDirs();
+std::filesystem::path GameUiFile(std::string_view name);
 
 // Adds an .awf font to `atlas` through a custom ImFontLoader (glyphs are
 // resampled from the native bitmap to each requested size). Returns nullptr

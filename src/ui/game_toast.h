@@ -3,12 +3,12 @@
 // AsuraWrathApp::CreateAchievementNotificationDialog).
 //
 // Layout, left to right: [portrait] [achievement icon] [title / name (score)],
-// over a background. Optional images, from GameUiDir():
-//   toast_background.png  drawn stretched over the whole toast; when present
-//                         the toast takes its size (in pixels at scale 1)
+// over a background. Optional images, found by GameUiFile():
+//   toast_background.png  drawn stretched over the whole toast (300x70 at
+//                         720p, scaled with the window height)
 //   toast_portrait.png    drawn at the left, full toast height minus padding,
 //                         keeping its aspect ratio
-// Without them the toast is a 360x84 lacquer panel. Everything fades in and
+// Without it the toast is a plain lacquer panel. Everything fades in and
 // out together (text, score, images).
 
 #include <chrono>

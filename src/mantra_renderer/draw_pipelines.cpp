@@ -1,7 +1,15 @@
 #include "draw_pipelines.h"
 #include "mantra_log.h"
 
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#include <algorithm>
 #include <atomic>
+#include <cstdio>
+#include <fstream>
+#include <iterator>
 
 #include <xxhash.h>
 
@@ -41,12 +49,26 @@ void DrawPipelines::Shutdown() {
   if (!device_) {
     return;
   }
+  StopWarmUp();
+  if (save_thread_.joinable()) save_thread_.join();
+  if (cache_ && cache_changes_.load() != cache_saved_changes_) {
+    SaveCache();
+  }
   const auto& dfn = device_->functions();
   const VkDevice device = device_->device();
   for (auto& [key, pipeline] : pipelines_) {
     if (pipeline) dfn.vkDestroyPipeline(device, pipeline, nullptr);
   }
   pipelines_.clear();
+  for (auto& [key, pipeline] : warm_ready_) {
+    if (pipeline) dfn.vkDestroyPipeline(device, pipeline, nullptr);
+  }
+  warm_ready_.clear();
+  warm_keys_.clear();
+  if (cache_) {
+    destroy_cache_(device, cache_, nullptr);
+    cache_ = VK_NULL_HANDLE;
+  }
   if (rect_list_gs_) {
     dfn.vkDestroyShaderModule(device, rect_list_gs_, nullptr);
     rect_list_gs_ = VK_NULL_HANDLE;
@@ -58,12 +80,145 @@ VkPipeline DrawPipelines::Get(const PipelineKey& key) {
   if (auto it = pipelines_.find(key); it != pipelines_.end()) {
     return it->second;
   }
-  VkPipeline pipeline = Create(key);
+  VkPipeline pipeline = VK_NULL_HANDLE;
+  if (!warm_keys_.empty()) {
+    std::lock_guard<std::mutex> lock(warm_mutex_);
+    if (auto it = warm_ready_.find(key); it != warm_ready_.end()) {
+      pipeline = it->second;
+      warm_ready_.erase(it);
+      ++warm_hits_;
+    }
+  }
   if (!pipeline) {
-    ++creation_failures_;
+    pipeline = Create(key);
+    ++created_;
+    if (!pipeline) {
+      ++creation_failures_;
+    }
   }
   pipelines_.emplace(key, pipeline);
   return pipeline;
+}
+
+void DrawPipelines::OpenCache(const std::filesystem::path& path) {
+  if (cache_ || !device_) {
+    return;
+  }
+  const auto& ifn = device_->vulkan_instance()->functions();
+  const VkDevice device = device_->device();
+  auto create = reinterpret_cast<PFN_vkCreatePipelineCache>(
+      ifn.vkGetDeviceProcAddr(device, "vkCreatePipelineCache"));
+  destroy_cache_ = reinterpret_cast<PFN_vkDestroyPipelineCache>(
+      ifn.vkGetDeviceProcAddr(device, "vkDestroyPipelineCache"));
+  get_cache_data_ = reinterpret_cast<PFN_vkGetPipelineCacheData>(
+      ifn.vkGetDeviceProcAddr(device, "vkGetPipelineCacheData"));
+  if (!create || !destroy_cache_ || !get_cache_data_) {
+    return;
+  }
+  std::vector<char> data;
+  if (std::ifstream in(path, std::ios::binary); in) {
+    data.assign(std::istreambuf_iterator<char>(in), {});
+  }
+  // The driver checks the header (vendor, device, cache UUID) and ignores
+  // data it can't use.
+  VkPipelineCacheCreateInfo info = {VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO};
+  info.initialDataSize = data.size();
+  info.pInitialData = data.empty() ? nullptr : data.data();
+  if (create(device, &info, nullptr, &cache_) != VK_SUCCESS) {
+    info.initialDataSize = 0;
+    info.pInitialData = nullptr;
+    if (create(device, &info, nullptr, &cache_) != VK_SUCCESS) {
+      cache_ = VK_NULL_HANDLE;
+      return;
+    }
+  }
+  cache_path_ = path;
+  MANTRA_INFO("pipeline cache: {} ({:.1f} MB)", path.string(), data.size() / 1048576.0);
+}
+
+void DrawPipelines::SaveCache() {
+  const VkDevice device = device_->device();
+  const uint64_t changes = cache_changes_.load();
+  size_t size = 0;
+  if (get_cache_data_(device, cache_, &size, nullptr) != VK_SUCCESS || !size) {
+    return;
+  }
+  std::vector<char> data(size);
+  if (get_cache_data_(device, cache_, &size, data.data()) != VK_SUCCESS) {
+    return;
+  }
+  std::error_code ec;
+  std::filesystem::create_directories(cache_path_.parent_path(), ec);
+  const std::filesystem::path temp = cache_path_.string() + ".tmp";
+  if (std::FILE* file = std::fopen(temp.c_str(), "wb")) {
+    const bool ok = std::fwrite(data.data(), 1, size, file) == size;
+    if (std::fclose(file) == 0 && ok) {
+      std::filesystem::rename(temp, cache_path_, ec);
+      if (!ec) cache_saved_changes_ = changes;
+    }
+  }
+}
+
+void DrawPipelines::SaveCacheIfChanged() {
+  if (!cache_ || cache_changes_.load() == cache_saved_changes_) {
+    return;
+  }
+  if (save_thread_.joinable()) {
+    save_thread_.join();
+  }
+  save_thread_ = std::thread([this] { SaveCache(); });
+}
+
+void DrawPipelines::WarmUp(std::vector<PipelineKey> keys) {
+  StopWarmUp();
+  if (keys.empty()) {
+    return;
+  }
+  warm_keys_ = std::move(keys);
+  warm_next_ = 0;
+  warm_done_ = 0;
+  warm_stop_ = false;
+  warm_start_ = std::chrono::steady_clock::now();
+  const unsigned cores = std::max(1u, std::thread::hardware_concurrency());
+  const unsigned threads = std::clamp(cores / 2, 1u, 4u);
+  for (unsigned i = 0; i < threads; ++i) {
+    warm_threads_.emplace_back([this] { WarmWorker(); });
+  }
+  MANTRA_INFO("pipeline warm-up: building {} pipelines from earlier runs on {} threads",
+              warm_keys_.size(), threads);
+}
+
+void DrawPipelines::WarmWorker() {
+  // Below the game's threads: this only has to finish before it's needed.
+  setpriority(PRIO_PROCESS, pid_t(syscall(SYS_gettid)), 10);
+  for (;;) {
+    const size_t i = warm_next_.fetch_add(1);
+    if (i >= warm_keys_.size() || warm_stop_.load(std::memory_order_relaxed)) {
+      break;
+    }
+    const PipelineKey& key = warm_keys_[i];
+    const VkPipeline pipeline = Create(key);
+    if (pipeline) {
+      std::lock_guard<std::mutex> lock(warm_mutex_);
+      if (!warm_ready_.emplace(key, pipeline).second) {
+        device_->functions().vkDestroyPipeline(device_->device(), pipeline, nullptr);
+      }
+    }
+    if (warm_done_.fetch_add(1) + 1 == warm_keys_.size()) {
+      MANTRA_INFO("pipeline warm-up: {} pipelines built in {:.0f} ms", warm_keys_.size(),
+                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                            warm_start_)
+                      .count());
+    }
+  }
+}
+
+void DrawPipelines::StopWarmUp() {
+  warm_stop_ = true;
+  for (std::thread& t : warm_threads_) {
+    if (t.joinable()) t.join();
+  }
+  warm_threads_.clear();
 }
 
 VkPipeline DrawPipelines::Create(const PipelineKey& key) {
@@ -202,14 +357,14 @@ VkPipeline DrawPipelines::Create(const PipelineKey& key) {
 
   VkPipeline pipeline = VK_NULL_HANDLE;
   const VkResult result =
-      dfn.vkCreateGraphicsPipelines(device_->device(), VK_NULL_HANDLE, 1, &info, nullptr, &pipeline);
+      dfn.vkCreateGraphicsPipelines(device_->device(), cache_, 1, &info, nullptr, &pipeline);
   if (result != VK_SUCCESS) {
     MANTRA_WARN("vkCreateGraphicsPipelines failed ({}) for VS {:X} PS {:X}", int32_t(result),
                 key.vertex_module, key.pixel_module);
     return VK_NULL_HANDLE;
   }
-  MANTRA_DEBUG("pipeline {}: {} attributes, {} color, depth {}, topology {}{}", pipelines_.size(),
-               key.attribute_count, key.color_count, key.depth_format, key.topology,
+  cache_changes_.fetch_add(1, std::memory_order_relaxed);
+  MANTRA_DEBUG("pipeline: {} attributes, {} color, depth {}, topology {}{}", key.attribute_count, key.color_count, key.depth_format, key.topology,
                key.rect_list ? " (rect list)" : "");
   return pipeline;
 }

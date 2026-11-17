@@ -63,6 +63,7 @@ add_library(rexgpu-mantra SHARED
     solid_fill.cpp
     buffer_cache.cpp
     draw_pipelines.cpp
+    pipeline_store.cpp
     guest_draw.cpp
     texture_cache.cpp
     memexport.cpp

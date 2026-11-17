@@ -188,12 +188,30 @@ uint32_t VertexIndexDivisor(const std::string& hlsl, const VertexShader* vertex_
   const uint8_t* w = microcode + fetch_dword * 4;
   const uint32_t word0 = uint32_t(w[0]) << 24 | uint32_t(w[1]) << 16 | uint32_t(w[2]) << 8 | w[3];
   const uint32_t src = (word0 >> 5) & 0x3F, src_component = (word0 >> 30) & 3;
-  if (src == 0 && src_component == 0) return 0;
   const char component = "xyzw"[src_component];
   const size_t main_at = hlsl.find("void main(");
-  if (src != 0 || main_at == std::string::npos) {
-    std::fprintf(stderr, "vertex fetch index r%u.%c: not handled\n", src, component);
+  if (main_at == std::string::npos) {
     return 0;
+  }
+  // The index register: r0.x holds the vertex index unless the shader
+  // rewrites it before the first fetch (spray particles: r0.xzw = r0.xxx *
+  // c253.xyz + c252.xyz); other registers must be computed from it before
+  // the first fetch (distortion sprites: r3.xyw = r0.xxx * c254.xzy +
+  // c255.xzy, fetching at r3.x). Only writes ahead of the first input read
+  // count.
+  const std::string reg = "r" + std::to_string(src);
+  // (r0.y particle indices keep the old unlimited search.)
+  size_t write_limit = std::string::npos;
+  if (src != 0 || src_component == 0) {
+    static const std::regex kInputRead(R"(\bi[A-Z][A-Za-z]*\d+\b)");
+    const size_t body_at = hlsl.find("\tuint pc = 0;", main_at);
+    std::smatch m;
+    if (body_at != std::string::npos &&
+        std::regex_search(hlsl.cbegin() + body_at, hlsl.cend(), m, kInputRead)) {
+      write_limit = body_at + m.position() - main_at;
+    } else if (src == 0) {
+      return 0;
+    }
   }
   std::unordered_map<uint32_t, std::array<float, 4>> literals;
   static const std::regex kLiteral(
@@ -216,16 +234,19 @@ uint32_t VertexIndexDivisor(const std::string& hlsl, const VertexShader* vertex_
   // The first write of r0.<component>: "r0.<mask> = r0.<x..> * cA.<s> [+ cB.<s>];"
   // or "ps = cA.<c> * r0.x;\n\t\t\tr0.<component> = ps;".
   float scale = 0.0f, bias = 0.0f;
-  bool found = false;
-  static const std::regex kMad(
-      R"(\br0\.([xyzw]+) = r0\.([x]+) \* c(\d+)\.([xyzw]+)(?: \+ c(\d+)\.([xyzw]+))?;)");
-  static const std::regex kPs(R"(\bps = c(\d+)\.([xyzw]) \* r0\.x;\s*r0\.([xyzw]) = ps;)");
-  static const std::regex kWrite(R"(\br0\.([xyzw]+) =)");
+  bool found = false, written = false;
+  const std::regex kMad(
+      "\\b" + reg +
+      R"(\.([xyzw]+) = r0\.([x]+) \* c(\d+)\.([xyzw]+)(?: \+ c(\d+)\.([xyzw]+))?;)");
+  const std::regex kPs(R"(\bps = c(\d+)\.([xyzw]) \* r0\.x;\s*)" + reg + R"(\.([xyzw]) = ps;)");
+  const std::regex kWrite("\\b" + reg + R"(\.([xyzw]+) =)");
   for (std::sregex_iterator it(hlsl.cbegin() + main_at, hlsl.cend(), kWrite), end; it != end;
        ++it) {
+    if (size_t(it->position()) >= write_limit) break;
     const std::string mask = (*it)[1];
     const size_t lane = mask.find(component);
     if (lane == std::string::npos) continue;
+    written = true;
     std::smatch m;
     const auto from = hlsl.cbegin() + main_at + it->position();
     if (std::regex_search(from, hlsl.cend(), m, kMad, std::regex_constants::match_continuous) &&
@@ -238,16 +259,19 @@ uint32_t VertexIndexDivisor(const std::string& hlsl, const VertexShader* vertex_
   if (!found) {
     std::smatch m;
     if (std::regex_search(hlsl.cbegin() + main_at, hlsl.cend(), m, kPs) &&
-        std::string(m[3])[0] == component && literal(m[1], std::string(m[2])[0], scale)) {
-      found = true;
+        size_t(m.position()) < write_limit && std::string(m[3])[0] == component &&
+        literal(m[1], std::string(m[2])[0], scale)) {
+      found = written = true;
     }
   }
+  // r0.x untouched before the fetches: plain vertex index.
+  if (src == 0 && src_component == 0 && !written) return 0;
   const float divisor = scale > 0.0f ? 1.0f / scale : 0.0f;
   const uint32_t k = uint32_t(divisor + 0.5f);
   if (!found || k < 2 || std::abs(divisor - float(k)) > 1e-3f * k || bias < 0.0f ||
       bias * k >= 1.0f) {
-    std::fprintf(stderr, "vertex fetch index r0.%c: unrecognized (scale %g bias %g)\n", component,
-                 scale, bias);
+    std::fprintf(stderr, "vertex fetch index r%u.%c: unrecognized (scale %g bias %g)\n", src,
+                 component, scale, bias);
     return 0;
   }
   return k;
@@ -512,6 +536,66 @@ std::vector<uint8_t> ContainerMicrocode(const std::vector<uint8_t>& container) {
   return {container.begin() + at, container.begin() + at + size};
 }
 
+// XenosRecomp emits Xenos control flow as `while (true) switch (pc)` with
+// fallthrough cases and jumps as `pc = N; continue;`. When every jump goes
+// forward, the same code runs as a sequence of `if (pc <= N)` blocks inside
+// `do { } while (false)` (exits stay `break`): no loop-carried registers, so
+// host compilers can schedule texture fetches across blocks and keep far fewer
+// registers live. Shaders that do not match the expected shape are left as is.
+bool FlattenForwardControlFlow(std::string& hlsl) {
+  static const std::string kHead = "\tuint pc = 0;\n\twhile (true)\n\t{\n\t\tswitch (pc)\n\t\t{\n";
+  static const std::string kTail = "\t\t}\n\t\tbreak;\n\t}\n}";
+  const size_t head_at = hlsl.find(kHead);
+  if (head_at == std::string::npos) return false;
+  const size_t body_at = head_at + kHead.size();
+  const size_t tail_at = hlsl.rfind(kTail);
+  if (tail_at == std::string::npos || tail_at < body_at ||
+      hlsl.find_first_not_of(" \t\r\n", tail_at + kTail.size()) != std::string::npos) {
+    return false;
+  }
+  static const std::regex kCase(R"(^\t\tcase (\d+):$)");
+  static const std::regex kJump(R"(\bpc = (\d+);)");
+  static const std::regex kLoop(R"(\b(for|while|do|switch)\b|\bcase\b)");
+  std::string out = "\tuint pc = 0;\n\tdo\n\t{\n\t\t{\n";
+  long current = -1;
+  bool after_continue = false;
+  size_t at = body_at;
+  while (at < tail_at) {
+    size_t end = hlsl.find('\n', at);
+    if (end == std::string::npos || end > tail_at) end = tail_at;
+    const std::string line = hlsl.substr(at, end - at);
+    at = end + 1;
+    std::smatch m;
+    if (std::regex_match(line, m, kCase)) {
+      const long n = std::stol(m[1].str());
+      if (n <= current || (current < 0 && n != 0)) return false;
+      if (current >= 0) {
+        out += "\t\t}\n\t\tif (pc <= " + std::to_string(n) + ")\n\t\t{\n";
+      }
+      current = n;
+      after_continue = false;
+      continue;
+    }
+    if (current < 0) return false;
+    const size_t first = line.find_first_not_of(" \t");
+    const std::string trimmed = first == std::string::npos ? "" : line.substr(first);
+    if (after_continue && !trimmed.empty() && trimmed != "}") return false;
+    if (std::regex_search(line, kLoop)) return false;
+    if (std::regex_search(line, m, kJump) && std::stol(m[1].str()) <= current) return false;
+    if (trimmed == "continue;") {
+      after_continue = true;
+      continue;
+    }
+    if (line.find("continue") != std::string::npos) return false;
+    out += line;
+    out += '\n';
+  }
+  if (current < 0) return false;
+  out += "\t\t}\n\t} while (false);\n}";
+  hlsl.replace(head_at, std::string::npos, out);
+  return true;
+}
+
 TranslateResult TranslateContainer(const uint8_t* container) {
   TranslateResult result;
   ShaderRecompiler recompiler;
@@ -596,6 +680,11 @@ TranslateResult TranslateContainer(const uint8_t* container) {
         container + shader_container->virtualSize + shader->physicalOffset, shader->size / 4);
   }
 
+  // MANTRA_NO_FLATTEN=1 keeps XenosRecomp's dispatch loop (for comparisons).
+  if (const char* keep = std::getenv("MANTRA_NO_FLATTEN"); !keep || !*keep || *keep == '0') {
+    result.flattened = FlattenForwardControlFlow(result.hlsl);
+  }
+
   if (result.is_pixel) {
     // Fixed-point 16-bit render targets are hosted as SNORM value / 32;
     // Vulkan clamps outputs to -1...1 before blending, so scale in the shader.
@@ -617,6 +706,14 @@ TranslateResult TranslateContainer(const uint8_t* container) {
         for (size_t at = result.hlsl.find("return;", main_at); at != std::string::npos;
              at = result.hlsl.find("return;", at + replacement.size())) {
           result.hlsl.replace(at, 7, replacement);
+        }
+        // Shaders with control flow leave the dispatch loop (or the flattened
+        // do/while) with `break` and fall off the end of main: scale there too.
+        if (result.hlsl.find("\tuint pc = 0;", main_at) != std::string::npos) {
+          const size_t end = result.hlsl.find_last_of('}');
+          if (end != std::string::npos && end > main_at) {
+            result.hlsl.insert(end, "\t{ " + scale + "}\n");
+          }
         }
       }
     }

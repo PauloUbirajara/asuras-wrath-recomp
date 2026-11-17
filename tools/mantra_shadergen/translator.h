@@ -30,6 +30,9 @@ struct TranslateResult {
   // Vertex shaders: the vertex fetches read element floor(index / divisor)
   // (0 = they read the vertex index).
   uint32_t vertex_index_divisor = 0;
+  // XenosRecomp's `while (true) switch (pc)` was rewritten as straight-line
+  // `if (pc <= N)` blocks (forward jumps only).
+  bool flattened = false;
   std::string hlsl;
   std::vector<uint8_t> spirv;
 };

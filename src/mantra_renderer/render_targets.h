@@ -64,9 +64,12 @@ struct ResolvedSurface {
   uint64_t write_count = 0;  // serial of the last resolve into it (0 = never)
   // Set when this surface replaced a smaller one of the same format (a resolve
   // to a larger rect of the same address); the caller copies the old texels
-  // over with ResolvedSurfaces::CopyGrown before writing. Points into the
+  // over with ResolvedSurfaces::PrepareWrite before writing. Points into the
   // retired list (alive until this frame's submission completes).
   ResolvedSurface* grown_from = nullptr;
+  // Cleared to zero before the first write: a resolve may cover only part of
+  // the surface, and the rest would otherwise be sampled as garbage.
+  bool initialized = false;
 };
 
 class RenderTargetPool {
@@ -172,10 +175,10 @@ class ResolvedSurfaces {
                        xenos::ColorFormat format, uint64_t frame, bool depth = false);
   // The surface last resolved to `address`, if any.
   ResolvedSurface* Find(uint32_t address);
-  // If `surface` grew from an older one (see grown_from), copies the old
-  // contents into it so partial resolves (e.g. one page half after the
-  // other) keep what was resolved before. Call before the new write.
-  void CopyGrown(VkCommandBuffer cmd, ResolvedSurface& surface);
+  // Call before each write: zeroes a new surface, and if it grew from an older
+  // one (see grown_from), copies the old contents in so partial resolves
+  // (e.g. one page half after the other) keep what was resolved before.
+  void PrepareWrite(VkCommandBuffer cmd, ResolvedSurface& surface);
 
   // Destroys replaced surfaces whose last use is <= `completed_frame`.
   void Collect(uint64_t completed_frame);

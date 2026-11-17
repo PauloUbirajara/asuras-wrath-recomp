@@ -42,7 +42,27 @@ uint32_t VertexFormatComponents(xenos::VertexFormat format) {
 }  // namespace
 
 NativeCommandProcessor::SolidFillResult NativeCommandProcessor::TrySolidFill(
-    xenos::PrimitiveType prim_type, xenos::EdramMode edram_mode) {
+    xenos::PrimitiveType prim_type, xenos::EdramMode edram_mode, uint32_t vertex_count,
+    bool indexed) {
+  // A rectangle list holds one rectangle per 3 vertices; D3D batches several
+  // (e.g. two strips of a stencil clear) into one draw. Indexed lists are
+  // taken as their first rectangle only.
+  const uint32_t rects = indexed ? 1 : std::max<uint32_t>(1, vertex_count / 3);
+  SolidFillResult result = SolidFillResult::kDone;
+  for (uint32_t r = 0; r < rects; ++r) {
+    const SolidFillResult rect_result = TrySolidFillRect(prim_type, edram_mode, r * 3);
+    if (rect_result == SolidFillResult::kNotSolidFill) {
+      return rect_result;
+    }
+    if (rect_result == SolidFillResult::kUnsupported) {
+      result = rect_result;
+    }
+  }
+  return result;
+}
+
+NativeCommandProcessor::SolidFillResult NativeCommandProcessor::TrySolidFillRect(
+    xenos::PrimitiveType prim_type, xenos::EdramMode edram_mode, uint32_t first_vertex) {
   Shader* vs = active_vertex_shader();
   Shader* ps = active_pixel_shader();
   if (!vs || !ps || vs->ucode_data_hash() != kSolidFillVs ||
@@ -75,11 +95,11 @@ NativeCommandProcessor::SolidFillResult NativeCommandProcessor::TrySolidFill(
   }
   const uint32_t* vertex_words =
       reinterpret_cast<const uint32_t*>(memory_->TranslatePhysical(fetch.address << 2));
-  if (!vertex_words || (stride * 3) > fetch.size) {
+  if (!vertex_words || stride * (first_vertex + 3) > fetch.size) {
     return SolidFillResult::kUnsupported;
   }
   auto read_float = [&](uint32_t vertex, int32_t offset, uint32_t component) {
-    uint32_t bits = xenos::GpuSwap(vertex_words[vertex * stride + offset + component],
+    uint32_t bits = xenos::GpuSwap(vertex_words[(first_vertex + vertex) * stride + offset + component],
                                    fetch.endian);
     float value;
     std::memcpy(&value, &bits, sizeof(value));

@@ -34,7 +34,7 @@ namespace mantra {
 
 class BufferCache {
  public:
-  enum class Kind : uint32_t { kVertex = 1, kIndex = 2 };
+  enum class Kind : uint32_t { kVertex = 1, kIndex = 2, kExpandedVertex = 3 };
 
   // What an entry holds. Compared and hashed bytewise: zero-initialize.
   struct Key {

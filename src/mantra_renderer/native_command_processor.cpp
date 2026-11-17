@@ -121,6 +121,7 @@ bool NativeCommandProcessor::SetupContext() {
     }
   }
 
+  InitializeGpuProfiler();
   if (!copy_pipelines_.Initialize(vulkan_device_) || !render_targets_.Initialize(vulkan_device_) ||
       !shader_interface_.Initialize(vulkan_device_, kFrameSlots) ||
       !draw_pipelines_.Initialize(vulkan_device_, shader_interface_.pipeline_layout()) ||
@@ -148,6 +149,188 @@ void NativeCommandProcessor::ShutdownContext() {
   DestroyFrameResources();
 }
 
+
+namespace {
+// Adds the scope's wall time to a nanosecond counter.
+struct ScopedNs {
+  uint64_t& acc;
+  std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+  ~ScopedNs() {
+    acc += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                         std::chrono::steady_clock::now() - t0)
+                         .count());
+  }
+};
+}  // namespace
+
+// --- GPU profiling -----------------------------------------------------------
+
+void NativeCommandProcessor::InitializeGpuProfiler() {
+  GpuProfiler& p = gpu_profiler_;
+  const char* env = std::getenv("MANTRA_GPU_PROFILE");
+  if (!env || !*env || !std::strcmp(env, "0")) {
+    return;
+  }
+  const int mode = !std::strcmp(env, "pass") ? 1 : 2;
+  const auto& ifn = vulkan_device_->vulkan_instance()->functions();
+  const VkPhysicalDevice physical_device = vulkan_device_->physical_device();
+  VkPhysicalDeviceProperties properties;
+  ifn.vkGetPhysicalDeviceProperties(physical_device, &properties);
+  uint32_t family_count = 0;
+  ifn.vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &family_count, nullptr);
+  std::vector<VkQueueFamilyProperties> families(family_count);
+  ifn.vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &family_count, families.data());
+  const uint32_t family = vulkan_device_->queue_family_graphics_compute();
+  const uint32_t valid_bits = family < family_count ? families[family].timestampValidBits : 0;
+  const VkDevice device = vulkan_device_->device();
+  p.write_timestamp = reinterpret_cast<PFN_vkCmdWriteTimestamp>(
+      ifn.vkGetDeviceProcAddr(device, "vkCmdWriteTimestamp"));
+  p.get_results = reinterpret_cast<PFN_vkGetQueryPoolResults>(
+      ifn.vkGetDeviceProcAddr(device, "vkGetQueryPoolResults"));
+  if (!valid_bits || !p.write_timestamp || !p.get_results) {
+    MANTRA_WARN("gpu profile: timestamps unsupported on this queue, profiling off");
+    return;
+  }
+  p.valid_mask = valid_bits >= 64 ? ~uint64_t(0) : (uint64_t(1) << valid_bits) - 1;
+  p.ns_per_tick = properties.limits.timestampPeriod;
+  const auto& dfn = vulkan_device_->functions();
+  VkQueryPoolCreateInfo info = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+  info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+  info.queryCount = kGpuQueriesPerSlot;
+  for (uint32_t i = 0; i < kFrameSlots; ++i) {
+    if (dfn.vkCreateQueryPool(device, &info, nullptr, &p.pools[i]) != VK_SUCCESS) {
+      MANTRA_WARN("gpu profile: query pool creation failed, profiling off");
+      for (VkQueryPool& pool : p.pools) {
+        if (pool) dfn.vkDestroyQueryPool(device, pool, nullptr);
+        pool = VK_NULL_HANDLE;
+      }
+      return;
+    }
+    p.marks[i].reserve(kGpuQueriesPerSlot);
+  }
+  p.mode = mode;
+  MANTRA_INFO("gpu profile: {} mode on {} ({:.2f} ns/tick, {} valid bits)",
+              mode == 1 ? "pass" : "draw", properties.deviceName, p.ns_per_tick, valid_bits);
+}
+
+void NativeCommandProcessor::GpuMarkHere(GpuMarkKind kind, uint64_t a, uint64_t b, uint32_t n,
+                                         uint32_t extra) {
+  GpuProfiler& p = gpu_profiler_;
+  if (!p.mode || !recording_) {
+    return;
+  }
+  const uint32_t index = uint32_t(submission_current_ % kFrameSlots);
+  std::vector<GpuMark>& marks = p.marks[index];
+  if (marks.size() >= kGpuQueriesPerSlot) {
+    ++p.overflows;
+    return;
+  }
+  p.write_timestamp(CurrentSlot().command_buffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                    p.pools[index], uint32_t(marks.size()));
+  marks.push_back({kind, a, b, n, extra});
+}
+
+void NativeCommandProcessor::CollectGpuProfile(uint32_t slot_index) {
+  GpuProfiler& p = gpu_profiler_;
+  std::vector<GpuMark>& marks = p.marks[slot_index];
+  if (!p.mode || marks.size() < 2) {
+    marks.clear();
+    return;
+  }
+  std::vector<uint64_t> ticks(marks.size());
+  const VkResult result = p.get_results(
+      vulkan_device_->device(), p.pools[slot_index], 0, uint32_t(marks.size()),
+      ticks.size() * sizeof(uint64_t), ticks.data(), sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
+  if (result == VK_SUCCESS) {
+    uint64_t since_setup = 0;
+    for (size_t i = 1; i < marks.size(); ++i) {
+      const GpuMark& m = marks[i];
+      const uint64_t delta_ticks = (ticks[i] - ticks[i - 1]) & p.valid_mask;
+      const uint64_t ns = uint64_t(double(delta_ticks) * p.ns_per_tick);
+      p.kind_ns[size_t(m.kind)] += ns;
+      if (m.kind == GpuMarkKind::kSetup) {
+        since_setup = 0;
+        continue;
+      }
+      since_setup += ns;
+      // Setup / tail / present are only totals; the rest per label.
+      if (m.kind == GpuMarkKind::kTail || m.kind == GpuMarkKind::kStart) continue;
+      GpuProfileEntry& e = p.entries[{uint8_t(m.kind), m.a, m.b}];
+      e.ns += ns;
+      e.count += 1;
+      e.n += m.n;
+      e.extra = m.extra;
+      if (m.kind == GpuMarkKind::kPass) {
+        e.inclusive_ns += since_setup;
+        since_setup = 0;
+      }
+    }
+  }
+  marks.clear();
+}
+
+void NativeCommandProcessor::ReportGpuProfile(double frames) {
+  GpuProfiler& p = gpu_profiler_;
+  if (!p.mode) {
+    return;
+  }
+  frames = std::max(frames, 1.0);
+  const auto per_frame = [&](uint64_t ns) { return double(ns) / 1e6 / frames; };
+  const auto kind = [&](GpuMarkKind k) { return per_frame(p.kind_ns[size_t(k)]); };
+  double busy = 0;
+  for (uint64_t ns : p.kind_ns) busy += per_frame(ns);
+  busy -= kind(GpuMarkKind::kStart);
+  MANTRA_INFO("gpu profile: {:.1f} ms busy per frame: passes {:.1f} (draws {:.1f}, ends {:.1f}), "
+              "pass setup {:.1f}, fills {:.1f}, resolves {:.1f}, present {:.1f}, tail {:.1f}; "
+              "{} marks dropped",
+              busy, kind(GpuMarkKind::kDraw) + kind(GpuMarkKind::kPass),
+              kind(GpuMarkKind::kDraw), kind(GpuMarkKind::kPass), kind(GpuMarkKind::kSetup),
+              kind(GpuMarkKind::kFill), kind(GpuMarkKind::kResolve), kind(GpuMarkKind::kPresent),
+              kind(GpuMarkKind::kTail), p.overflows);
+  using Item = std::pair<const std::tuple<uint8_t, uint64_t, uint64_t>*, const GpuProfileEntry*>;
+  std::vector<Item> passes, draws, others;
+  for (const auto& [key, entry] : p.entries) {
+    const auto k = GpuMarkKind(std::get<0>(key));
+    (k == GpuMarkKind::kPass ? passes : k == GpuMarkKind::kDraw ? draws : others)
+        .push_back({&key, &entry});
+  }
+  const auto by_cost = [](const Item& x, const Item& y) {
+    return x.second->ns + x.second->inclusive_ns > y.second->ns + y.second->inclusive_ns;
+  };
+  std::sort(passes.begin(), passes.end(), by_cost);
+  std::sort(draws.begin(), draws.end(), by_cost);
+  std::sort(others.begin(), others.end(), by_cost);
+  for (size_t i = 0; i < std::min<size_t>(passes.size(), 10); ++i) {
+    const auto& [key, e] = passes[i];
+    const uint64_t a = std::get<1>(*key), b = std::get<2>(*key);
+    MANTRA_INFO("gpu profile:   pass {:.2f} ms ({:.2f}/frame x{:.1f}, end {:.2f}): rt base {} "
+                "pitch {} msaa {} colors {} vkfmt {} depth {} {}x{}, {:.0f} draws/frame",
+                per_frame(e->inclusive_ns), per_frame(e->inclusive_ns) / std::max(1.0, double(e->count) / frames),
+                double(e->count) / frames, per_frame(e->ns), a & 0xFFFF, (a >> 16) & 0xFFFF,
+                1u << ((a >> 32) & 0xFF), (a >> 40) & 0xFF, b >> 32,
+                (b & 0x10000) ? fmt::format("{}", b & 0xFFFF) : std::string("none"),
+                e->extra >> 16, e->extra & 0xFFFF, double(e->n) / frames);
+  }
+  for (size_t i = 0; i < std::min<size_t>(draws.size(), 16); ++i) {
+    const auto& [key, e] = draws[i];
+    MANTRA_INFO("gpu profile:   draw {:.2f} ms ({:.0f}/frame, {:.0f} verts/frame): vs {:016X} ps "
+                "{:016X} rt base {} vkfmt {}",
+                per_frame(e->ns), double(e->count) / frames, double(e->n) / frames,
+                std::get<1>(*key), std::get<2>(*key), e->extra & 0xFFFF, e->extra >> 16);
+  }
+  for (size_t i = 0; i < std::min<size_t>(others.size(), 6); ++i) {
+    const auto& [key, e] = others[i];
+    static const char* const kNames[] = {"start", "setup", "pass", "draw",
+                                         "fill",  "resolve", "present", "tail"};
+    MANTRA_INFO("gpu profile:   {} {:.2f} ms ({:.1f}/frame): {:X} {:X}",
+                kNames[std::get<0>(*key)], per_frame(e->ns), double(e->count) / frames,
+                std::get<1>(*key), std::get<2>(*key));
+  }
+  p.entries.clear();
+  std::fill(std::begin(p.kind_ns), std::end(p.kind_ns), 0);
+  p.overflows = 0;
+}
+
 // --- Submissions -------------------------------------------------------------
 
 void NativeCommandProcessor::AwaitSlot(FrameSlot& slot) {
@@ -156,9 +339,13 @@ void NativeCommandProcessor::AwaitSlot(FrameSlot& slot) {
   }
   const auto& dfn = vulkan_device_->functions();
   const VkDevice device = vulkan_device_->device();
-  dfn.vkWaitForFences(device, 1, &slot.fence, VK_TRUE, UINT64_MAX);
+  {
+    ScopedNs timer{frame_timing_.fence_ns};
+    dfn.vkWaitForFences(device, 1, &slot.fence, VK_TRUE, UINT64_MAX);
+  }
   dfn.vkResetFences(device, 1, &slot.fence);
   slot.pending = false;
+  CollectGpuProfile(uint32_t(&slot - frame_slots_));
   submission_completed_ = std::max(submission_completed_, slot.submission);
   buffer_cache_.SubmissionCompleted(submission_completed_);
 }
@@ -200,6 +387,13 @@ VkCommandBuffer NativeCommandProcessor::BeginCommands() {
     return VK_NULL_HANDLE;
   }
   recording_ = true;
+  if (gpu_profiler_.mode) {
+    const uint32_t index = uint32_t(submission_current_ % kFrameSlots);
+    gpu_profiler_.marks[index].clear();
+    dfn.vkCmdResetQueryPool(slot.command_buffer, gpu_profiler_.pools[index], 0,
+                            kGpuQueriesPerSlot);
+    GpuMarkHere(GpuMarkKind::kStart);
+  }
   shader_interface_.BeginSlot(uint32_t(submission_current_ % kFrameSlots));
   shader_interface_.InitializeResources(slot.command_buffer);
   return slot.command_buffer;
@@ -210,6 +404,7 @@ bool NativeCommandProcessor::SubmitCommands() {
     return true;
   }
   EndRendering();
+  GpuMarkHere(GpuMarkKind::kTail);
   recording_ = false;
   FrameSlot& slot = CurrentSlot();
   const auto& dfn = vulkan_device_->functions();
@@ -329,6 +524,11 @@ void NativeCommandProcessor::DestroyFrameResources() {
     if (slot.command_pool) dfn.vkDestroyCommandPool(device, slot.command_pool, nullptr);
     slot = FrameSlot{};
   }
+  for (VkQueryPool& pool : gpu_profiler_.pools) {
+    if (pool) dfn.vkDestroyQueryPool(device, pool, nullptr);
+    pool = VK_NULL_HANDLE;
+  }
+  gpu_profiler_.mode = 0;
 }
 
 void NativeCommandProcessor::DestroySwapResources() {
@@ -381,10 +581,132 @@ bool NativeCommandProcessor::EnsureStagingBuffer(VkDeviceSize size) {
   return true;
 }
 
+// --- Constant write tracing -------------------------------------------------
+
+namespace {
+constexpr uint32_t kPsConstFirst = XE_GPU_REG_SHADER_CONSTANT_256_X;
+constexpr uint32_t kPsConstEnd = kPsConstFirst + 32 * 4;  // c0..c31
+}  // namespace
+
+void NativeCommandProcessor::TracePsConstantWrite(uint32_t start_index, const uint32_t* values,
+                                                  uint32_t count, const void* source) {
+  std::string s;
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint32_t r = start_index + i;
+    if (r < kPsConstFirst || r >= kPsConstEnd) continue;
+    const uint32_t c = r - kPsConstFirst;
+    float f;
+    std::memcpy(&f, &values[i], 4);
+    if (s.empty() || c % 4 == 0) s += fmt::format(" c{}.{}=", c / 4, "xyzw"[c % 4]);
+    s += fmt::format("{:g}{}", f, c % 4 == 3 ? "" : ",");
+  }
+  const auto* host = static_cast<const uint8_t*>(source);
+  const uint8_t* membase = memory_->physical_membase();
+  std::string from = "reg";
+  if (host && host >= membase && host < membase + 0x20000000) {
+    from = fmt::format("{:08X}", uint32_t(host - membase));
+  } else if (host) {
+    from = fmt::format("v{:08X}", memory_->HostToGuestVirtual(host));
+  }
+  MANTRA_INFO("trace: ps const write {} regs from {}:{}", count, from, s);
+}
+
+void NativeCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
+  if (!in_register_range_write_ && index - kPsConstFirst < kPsConstEnd - kPsConstFirst &&
+      trace_swap_ && TracingThisFrame()) {
+    TracePsConstantWrite(index, &value, 1, nullptr);
+  }
+  CommandProcessor::WriteRegister(index, value);
+}
+
+void NativeCommandProcessor::WriteRegistersFromMem(uint32_t start_index, uint32_t* base,
+                                                   uint32_t num_registers) {
+  if (trace_swap_ && start_index < kPsConstEnd && start_index + num_registers > kPsConstFirst &&
+      TracingThisFrame()) {
+    std::vector<uint32_t> values(num_registers);
+    for (uint32_t i = 0; i < num_registers; ++i) {
+      values[i] = rex::memory::load_and_swap<uint32_t>(base + i);
+    }
+    TracePsConstantWrite(start_index, values.data(), num_registers, base);
+  }
+  in_register_range_write_ = true;
+  CommandProcessor::WriteRegistersFromMem(start_index, base, num_registers);
+  in_register_range_write_ = false;
+}
+
+// Debug: MANTRA_PS_CONST_OVERRIDE="<ps hash>:<c>=x,y,z,w;..." replaces pixel
+// shader float constant c (0..31) for draws with that pixel shader; the
+// register file is restored after the draw.
+namespace {
+struct PsConstOverride {
+  uint64_t hash;
+  uint32_t constant;
+  float value[4];
+};
+const std::vector<PsConstOverride>& PsConstOverrides() {
+  static const std::vector<PsConstOverride> rules = [] {
+    std::vector<PsConstOverride> out;
+    const char* env = std::getenv("MANTRA_PS_CONST_OVERRIDE");
+    for (const char* p = env; p && *p;) {
+      PsConstOverride rule{};
+      char* end;
+      rule.hash = std::strtoull(p, &end, 16);
+      if (*end != ':') break;
+      rule.constant = uint32_t(std::strtoul(end + 1, &end, 10));
+      if (*end != '=' || rule.constant >= 32) break;
+      p = end + 1;
+      for (int i = 0; i < 4; ++i) {
+        rule.value[i] = std::strtof(p, &end);
+        p = *end == ',' ? end + 1 : end;
+      }
+      out.push_back(rule);
+      MANTRA_INFO("PS constant override: {:016X} c{} = ({:g} {:g} {:g} {:g})", rule.hash,
+                  rule.constant, rule.value[0], rule.value[1], rule.value[2], rule.value[3]);
+      p = std::strchr(p, ';');
+      p = p ? p + 1 : nullptr;
+    }
+    return out;
+  }();
+  return rules;
+}
+}  // namespace
+
 // --- Draws and resolves ------------------------------------------------------
 
 bool NativeCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t index_count,
                                        IndexBufferInfo* index_buffer_info, bool) {
+  ScopedNs timer{frame_timing_.draw_ns};
+  // Debug constant overrides, restored when the draw returns.
+  struct SavedConstant {
+    uint32_t reg;
+    uint32_t value[4];
+  };
+  std::vector<SavedConstant> saved_constants;
+  if (const auto& rules = PsConstOverrides(); !rules.empty()) {
+    auto* ps = static_cast<MantraShader*>(active_pixel_shader());
+    if (ps && ps->cache_entry) {
+      for (const PsConstOverride& rule : rules) {
+        if (rule.hash != ps->cache_entry->exact_hash) continue;
+        const uint32_t reg = kPsConstFirst + rule.constant * 4;
+        SavedConstant saved{reg, {}};
+        for (uint32_t i = 0; i < 4; ++i) {
+          saved.value[i] = (*register_file_)[reg + i];
+          std::memcpy(&(*register_file_)[reg + i], &rule.value[i], 4);
+        }
+        saved_constants.push_back(saved);
+      }
+    }
+  }
+  struct RestoreConstants {
+    RegisterFile& regs;
+    std::vector<SavedConstant>& saved;
+    ~RestoreConstants() {
+      for (auto it = saved.rbegin(); it != saved.rend(); ++it) {
+        for (uint32_t i = 0; i < 4; ++i) regs[it->reg + i] = it->value[i];
+      }
+    }
+  } restore_constants{*register_file_, saved_constants};
+
   const xenos::EdramMode edram_mode = register_file_->Get<reg::RB_MODECONTROL>().edram_mode;
   if (edram_mode == xenos::EdramMode::kCopy) {
     // Not a draw: the RB copies EDRAM to memory, the shaders never run.
@@ -427,11 +749,26 @@ bool NativeCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
     if (ran && !register_file_->Get<reg::RB_COLOR_MASK>().value) return true;
   }
   const char* outcome = "fill";
-  if (TrySolidFill(prim_type, edram_mode) == SolidFillResult::kNotSolidFill) {
+  if (TrySolidFill(prim_type, edram_mode, index_count, index_buffer_info != nullptr) ==
+      SolidFillResult::kNotSolidFill) {
     trace_current_draw_ = TracingThisFrame();
     const DrawResult result = DrawGuest(prim_type, index_count, index_buffer_info);
     trace_current_draw_ = false;
     outcome = result == DrawResult::kDrawn ? "drawn" : result == DrawResult::kSkipped ? "SKIPPED" : "FAILED";
+    if (result == DrawResult::kDrawn) {
+      ++gpu_profiler_.pass_draws;
+      if (gpu_profiler_.mode == 2 && rendering_.active) {
+        Shader* vs = active_vertex_shader();
+        Shader* ps = active_pixel_shader();
+        const mantra::RenderTarget* rt = rendering_.color[0] ? rendering_.color[0] : rendering_.depth;
+        GpuMarkHere(GpuMarkKind::kDraw, vs ? vs->ucode_data_hash() : 0,
+                    ps ? ps->ucode_data_hash() : 0, index_count,
+                    (rt ? rt->key.base_tiles & 0xFFFF : 0xFFFF) |
+                        (uint32_t(rendering_.color_format[0]) << 16));
+      }
+    }
+  } else {
+    GpuMarkHere(GpuMarkKind::kFill, (*register_file_)[XE_GPU_REG_RB_COLOR_INFO] & 0xFFF);
   }
   // MANTRA_TRACE_PS=hash: also trace the first few draws with that pixel shader.
   static const uint64_t trace_ps = [] {
@@ -496,9 +833,12 @@ bool NativeCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
 }
 
 bool NativeCommandProcessor::IssueCopy() {
+  ScopedNs timer{frame_timing_.copy_ns};
   if (!Resolve()) {
     ++draw_stats_.resolves_failed;
   }
+  GpuMarkHere(GpuMarkKind::kResolve, register_file_->Get<reg::RB_COPY_CONTROL>().copy_src_select,
+              (*register_file_)[XE_GPU_REG_RB_COPY_DEST_BASE]);
   // A failed resolve is dropped; it must not abort the command stream.
   return true;
 }
@@ -579,7 +919,7 @@ bool NativeCommandProcessor::Resolve() {
           info.copy_dest_info.copy_dest_format, frame, true);
       VkDescriptorPool descriptor_pool = ReserveDescriptorSet();
       cmd = BeginNonDrawCommands();
-      if (surface && cmd) resolved_surfaces_.CopyGrown(cmd, *surface);
+      if (surface && cmd) resolved_surfaces_.PrepareWrite(cmd, *surface);
       if (surface && descriptor_pool && cmd && rect.width && rect.height) {
         mantra::CopyPushConstants constants;
         constants.sample_mask = 1;  // depth: sample 0, no averaging
@@ -599,6 +939,15 @@ bool NativeCommandProcessor::Resolve() {
           surface->write_count = ++resolve_serial_;  // unique: surfaces get recreated
           surface->last_write_frame = frame;
           texture_cache_.NoteResolve(dest_address, info.copy_dest_extent_length);
+          if (TracingThisFrame() && CapturingPasses()) {
+            // Also writes the raw floats (.f32) for offline shadow checks.
+            CaptureImage(surface->image, surface->image.format, surface->image.width,
+                         surface->image.height, 0x688 /* RGBA */,
+                         fmt::format("s{}_pass_{:03}_depth_{:08X}_base{}_p{}", trace_swap_,
+                                     pass_capture_index_++, dest_address,
+                                     info.depth_original_base, pitch_px));
+            cmd = BeginNonDrawCommands();
+          }
         }
         if (FirstRoute((uint64_t(info.depth_original_base) << 40) ^ (uint64_t(pitch_px) << 26) ^
                        dest_address ^ (uint64_t(3) << 62)))
@@ -633,7 +982,7 @@ bool NativeCommandProcessor::Resolve() {
           frame);
       VkDescriptorPool descriptor_pool = ReserveDescriptorSet();
       cmd = BeginNonDrawCommands();  // may have been submitted to free descriptors
-      if (surface && cmd) resolved_surfaces_.CopyGrown(cmd, *surface);
+      if (surface && cmd) resolved_surfaces_.PrepareWrite(cmd, *surface);
       if (surface && descriptor_pool && cmd && rect.width && rect.height) {
         mantra::CopyPushConstants constants;
         const uint32_t sample_count = 1u << uint32_t(msaa);
@@ -736,7 +1085,26 @@ bool NativeCommandProcessor::CapturingDraws() {
     const char* env = std::getenv("MANTRA_CAPTURE_DRAWS");
     return env && *env && *env != '0';
   }();
-  return enabled && CapturingPasses();
+  if (!enabled || !CapturingPasses()) return false;
+  // MANTRA_CAPTURE_DRAWS_PS=<hash>,...: only draws with these pixel shaders.
+  static const std::vector<uint64_t> only_ps = [] {
+    std::vector<uint64_t> out;
+    for (const char* p = std::getenv("MANTRA_CAPTURE_DRAWS_PS"); p && *p;) {
+      char* end;
+      out.push_back(std::strtoull(p, &end, 16));
+      p = *end == ',' ? end + 1 : nullptr;
+    }
+    return out;
+  }();
+  if (only_ps.empty()) return true;
+  auto* ps = static_cast<MantraShader*>(active_pixel_shader());
+  if (!ps) return false;
+  for (uint64_t hash : only_ps) {
+    if (hash == ps->ucode_data_hash() || (ps->cache_entry && hash == ps->cache_entry->exact_hash)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool NativeCommandProcessor::TracingThisFrame() {
@@ -793,6 +1161,12 @@ void NativeCommandProcessor::DumpDrawBuffers(uint32_t index_count,
     }
   }
   if (!files.empty()) MANTRA_INFO("trace:   buffers{}", files);
+  // All 256 bool constants (8 registers of 32): VS 0..127, PS 128..255.
+  std::string bools;
+  for (uint32_t i = 0; i < 8; ++i) {
+    bools += fmt::format(" {:08X}", (*register_file_)[XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031 + i]);
+  }
+  MANTRA_INFO("trace:   bools{}", bools);
 }
 
 void NativeCommandProcessor::TraceDraw(xenos::PrimitiveType prim_type, uint32_t index_count,
@@ -923,6 +1297,8 @@ void NativeCommandProcessor::TraceDraw(xenos::PrimitiveType prim_type, uint32_t 
 
 void NativeCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
                                        uint32_t frontbuffer_height) {
+  EndFrameTiming();
+  ScopedNs swap_timer{frame_timing_.swap_ns};
   ++swap_stats_.swaps;
   buffer_cache_.FrameEnded();
   // MANTRA_TRACE_TRIGGER=<file>: when the file appears, trace the next frame
@@ -1149,6 +1525,7 @@ bool NativeCommandProcessor::PresentResolvedSurface(mantra::ResolvedSurface& sur
                                 ui::vulkan::VulkanPresenter::kGuestOutputInternalLayout,
                                 ui::vulkan::VulkanPresenter::kGuestOutputInternalStageMask,
                                 ui::vulkan::VulkanPresenter::kGuestOutputInternalAccessMask);
+        GpuMarkHere(GpuMarkKind::kPresent);
         // Submit now: the presenter may paint the image as soon as this
         // returns, and its submission must come after ours.
         return SubmitCommands() && recorded;
@@ -1326,6 +1703,14 @@ void NativeCommandProcessor::CaptureImage(mantra::TrackedImage& image, VkFormat 
                     path.filename().string(), width, height, uint32_t(format), sum[0] / n,
                     sum[1] / n, sum[2] / n, sum[3] / n, peak[0], peak[1], peak[2], peak[3]);
       }
+      if (format == VK_FORMAT_R32_SFLOAT) {
+        std::filesystem::path raw = path;
+        raw.replace_extension(".f32");
+        if (std::FILE* f32 = std::fopen(raw.c_str(), "wb")) {
+          std::fwrite(bytes, 4, size_t(width) * height, f32);
+          std::fclose(f32);
+        }
+      }
       dfn.vkUnmapMemory(device, memory);
     }
   }
@@ -1411,6 +1796,48 @@ bool NativeCommandProcessor::PresentFromGuestMemory(const uint8_t* src, uint32_t
       });
 }
 
+void NativeCommandProcessor::EndFrameTiming() {
+  FrameTiming& t = frame_timing_;
+  const auto now = std::chrono::steady_clock::now();
+  const auto ms = [](uint64_t ns) { return double(ns) / 1e6; };
+  const size_t pipelines = draw_pipelines_.size();
+  const uint64_t modules = shader_stats_.modules;
+  const uint64_t texture_bytes = texture_cache_.stats().load_bytes;
+  const uint64_t buffer_bytes = buffer_cache_.stats().upload_bytes;
+  const uint64_t vertex_bytes = guest_draw_stats_.vertex_bytes;
+  if (t.last_swap.time_since_epoch().count()) {
+    const double total = std::chrono::duration<double, std::milli>(now - t.last_swap).count();
+    ++t.frames;
+    t.total_ms += total;
+    t.max_ms = std::max(t.max_ms, total);
+    t.over_50 += total > 50.0;
+    t.over_100 += total > 100.0;
+    t.fence_ms += ms(t.fence_ns);
+    t.draw_ms += ms(t.draw_ns);
+    t.copy_ms += ms(t.copy_ns);
+    t.swap_ms += ms(t.swap_ns);
+    // A hitch: log what this frame did (traced/captured frames are slow anyway).
+    if (total > 70.0 && !TracingThisFrame()) {
+      MANTRA_INFO("hitch: swap {} took {:.1f} ms (fence waits {:.1f}, draws {:.1f}, resolves "
+                  "{:.1f}, swap {:.1f}, other {:.1f}); new pipelines {}, shader modules {}, "
+                  "texture loads {:.1f} MB, buffer uploads {:.1f} MB, expanded vertices {:.1f} MB",
+                  swap_stats_.swaps, total, ms(t.fence_ns), ms(t.draw_ns), ms(t.copy_ns),
+                  ms(t.swap_ns), total - ms(t.draw_ns) - ms(t.copy_ns) - ms(t.swap_ns),
+                  pipelines - t.pipelines, modules - t.modules,
+                  (texture_bytes - t.texture_bytes) / 1048576.0,
+                  (buffer_bytes - t.buffer_bytes) / 1048576.0,
+                  (vertex_bytes - t.vertex_bytes) / 1048576.0);
+    }
+  }
+  t.last_swap = now;
+  t.fence_ns = t.draw_ns = t.copy_ns = t.swap_ns = 0;
+  t.pipelines = pipelines;
+  t.modules = modules;
+  t.texture_bytes = texture_bytes;
+  t.buffer_bytes = buffer_bytes;
+  t.vertex_bytes = vertex_bytes;
+}
+
 void NativeCommandProcessor::ReportSwapStats() {
   using clock = std::chrono::steady_clock;
   constexpr auto kReportInterval = std::chrono::seconds(5);
@@ -1432,6 +1859,19 @@ void NativeCommandProcessor::ReportSwapStats() {
       "{:.1f}% non-black",
       swap_stats_.swaps, swaps_per_second, swap_stats_.presented, swap_stats_.skipped,
       swap_stats_.refresh_failed, swap_stats_.last_lit_permille / 10.0);
+  {
+    FrameTiming& t = frame_timing_;
+    const double n = std::max<double>(double(t.frames), 1.0);
+    MANTRA_INFO("frame times: avg {:.1f} ms, max {:.1f} ms, {} over 50 ms, {} over 100 ms; per "
+                "frame: fence waits {:.1f} ms, draws {:.1f} ms, resolves {:.1f} ms, swap {:.1f} "
+                "ms, other {:.1f} ms",
+                t.total_ms / n, t.max_ms, t.over_50, t.over_100, t.fence_ms / n, t.draw_ms / n,
+                t.copy_ms / n, t.swap_ms / n,
+                (t.total_ms - t.draw_ms - t.copy_ms - t.swap_ms) / n);
+    ReportGpuProfile(double(t.frames));
+    t.frames = t.over_50 = t.over_100 = 0;
+    t.max_ms = t.total_ms = t.fence_ms = t.draw_ms = t.copy_ms = t.swap_ms = 0;
+  }
   MANTRA_INFO("  presented {} from resolves, {} from guest memory; draws {}, resolves {} "
               "(failed {}, color copies {}, depth copies {}, skipped {}, unsupported dest {}), "
               "clears color {} depth {}; 7e3 conversions {}; solid fills color {} depth {} skipped {}; {} render targets, "

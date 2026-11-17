@@ -474,6 +474,21 @@ void NativeCommandProcessor::EndRendering() {
   }
   vulkan_device_->functions().vkCmdEndRendering(CurrentSlot().command_buffer);
   rendering_.active = false;
+  if (gpu_profiler_.mode) {
+    const mantra::RenderTarget* c0 = rendering_.color[0];
+    uint32_t colors = 0;
+    for (const mantra::RenderTarget* rt : rendering_.color) colors += rt != nullptr;
+    const mantra::RenderTarget* any = c0 ? c0 : rendering_.depth;
+    const uint64_t a = uint64_t(c0 ? c0->key.base_tiles : 0xFFFF) |
+                       (uint64_t(any ? any->key.pitch_px : 0) << 16) |
+                       (uint64_t(any ? uint32_t(any->key.msaa) : 0) << 32) |
+                       (uint64_t(colors) << 40);
+    const uint64_t b = (uint64_t(rendering_.color_format[0]) << 32) |
+                       (rendering_.depth ? 0x10000 | rendering_.depth->key.base_tiles : 0);
+    GpuMarkHere(GpuMarkKind::kPass, a, b, gpu_profiler_.pass_draws,
+                (rendering_.area.extent.width << 16) | (rendering_.area.extent.height & 0xFFFF));
+  }
+  gpu_profiler_.pass_draws = 0;
 }
 
 bool NativeCommandProcessor::BeginDrawRendering(VkCommandBuffer cmd, uint32_t color_mask,
@@ -610,6 +625,8 @@ bool NativeCommandProcessor::BeginDrawRendering(VkCommandBuffer cmd, uint32_t co
     info.pDepthAttachment = &depth_attachment;
     info.pStencilAttachment = &depth_attachment;
   }
+  GpuMarkHere(GpuMarkKind::kSetup);
+  gpu_profiler_.pass_draws = 0;
   vulkan_device_->functions().vkCmdBeginRendering(cmd, &info);
   ++guest_draw_stats_.render_passes;
 
@@ -995,42 +1012,100 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::UploadGeometry(
       MANTRA_WARN_ONCE("draw with {} bytes of expanded vertex data, skipping", size);
       return DrawResult::kSkipped;
     }
-    uint32_t offset;
-    auto* out = reinterpret_cast<float*>(shader_interface_.Allocate(size, offset));
-    if (!out) {
-      return DrawResult::kFailed;
-    }
     const uint32_t buffer_words = fetch.size;
     const uint32_t buffer_base = fetch.address;  // in dwords
     const uint32_t* membase = memory_->TranslatePhysical<const uint32_t*>(0);
     const uint32_t element_words = VertexElementWords(in.format);
-    for (uint32_t v = 0; v < vertex_count; ++v) {
-      const uint64_t element = vs.vertex_index_divisor > 1
-                                   ? (first_vertex + v) / vs.vertex_index_divisor
-                                   : first_vertex + v;
-      const uint64_t word = element * in.stride_words + uint64_t(in.offset_words);
-      uint32_t words[4] = {};
-      for (uint32_t i = 0; i < element_words; ++i) {
-        if (word + i < buffer_words) {
-          const uint32_t address =
-              ((buffer_base + uint32_t(word + i)) << 2) & kGuestPhysicalMemoryMask;
-          words[i] = xenos::GpuSwap(membase[address >> 2], fetch.endian);
+    // Decodes `count` vertices starting at vertex index `first` into `out`.
+    auto decode = [&](float* out, uint64_t first, uint32_t count) {
+      for (uint32_t v = 0; v < count; ++v) {
+        const uint64_t element = vs.vertex_index_divisor > 1
+                                     ? (first + v) / vs.vertex_index_divisor
+                                     : first + v;
+        const uint64_t word = element * in.stride_words + uint64_t(in.offset_words);
+        uint32_t words[4] = {};
+        for (uint32_t i = 0; i < element_words; ++i) {
+          if (word + i < buffer_words) {
+            const uint32_t address =
+                ((buffer_base + uint32_t(word + i)) << 2) & kGuestPhysicalMemoryMask;
+            words[i] = xenos::GpuSwap(membase[address >> 2], fetch.endian);
+          }
+        }
+        if (in.is_uint && (in.format == xenos::VertexFormat::k_10_11_11 ||
+                           in.format == xenos::VertexFormat::k_11_11_10)) {
+          // Packed normal: the shader unpacks the raw word itself.
+          std::memcpy(out + v * 4, words, 4);
+        } else {
+          DecodeVertexElement(in, words, out + v * 4);
         }
       }
-      if (in.is_uint && (in.format == xenos::VertexFormat::k_10_11_11 ||
-                         in.format == xenos::VertexFormat::k_11_11_10)) {
-        // Packed normal: the shader unpacks the raw word itself.
-        std::memcpy(out + v * 4, words, 4);
-      } else {
-        DecodeVertexElement(in, words, out + v * 4);
+    };
+    // Static meshes are drawn many times per frame (and skinned ones once per
+    // submesh over the whole vertex range): keep the decoded elements in the
+    // buffer cache, per 4096-element span of large buffers.
+    VkBuffer cached_buffer = VK_NULL_HANDLE;
+    VkDeviceSize cached_offset = 0;
+    if (vs.vertex_index_divisor <= 1 && in.stride_words) {
+      constexpr uint64_t kSpanElements = 4096;
+      const uint64_t buffer_elements = buffer_words / in.stride_words;
+      uint64_t span_begin = 0, span_end = buffer_elements;
+      if (buffer_elements > 4 * kSpanElements) {
+        span_begin = first_vertex & ~(kSpanElements - 1);
+        span_end = std::min<uint64_t>(
+            buffer_elements, (first_vertex + vertex_count + kSpanElements - 1) & ~(kSpanElements - 1));
       }
+      const uint64_t source_start =
+          uint64_t((buffer_base << 2) & kGuestPhysicalMemoryMask) + span_begin * in.stride_words * 4;
+      const uint64_t source_length = (span_end - span_begin) * in.stride_words * 4;
+      if (span_end > span_begin && first_vertex + vertex_count <= span_end &&
+          source_start + source_length <= kGuestPhysicalMemoryMask + 1ull &&
+          (span_end - span_begin) * 16 <= kMaxVertexUpload) {
+        mantra::BufferCache::Key cache_key;
+        std::memset(&cache_key, 0, sizeof(cache_key));
+        cache_key.start = uint32_t(source_start);
+        cache_key.length = uint32_t(source_length);
+        cache_key.kind = mantra::BufferCache::Kind::kExpandedVertex;
+        cache_key.params[0] = uint32_t(fetch.endian);
+        cache_key.params[1] = uint32_t(in.format) | (in.is_signed ? 1u << 8 : 0) |
+                              (in.normalized ? 1u << 9 : 0) | (in.is_uint ? 1u << 10 : 0);
+        cache_key.params[2] = in.stride_words;
+        cache_key.params[3] = uint32_t(in.offset_words);
+        cache_key.params[4] = uint32_t(in.exp_adjust);
+        mantra::BufferCache::Data data;
+        if (buffer_cache_.Lookup(cache_key, data)) {
+          cached_buffer = data.buffer;
+        } else {
+          const uint32_t span_bytes = uint32_t((span_end - span_begin) * 16);
+          if (uint8_t* dest = buffer_cache_.Reserve(cache_key, span_bytes, submission_current_, data)) {
+            decode(reinterpret_cast<float*>(dest), span_begin, uint32_t(span_end - span_begin));
+            buffer_cache_.Commit(cache_key, data);
+            cached_buffer = data.buffer;
+            guest_draw_stats_.vertex_bytes += span_bytes;
+          }
+        }
+        if (cached_buffer != VK_NULL_HANDLE) {
+          cached_offset = data.offset + (first_vertex - span_begin) * 16;
+        }
+      }
+    }
+    VkBuffer binding_buffer = cached_buffer;
+    VkDeviceSize binding_offset = cached_offset;
+    if (binding_buffer == VK_NULL_HANDLE) {
+      uint32_t offset;
+      auto* out = reinterpret_cast<float*>(shader_interface_.Allocate(size, offset));
+      if (!out) {
+        return DrawResult::kFailed;
+      }
+      decode(out, first_vertex, vertex_count);
+      binding_buffer = shader_interface_.ring_buffer();
+      binding_offset = offset;
+      guest_draw_stats_.vertex_bytes += size;
     }
     const uint32_t b = binding_count++;
     key.binding_strides[b] = 16;
-    upload.binding_buffers[b] = shader_interface_.ring_buffer();
-    upload.binding_offsets[b] = offset;
+    upload.binding_buffers[b] = binding_buffer;
+    upload.binding_offsets[b] = binding_offset;
     key.attributes[expanded[e].attribute].binding = uint8_t(b);
-    guest_draw_stats_.vertex_bytes += size;
     ++guest_draw_stats_.expanded_inputs;
   }
   if (need_zero_binding) {

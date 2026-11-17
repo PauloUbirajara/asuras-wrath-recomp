@@ -527,17 +527,30 @@ void ResolvedSurfaces::Initialize(const rex::ui::vulkan::VulkanDevice* device) {
                                                                  "vkCmdCopyImage"));
 }
 
-void ResolvedSurfaces::CopyGrown(VkCommandBuffer cmd, ResolvedSurface& surface) {
+void ResolvedSurfaces::PrepareWrite(VkCommandBuffer cmd, ResolvedSurface& surface) {
+  if (!cmd) {
+    return;
+  }
+  if (!surface.initialized) {
+    surface.initialized = true;
+    TransitionImage(device_, cmd, surface.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                    /*discard=*/true);
+    const VkClearColorValue zero = {};
+    const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    device_->functions().vkCmdClearColorImage(cmd, surface.image.image,
+                                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &zero, 1,
+                                              &range);
+  }
   ResolvedSurface* old = surface.grown_from;
   surface.grown_from = nullptr;
-  if (!old || !cmd || !cmd_copy_image_ || !old->write_count) {
+  if (!old || !cmd_copy_image_ || !old->write_count) {
     return;
   }
   TransitionImage(device_, cmd, old->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                   VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
   TransitionImage(device_, cmd, surface.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
-                  /*discard=*/true);
+                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
   VkImageCopy region = {};
   region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
   region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};

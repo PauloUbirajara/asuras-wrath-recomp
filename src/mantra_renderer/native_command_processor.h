@@ -84,8 +84,15 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
   bool IssueDraw(xenos::PrimitiveType prim_type, uint32_t index_count,
                  IndexBufferInfo* index_buffer_info, bool major_mode_explicit) override;
   bool IssueCopy() override;
+  // Debug: log pixel shader float constant writes in traced frames.
+  void WriteRegister(uint32_t index, uint32_t value) override;
+  void WriteRegistersFromMem(uint32_t start_index, uint32_t* base,
+                             uint32_t num_registers) override;
 
  private:
+  bool in_register_range_write_ = false;
+  void TracePsConstantWrite(uint32_t start_index, const uint32_t* values, uint32_t count,
+                            const void* source);
   // --- Submissions ---------------------------------------------------------
   // All GPU work of a guest frame (resolves, clears, the present) is recorded
   // into one command buffer, submitted at the swap. kFrameSlots submissions
@@ -127,7 +134,10 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
   // The driver's solid-fill program (D3D Clear and fill rects) executed as
   // host clears (solid_fill.cpp).
   enum class SolidFillResult { kNotSolidFill, kDone, kUnsupported };
-  SolidFillResult TrySolidFill(xenos::PrimitiveType prim_type, xenos::EdramMode edram_mode);
+  SolidFillResult TrySolidFill(xenos::PrimitiveType prim_type, xenos::EdramMode edram_mode,
+                               uint32_t vertex_count, bool indexed);
+  SolidFillResult TrySolidFillRect(xenos::PrimitiveType prim_type, xenos::EdramMode edram_mode,
+                                   uint32_t first_vertex);
 
   // --- Guest draws (guest_draw.cpp) ----------------------------------------
   enum class DrawResult { kDrawn, kSkipped, kFailed };
@@ -309,6 +319,58 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
     std::chrono::steady_clock::time_point last_report_time{};
   };
   SwapStats swap_stats_;
+
+  // Frame pacing: where each frame's wall time went (GPU thread), for
+  // stutter hunting. Reported per stats window, and per frame for hitches.
+  struct FrameTiming {
+    std::chrono::steady_clock::time_point last_swap{};
+    // This frame.
+    uint64_t fence_ns = 0, draw_ns = 0, copy_ns = 0, swap_ns = 0;
+    size_t pipelines = 0;
+    uint64_t modules = 0, texture_bytes = 0, buffer_bytes = 0, vertex_bytes = 0;
+    // This stats window.
+    uint64_t frames = 0, over_50 = 0, over_100 = 0;
+    double max_ms = 0, total_ms = 0, fence_ms = 0, draw_ms = 0, copy_ms = 0, swap_ms = 0;
+  };
+  FrameTiming frame_timing_;
+  void EndFrameTiming();
+
+  // GPU profiling (MANTRA_GPU_PROFILE=draw|pass): timestamps after each pass
+  // (and each draw in draw mode); the interval ending at a mark is charged to
+  // that mark. Read back when the submission's fence is waited on.
+  enum class GpuMarkKind : uint8_t {
+    kStart, kSetup, kPass, kDraw, kFill, kResolve, kPresent, kTail, kCount
+  };
+  struct GpuMark {
+    GpuMarkKind kind;
+    uint64_t a, b;
+    uint32_t n, extra;
+  };
+  struct GpuProfileEntry {
+    uint64_t ns = 0, inclusive_ns = 0, count = 0, n = 0;
+    uint32_t extra = 0;
+  };
+  static constexpr uint32_t kGpuQueriesPerSlot = 8192;
+  struct GpuProfiler {
+    int mode = 0;  // 0 off, 1 passes, 2 passes and draws
+    VkQueryPool pools[kFrameSlots] = {};
+    std::vector<GpuMark> marks[kFrameSlots];
+    double ns_per_tick = 1.0;
+    uint64_t valid_mask = ~uint64_t(0);
+    PFN_vkCmdWriteTimestamp write_timestamp = nullptr;
+    PFN_vkGetQueryPoolResults get_results = nullptr;
+    uint32_t pass_draws = 0;
+    // This stats window.
+    uint64_t kind_ns[size_t(GpuMarkKind::kCount)] = {};
+    uint64_t overflows = 0;
+    std::map<std::tuple<uint8_t, uint64_t, uint64_t>, GpuProfileEntry> entries;
+  };
+  GpuProfiler gpu_profiler_;
+  void InitializeGpuProfiler();
+  void GpuMarkHere(GpuMarkKind kind, uint64_t a = 0, uint64_t b = 0, uint32_t n = 0,
+                   uint32_t extra = 0);
+  void CollectGpuProfile(uint32_t slot_index);
+  void ReportGpuProfile(double frames);
 
   struct FrontbufferDesc {
     uint32_t address = 0, width = 0, height = 0, pitch = 0, format = 0;

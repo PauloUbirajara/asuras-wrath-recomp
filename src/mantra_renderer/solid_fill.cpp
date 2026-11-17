@@ -273,7 +273,16 @@ NativeCommandProcessor::SolidFillResult NativeCommandProcessor::TrySolidFillRect
                 ? xenos::Float32To20e4(guest_depth, true)
                 : uint32_t(std::lround(double(guest_depth) * 0xFFFFFF));
         const uint64_t word = (uint64_t(depth24 & 0xFFFFFF) << 8) | (stencil_ref & 0xFF);
-        for (const auto& alias : render_targets_.Aliases(*rt, rect, mantra::RtClass::kColor32)) {
+        // 7e3 is 32bpp in EDRAM (same tile layout as depth) but hosted in the
+        // 64bpp image: clear that one too when it holds 7e3. Asura's Wrath
+        // clears its 7e3 render-to-texture scenes (the Deus window) this way.
+        auto aliases = render_targets_.Aliases(*rt, rect, mantra::RtClass::kColor32);
+        for (const auto& alias : render_targets_.Aliases(*rt, rect, mantra::RtClass::kColor64)) {
+          if (mantra::RenderTargetPool::IsFloat7e3(alias.rt->last_format)) {
+            aliases.push_back(alias);
+          }
+        }
+        for (const auto& alias : aliases) {
           if (render_targets_.CounterpartIsNewer(*alias.rt)) {
             continue;
           }

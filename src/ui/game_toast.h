@@ -10,9 +10,15 @@
 //                         keeping its aspect ratio
 // Without it the toast is a plain lacquer panel. Everything fades in and
 // out together (text, score, images).
+//
+// The dialog is attached to the ImGui drawer only while a toast is queued:
+// while any dialog is attached, the SDK repaints the window continuously
+// (uncapped with the immediate present mode, ~1000 fps), which costs GPU
+// time the game needs on integrated GPUs.
 
 #include <chrono>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -34,7 +40,8 @@ namespace asura::ui {
 class GameToastDialog : public rex::ui::AchievementNotificationDialog {
  public:
   GameToastDialog(rex::ui::ImGuiDrawer* drawer, rex::ui::ImmediateDrawer* immediate_drawer,
-                  rex::Runtime* runtime, ImFont* font);
+                  rex::Runtime* runtime, ImFont* font,
+                  std::function<void(std::function<void()>)> call_in_ui_thread);
   ~GameToastDialog() override;
 
   // Thread-safe (guest threads unlock achievements).
@@ -62,8 +69,13 @@ class GameToastDialog : public rex::ui::AchievementNotificationDialog {
   ImFont* font_;
   rex::ui::AchievementIconCache icon_cache_;
   Image background_, portrait_;
+  std::function<void(std::function<void()>)> call_in_ui_thread_;
+  // Cleared by the destructor, so attach calls queued before it do nothing.
+  std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);
   std::mutex mutex_;
   std::deque<Pending> queue_;
+  bool attached_ = false;        // in the drawer's dialog list (UI thread)
+  bool attach_pending_ = false;  // an attach call is queued
 };
 
 }  // namespace asura::ui

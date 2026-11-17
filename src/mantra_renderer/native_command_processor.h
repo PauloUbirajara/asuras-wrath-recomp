@@ -145,6 +145,7 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
   // Debug tracing (MANTRA_TRACE_SWAP / MANTRA_TRACE_VS): whether the current
   // frame's draws are logged.
   bool TracingThisFrame();
+  void MaybeTraceOnResolve(uint32_t address, uint32_t width, uint32_t height);
   uint64_t trace_swap_ = 0;
   // Serial of the last resolve; a resolved surface's write_count is the
   // serial of its last write (unique across recreated surfaces).

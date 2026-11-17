@@ -1114,6 +1114,7 @@ bool NativeCommandProcessor::Resolve() {
           surface->write_count = ++resolve_serial_;  // unique: surfaces get recreated
           surface->last_write_frame = frame;
           texture_cache_.NoteResolve(dest_address, info.copy_dest_extent_length);
+          MaybeTraceOnResolve(dest_address, rect.width, rect.height);
           if (TracingThisFrame() && CapturingPasses()) {
             CaptureImage(surface->image, surface->image.format, surface->image.width,
                          surface->image.height, 0x688 /* RGBA */,
@@ -1197,6 +1198,57 @@ bool NativeCommandProcessor::CapturingDraws() {
     }
   }
   return false;
+}
+
+// MANTRA_TRACE_RESOLVE=<entry>[,...]: trace the frame after a color resolve
+// matching an entry, up to MANTRA_TRACE_RESOLVE_COUNT times (default 3), at
+// least 150 swaps apart; for scenes that are hard to time by hand with
+// MANTRA_TRACE_TRIGGER. An entry is a hex destination address, or WxH (decimal)
+// for the resolved rectangle's size (addresses change between runs).
+void NativeCommandProcessor::MaybeTraceOnResolve(uint32_t address, uint32_t width,
+                                                 uint32_t height) {
+  struct Match {
+    bool size;
+    uint32_t a, b;
+  };
+  static const std::vector<Match> matches = [] {
+    std::vector<Match> list;
+    const char* env = std::getenv("MANTRA_TRACE_RESOLVE");
+    for (const char* p = env; p && *p;) {
+      const char* comma = std::strchr(p, ',');
+      const std::string entry(p, comma ? size_t(comma - p) : std::strlen(p));
+      p = comma ? comma + 1 : p + entry.size();
+      if (const size_t x = entry.find('x'); x != std::string::npos && x > 0) {
+        list.push_back({true, uint32_t(std::strtoul(entry.c_str(), nullptr, 10)),
+                        uint32_t(std::strtoul(entry.c_str() + x + 1, nullptr, 10))});
+      } else if (!entry.empty()) {
+        list.push_back({false, uint32_t(std::strtoul(entry.c_str(), nullptr, 16)), 0});
+      }
+    }
+    return list;
+  }();
+  if (matches.empty() ||
+      std::none_of(matches.begin(), matches.end(), [&](const Match& m) {
+        return m.size ? m.a == width && m.b == height : m.a == address;
+      })) {
+    return;
+  }
+  static const uint32_t max_traces = [] {
+    const char* env = std::getenv("MANTRA_TRACE_RESOLVE_COUNT");
+    return env ? uint32_t(std::strtoul(env, nullptr, 10)) : 3u;
+  }();
+  static uint32_t traces = 0;
+  static uint64_t last_swap = 0;
+  const uint64_t swaps = swap_stats_.swaps;
+  if (traces >= max_traces || (trace_swap_ && trace_swap_ > swaps) ||
+      (traces && swaps < last_swap + 150)) {
+    return;
+  }
+  ++traces;
+  last_swap = swaps;
+  trace_swap_ = swaps + 2;
+  MANTRA_INFO("trace: resolve {}x{} to 0x{:08X} at swap {}, tracing swap {} ({}/{})", width,
+              height, address, swaps, trace_swap_, traces, max_traces);
 }
 
 bool NativeCommandProcessor::TracingThisFrame() {

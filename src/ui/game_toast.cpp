@@ -34,16 +34,21 @@ ImU32 Faded(ImVec4 c, float alpha) { return ImGui::GetColorU32(ImVec4(c.x, c.y, 
 
 GameToastDialog::GameToastDialog(rex::ui::ImGuiDrawer* drawer,
                                  rex::ui::ImmediateDrawer* immediate_drawer,
-                                 rex::Runtime* runtime, ImFont* font)
+                                 rex::Runtime* runtime, ImFont* font,
+                                 std::function<void(std::function<void()>)> call_in_ui_thread)
     : AchievementNotificationDialog(drawer),
       immediate_drawer_(immediate_drawer),
       font_(font),
-      icon_cache_(immediate_drawer, runtime) {
+      icon_cache_(immediate_drawer, runtime),
+      call_in_ui_thread_(std::move(call_in_ui_thread)) {
   background_ = LoadImage("toast_background.png");
   portrait_ = LoadImage("toast_portrait.png");
+  // The base constructor attached the dialog (created in the UI thread);
+  // stay detached until there is something to show.
+  imgui_drawer()->RemoveDialog(this);
 }
 
-GameToastDialog::~GameToastDialog() = default;
+GameToastDialog::~GameToastDialog() { *alive_ = false; }
 
 GameToastDialog::Image GameToastDialog::LoadImage(const char* name) {
   Image image;
@@ -68,8 +73,23 @@ GameToastDialog::Image GameToastDialog::LoadImage(const char* name) {
 }
 
 void GameToastDialog::Push(const rex::system::AchievementEvent& event) {
-  std::lock_guard<std::mutex> lock(mutex_);
-  queue_.push_back({event, std::nullopt});
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    queue_.push_back({event, std::nullopt});
+    if (attached_ || attach_pending_ || !call_in_ui_thread_) return;
+    attach_pending_ = true;
+  }
+  // Outside the lock: in the UI thread this runs immediately.
+  call_in_ui_thread_([this, alive = alive_] {
+    if (!*alive) return;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      attach_pending_ = false;
+      if (attached_ || queue_.empty()) return;
+      attached_ = true;
+    }
+    imgui_drawer()->AddDialog(this);
+  });
 }
 
 void GameToastDialog::OnDraw(ImGuiIO& io) {
@@ -85,7 +105,15 @@ void GameToastDialog::OnDraw(ImGuiIO& io) {
       if (age < kDisplaySeconds) break;
       queue_.pop_front();
     }
-    if (queue_.empty()) return;
+    if (queue_.empty()) {
+      // Nothing left to show: detach (allowed while drawing) so the window
+      // goes back to presenting only the game's frames.
+      if (attached_) {
+        attached_ = false;
+        imgui_drawer()->RemoveDialog(this);
+      }
+      return;
+    }
     event = queue_.front().event;
   }
   const float alpha =

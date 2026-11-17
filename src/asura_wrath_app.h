@@ -76,8 +76,11 @@ class AsuraWrathApp : public rex::ReXApp {
     if (!imgui_drawer() || !immediate_drawer() || !runtime()) {
       return nullptr;
     }
-    auto toast = std::make_unique<asura::ui::GameToastDialog>(imgui_drawer(), immediate_drawer(),
-                                                              runtime(), toast_font_);
+    auto toast = std::make_unique<asura::ui::GameToastDialog>(
+        imgui_drawer(), immediate_drawer(), runtime(), toast_font_,
+        [context = &app_context()](std::function<void()> function) {
+          context->CallInUIThread(std::move(function));
+        });
     toast_ = toast.get();
     return toast;
   }

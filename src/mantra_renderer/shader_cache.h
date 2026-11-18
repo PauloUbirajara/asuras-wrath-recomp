@@ -36,7 +36,7 @@ class ShaderCache {
   };
 
   // Default location: $MANTRA_SHADER_CACHE, else
-  // ${XDG_CACHE_HOME:-~/.cache}/asura_wrath/mantra_shaders.mshc.
+  // ${XDG_CACHE_HOME:-~/.cache}/asura_wrath_recomp/mantra_shaders.mshc.
   static std::filesystem::path DefaultPath();
 
   bool Load(const std::filesystem::path& path);

@@ -330,9 +330,11 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
     uint64_t fence_ns = 0, draw_ns = 0, copy_ns = 0, swap_ns = 0;
     size_t pipelines = 0;
     uint64_t modules = 0, texture_bytes = 0, buffer_bytes = 0, vertex_bytes = 0;
+    uint64_t thread_cpu_ns = 0;  // GPU thread CPU time at the last swap
     // This stats window.
     uint64_t frames = 0, over_50 = 0, over_100 = 0;
     double max_ms = 0, total_ms = 0, fence_ms = 0, draw_ms = 0, copy_ms = 0, swap_ms = 0;
+    double busy_ms = 0;  // GPU thread CPU time (the rest of "other" is waiting for the game)
   };
   FrameTiming frame_timing_;
   void EndFrameTiming();

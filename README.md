@@ -38,7 +38,7 @@ Translate the game's shaders once (takes about 10 minutes and uses every core).
 Each player generates their own cache, because it is built from the game files:
 
 ```bash
-out/build/linux-amd64-release/mantra_shadergen --game extracted --out ~/.cache/asura_wrath/mantra_shaders.mshc
+out/build/linux-amd64-release/mantra_shadergen --game extracted --out ~/.cache/asura_wrath_recomp/mantra_shaders.mshc
 ```
 
 `MANTRA_SHADER_CACHE=<file>` points the game at a different cache. Optionally,

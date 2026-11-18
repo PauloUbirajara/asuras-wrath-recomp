@@ -23,7 +23,7 @@ std::filesystem::path ShaderCache::DefaultPath() {
   } else {
     return {};
   }
-  return base / "asura_wrath" / "mantra_shaders.mshc";
+  return base / "asura_wrath_recomp" / "mantra_shaders.mshc";
 }
 
 bool ShaderCache::Load(const std::filesystem::path& path) {

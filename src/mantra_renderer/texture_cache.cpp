@@ -615,6 +615,19 @@ bool TextureCache::LoadFromMemory(Texture& texture, const xenos::xe_gpu_texture_
                                                      mip_src, mip_length & ~3u);
   }
   stats_.load_bytes += base_length + mip_length;
+  // Debug: MANTRA_LOG_TEXTURE_LOADS=<min size> logs every load of a texture
+  // at least that wide or tall (e.g. 256), to time how the game streams mips
+  // in (each streamed level is a new load, usually at a new address).
+  static const uint32_t log_loads_min = [] {
+    const char* env = std::getenv("MANTRA_LOG_TEXTURE_LOADS");
+    return env ? uint32_t(std::strtoul(env, nullptr, 10)) : 0u;
+  }();
+  if (log_loads_min && std::max(width, height) >= log_loads_min) {
+    MANTRA_INFO("texture load {:08X}/{:08X} {}x{} fmt {} mips {}..{} ({}x{} resident) {:.1f} KB{}",
+                base_address, mip_address, width, height, uint32_t(fetch.format), mip_min,
+                mip_max, host_width, host_height, (base_length + mip_length) / 1024.0,
+                texture.initialized ? " (reload)" : "");
+  }
 
   // Staging: every level, all layers / slices, tightly packed, 16-byte
   // aligned. Host blocks are the guest blocks, or texels for decoded formats.

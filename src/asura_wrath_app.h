@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <string_view>
 #include <system_error>
 
 #include <rex/logging.h>
@@ -30,7 +31,7 @@ class AsuraWrathApp : public rex::ReXApp {
 
   static std::unique_ptr<rex::ui::WindowedApp> Create(
       rex::ui::WindowedAppContext& ctx) {
-    return std::unique_ptr<AsuraWrathApp>(new AsuraWrathApp(ctx, "asura_wrath",
+    return std::unique_ptr<AsuraWrathApp>(new AsuraWrathApp(ctx, "asura_wrath_recomp",
         PPCImageConfig));
   }
 
@@ -41,6 +42,14 @@ class AsuraWrathApp : public rex::ReXApp {
     if (config.gpu_plugin.empty()) {
       config.gpu_plugin = "mantra";
     }
+
+    // Present with FIFO (vsync) unless the user picked a mode: while any ImGui
+    // dialog is up (the achievement toast, SDK overlays) the presenter repaints
+    // continuously, and with immediate/mailbox that runs uncapped (500-1000
+    // fps), taking GPU time from the game on integrated GPUs. The game itself
+    // runs at 30 fps, so vsync costs nothing.
+    DefaultFlagIfUnset("vulkan_allow_present_mode_immediate", "false");
+    DefaultFlagIfUnset("vulkan_allow_present_mode_mailbox", "false");
 
     // First run: the game finds no save and asks "saved data does not exist.
     // Create saved data in selected storage device?" (default button = yes).
@@ -106,10 +115,45 @@ class AsuraWrathApp : public rex::ReXApp {
   }
   // void OnShutdown() override {}
   void OnConfigurePaths(rex::PathConfig& paths) override {
+    MigrateLegacyFolders(paths);
     user_data_root_path_ = paths.user_data_root;
   }
 
  private:
+  // Sets a flag only if nothing (config, environment, command line) set it.
+  static void DefaultFlagIfUnset(std::string_view name, std::string_view value) {
+    for (auto& entry : rex::cvar::GetRegistry()) {
+      if (entry.name != name) continue;
+      if (entry.source == rex::cvar::Source::kDefault && entry.setter) entry.setter(value);
+      return;
+    }
+    REXLOG_WARN("Flag {} not registered; default not applied", name);
+  }
+
+  // Builds before the rename used the folder name "asura_wrath" (user data
+  // under ~/.local/share, caches under ~/.cache). Move them to the
+  // "asura_wrath_recomp" names once, so saves and the shader cache survive.
+  static void MigrateLegacyFolders(const rex::PathConfig& paths) {
+    auto move_once = [](const std::filesystem::path& to) {
+      if (to.empty() || to.filename() != "asura_wrath_recomp") return;
+      const std::filesystem::path from = to.parent_path() / "asura_wrath";
+      std::error_code ec;
+      if (std::filesystem::exists(to, ec) || !std::filesystem::is_directory(from, ec)) return;
+      std::filesystem::rename(from, to, ec);
+      if (ec) {
+        REXLOG_WARN("Could not move {} to {}: {}", from.string(), to.string(), ec.message());
+      } else {
+        REXLOG_INFO("Moved {} to {}", from.string(), to.string());
+      }
+    };
+    move_once(paths.user_data_root);
+    if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg) {
+      move_once(std::filesystem::path(xdg) / "asura_wrath_recomp");
+    } else if (const char* home = std::getenv("HOME"); home && *home) {
+      move_once(std::filesystem::path(home) / ".cache" / "asura_wrath_recomp");
+    }
+  }
+
   // Debug: ASURA_DUMP_ACHIEVEMENTS=<dir> writes the title's achievement icons
   // (XDBF images, PNG) as <id>.png, the title icon as title.png, and an
   // achievements.tsv (id, image, gamerscore, name, description).

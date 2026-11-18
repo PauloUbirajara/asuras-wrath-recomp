@@ -16,7 +16,7 @@ struct ImFontAtlas;
 namespace asura::ui {
 
 // UI file lookup (.awf fonts, toast images), first match per file:
-// $ASURA_UI_DIR, $XDG_CACHE_HOME/asura_wrath/ui, ~/.cache/asura_wrath/ui,
+// $ASURA_UI_DIR, $XDG_CACHE_HOME/asura_wrath_recomp/ui, ~/.cache/asura_wrath_recomp/ui,
 // the repository's out/assets/ui (extracted game files), then <exe dir>/assets/ui
 // (the project's own art from assets/ui, copied there at build time). Earlier
 // directories override later ones, so a cache copy replaces the shipped art.

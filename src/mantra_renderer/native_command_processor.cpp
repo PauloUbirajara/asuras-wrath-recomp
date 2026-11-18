@@ -10,6 +10,10 @@
 #include <cstdlib>
 #include <cmath>
 #include <cstring>
+#include <ctime>
+#include <functional>
+#include <unordered_map>
+#include <optional>
 #include <span>
 #include <string>
 #include <unordered_set>
@@ -151,10 +155,10 @@ namespace {
 std::filesystem::path PipelineDir() {
   if (const char* dir = std::getenv("MANTRA_PIPELINE_DIR"); dir && *dir) return dir;
   if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg) {
-    return std::filesystem::path(xdg) / "asura_wrath" / "pipelines";
+    return std::filesystem::path(xdg) / "asura_wrath_recomp" / "pipelines";
   }
   if (const char* home = std::getenv("HOME"); home && *home) {
-    return std::filesystem::path(home) / ".cache" / "asura_wrath" / "pipelines";
+    return std::filesystem::path(home) / ".cache" / "asura_wrath_recomp" / "pipelines";
   }
   return {};
 }
@@ -253,6 +257,80 @@ struct ScopedNs {
                          .count());
   }
 };
+
+// CPU time of the calling thread, in nanoseconds.
+uint64_t ThreadCpuNs() {
+  timespec ts{};
+  clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+  return uint64_t(ts.tv_sec) * 1000000000ull + uint64_t(ts.tv_nsec);
+}
+
+// Run time of every thread of the process (from /proc/self/task/*/schedstat,
+// nanoseconds), to name the threads that were busy over an interval.
+struct ThreadTimes {
+  struct Entry {
+    std::string name;
+    uint64_t ns = 0;
+  };
+  std::unordered_map<int, Entry> threads;
+
+  static ThreadTimes Sample() {
+    ThreadTimes out;
+    std::error_code ec;
+    for (const auto& dir : std::filesystem::directory_iterator("/proc/self/task", ec)) {
+      const int tid = std::atoi(dir.path().filename().c_str());
+      Entry entry;
+      if (std::FILE* f = std::fopen((dir.path() / "schedstat").c_str(), "r")) {
+        unsigned long long ns = 0;
+        if (std::fscanf(f, "%llu", &ns) == 1) entry.ns = ns;
+        std::fclose(f);
+      }
+      if (std::FILE* f = std::fopen((dir.path() / "comm").c_str(), "r")) {
+        char name[64] = {};
+        if (std::fgets(name, sizeof(name), f)) {
+          entry.name = name;
+          while (!entry.name.empty() && (entry.name.back() == '\n')) entry.name.pop_back();
+        }
+        std::fclose(f);
+      }
+      out.threads.emplace(tid, std::move(entry));
+    }
+    return out;
+  }
+
+  // "name(tid) N ms" for the `count` busiest threads since `before`, with the
+  // share of `wall_ms` each used.
+  std::string Busiest(const ThreadTimes& before, double wall_ms, size_t count) const {
+    std::vector<std::pair<double, std::string>> busy;
+    for (const auto& [tid, entry] : threads) {
+      const auto it = before.threads.find(tid);
+      const uint64_t prev = it != before.threads.end() ? it->second.ns : 0;
+      const double ms = double(entry.ns - std::min(entry.ns, prev)) / 1e6;
+      if (ms >= 0.5) busy.emplace_back(ms, fmt::format("{}({})", entry.name, tid));
+    }
+    std::sort(busy.begin(), busy.end(), std::greater<>());
+    std::string out;
+    for (size_t i = 0; i < std::min(count, busy.size()); ++i) {
+      out += fmt::format("{}{} {:.0f} ms ({:.0f}%)", i ? ", " : "", busy[i].second,
+                         busy[i].first, 100.0 * busy[i].first / std::max(wall_ms, 1e-3));
+    }
+    return out;
+  }
+};
+
+// MANTRA_THREAD_PROFILE=1: sample all threads every frame so hitches name the
+// busy threads (costs ~0.3 ms per frame). The 5 s report samples regardless.
+bool ThreadProfileEveryFrame() {
+  static const bool enabled = [] {
+    const char* env = std::getenv("MANTRA_THREAD_PROFILE");
+    return env && *env && *env != '0';
+  }();
+  return enabled;
+}
+// Snapshots for the hitch log (every frame, if enabled) and the 5 s report
+// (both taken on the GPU thread).
+ThreadTimes g_frame_threads, g_window_threads;
+std::chrono::steady_clock::time_point g_window_threads_time{};
 }  // namespace
 
 // --- GPU profiling -----------------------------------------------------------
@@ -798,6 +876,32 @@ bool NativeCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
       }
     }
   } restore_constants{*register_file_, saved_constants};
+  // Debug: MANTRA_SKIP_PS_CONST="<ps hash>:<c>=<x>" drops draws with that
+  // pixel shader whose float constant c.x is x (to within 1e-3), e.g. one
+  // light's pass picked out by its colour.
+  static const std::optional<PsConstOverride> skip_rule = []() -> std::optional<PsConstOverride> {
+    const char* env = std::getenv("MANTRA_SKIP_PS_CONST");
+    if (!env || !*env) return std::nullopt;
+    PsConstOverride rule{};
+    char* end;
+    rule.hash = std::strtoull(env, &end, 16);
+    if (*end != ':') return std::nullopt;
+    rule.constant = uint32_t(std::strtoul(end + 1, &end, 10));
+    if (*end != '=' || rule.constant >= 32) return std::nullopt;
+    rule.value[0] = std::strtof(end + 1, nullptr);
+    MANTRA_INFO("skipping draws of PS {:016X} with c{}.x = {:g}", rule.hash, rule.constant,
+                rule.value[0]);
+    return rule;
+  }();
+  if (skip_rule) {
+    auto* ps = static_cast<MantraShader*>(active_pixel_shader());
+    if (ps && ps->cache_entry && ps->cache_entry->exact_hash == skip_rule->hash &&
+        std::abs(register_file_->Get<float>(kPsConstFirst + skip_rule->constant * 4) -
+                 skip_rule->value[0]) < 1e-3f) {
+      if (TracingThisFrame()) MANTRA_INFO("trace: skipped by MANTRA_SKIP_PS_CONST");
+      return true;
+    }
+  }
 
   const xenos::EdramMode edram_mode = register_file_->Get<reg::RB_MODECONTROL>().edram_mode;
   if (edram_mode == xenos::EdramMode::kCopy) {
@@ -1420,13 +1524,21 @@ void NativeCommandProcessor::TraceDraw(xenos::PrimitiveType prim_type, uint32_t 
     MANTRA_INFO("trace:   vs {:016X} fetches{}", vs->cache_entry ? vs->cache_entry->exact_hash : 0,
                 vs->vfetch_debug);
     std::string vs_constants;
-    for (uint32_t i = 0; i < 256; i = i == 31 ? 248 : i + 1) {
+    for (uint32_t i = 0; i < 256; ++i) {
       const uint32_t base = XE_GPU_REG_SHADER_CONSTANT_000_X + i * 4;
+      // c32..c247 only when non-zero (e.g. UE3's light direction in c241).
+      if (i >= 32 && i < 248 && !regs[base] && !regs[base + 1] && !regs[base + 2] &&
+          !regs[base + 3]) {
+        continue;
+      }
       vs_constants += fmt::format(" c{}=({:g} {:g} {:g} {:g})", i, regs.Get<float>(base),
                                   regs.Get<float>(base + 1), regs.Get<float>(base + 2),
                                   regs.Get<float>(base + 3));
     }
     MANTRA_INFO("trace:   vsc{}", vs_constants);
+    const auto tl = regs.Get<reg::PA_SC_WINDOW_SCISSOR_TL>();
+    const auto br = regs.Get<reg::PA_SC_WINDOW_SCISSOR_BR>();
+    MANTRA_INFO("trace:   scissor {},{} - {},{}", tl.tl_x, tl.tl_y, br.br_x, br.br_y);
   }
   // PS float constants c0..c31 (they follow the 256 VS registers).
   std::string constants;
@@ -1854,6 +1966,14 @@ void NativeCommandProcessor::CaptureImage(mantra::TrackedImage& image, VkFormat 
           std::fwrite(bytes, 4, size_t(width) * height, f32);
           std::fclose(f32);
         }
+      } else if (format == VK_FORMAT_R16G16B16A16_SFLOAT) {
+        // Raw RGBA halves: the .ppm clamps HDR (7e3 scenes) to [0, 1].
+        std::filesystem::path raw = path;
+        raw.replace_extension(".rgba16f");
+        if (std::FILE* f16 = std::fopen(raw.c_str(), "wb")) {
+          std::fwrite(bytes, 8, size_t(width) * height, f16);
+          std::fclose(f16);
+        }
       }
       dfn.vkUnmapMemory(device, memory);
     }
@@ -1949,8 +2069,13 @@ void NativeCommandProcessor::EndFrameTiming() {
   const uint64_t texture_bytes = texture_cache_.stats().load_bytes;
   const uint64_t buffer_bytes = buffer_cache_.stats().upload_bytes;
   const uint64_t vertex_bytes = guest_draw_stats_.vertex_bytes;
+  const uint64_t thread_cpu_ns = ThreadCpuNs();
+  ThreadTimes threads;
+  if (ThreadProfileEveryFrame()) threads = ThreadTimes::Sample();
   if (t.last_swap.time_since_epoch().count()) {
     const double total = std::chrono::duration<double, std::milli>(now - t.last_swap).count();
+    const double busy = ms(thread_cpu_ns - t.thread_cpu_ns);
+    t.busy_ms += busy;
     ++t.frames;
     t.total_ms += total;
     t.max_ms = std::max(t.max_ms, total);
@@ -1961,16 +2086,22 @@ void NativeCommandProcessor::EndFrameTiming() {
     t.copy_ms += ms(t.copy_ns);
     t.swap_ms += ms(t.swap_ns);
     // A hitch: log what this frame did (traced/captured frames are slow anyway).
+    // "other": time outside draws/resolves/swap; "gpu thread busy" is the GPU
+    // thread's CPU time over the whole frame, so other minus the busy part not
+    // in draws etc. is roughly waiting for the game to submit.
     if (total > 70.0 && !TracingThisFrame()) {
       MANTRA_INFO("hitch: swap {} took {:.1f} ms (fence waits {:.1f}, draws {:.1f}, resolves "
-                  "{:.1f}, swap {:.1f}, other {:.1f}); new pipelines {}, shader modules {}, "
-                  "texture loads {:.1f} MB, buffer uploads {:.1f} MB, expanded vertices {:.1f} MB",
+                  "{:.1f}, swap {:.1f}, other {:.1f}; gpu thread busy {:.1f}); new pipelines {}, "
+                  "shader modules {}, texture loads {:.1f} MB, buffer uploads {:.1f} MB, "
+                  "expanded vertices {:.1f} MB{}{}",
                   swap_stats_.swaps, total, ms(t.fence_ns), ms(t.draw_ns), ms(t.copy_ns),
-                  ms(t.swap_ns), total - ms(t.draw_ns) - ms(t.copy_ns) - ms(t.swap_ns),
+                  ms(t.swap_ns), total - ms(t.draw_ns) - ms(t.copy_ns) - ms(t.swap_ns), busy,
                   pipelines - t.pipelines, modules - t.modules,
                   (texture_bytes - t.texture_bytes) / 1048576.0,
                   (buffer_bytes - t.buffer_bytes) / 1048576.0,
-                  (vertex_bytes - t.vertex_bytes) / 1048576.0);
+                  (vertex_bytes - t.vertex_bytes) / 1048576.0,
+                  ThreadProfileEveryFrame() ? "; busiest threads: " : "",
+                  ThreadProfileEveryFrame() ? threads.Busiest(g_frame_threads, total, 5) : "");
     }
   }
   t.last_swap = now;
@@ -1980,6 +2111,8 @@ void NativeCommandProcessor::EndFrameTiming() {
   t.texture_bytes = texture_bytes;
   t.buffer_bytes = buffer_bytes;
   t.vertex_bytes = vertex_bytes;
+  t.thread_cpu_ns = thread_cpu_ns;
+  if (ThreadProfileEveryFrame()) g_frame_threads = std::move(threads);
 }
 
 void NativeCommandProcessor::ReportSwapStats() {
@@ -2012,10 +2145,20 @@ void NativeCommandProcessor::ReportSwapStats() {
                 t.total_ms / n, t.max_ms, t.over_50, t.over_100, t.fence_ms / n, t.draw_ms / n,
                 t.copy_ms / n, t.swap_ms / n,
                 (t.total_ms - t.draw_ms - t.copy_ms - t.swap_ms) / n);
+    // Where the CPU went: the GPU thread's share, then the busiest threads.
+    const ThreadTimes threads = ThreadTimes::Sample();
+    if (g_window_threads_time.time_since_epoch().count()) {
+      const double wall = std::chrono::duration<double, std::milli>(now - g_window_threads_time).count();
+      MANTRA_INFO("cpu: gpu thread busy {:.1f} ms per frame ({:.0f}%); busiest threads: {}",
+                  t.busy_ms / n, 100.0 * t.busy_ms / std::max(t.total_ms, 1e-3),
+                  threads.Busiest(g_window_threads, wall, 6));
+    }
+    g_window_threads = threads;
+    g_window_threads_time = now;
     ReportGpuProfile(double(t.frames));
     draw_pipelines_.SaveCacheIfChanged();
     t.frames = t.over_50 = t.over_100 = 0;
-    t.max_ms = t.total_ms = t.fence_ms = t.draw_ms = t.copy_ms = t.swap_ms = 0;
+    t.max_ms = t.total_ms = t.fence_ms = t.draw_ms = t.copy_ms = t.swap_ms = t.busy_ms = 0;
   }
   MANTRA_INFO("  presented {} from resolves, {} from guest memory; draws {}, resolves {} "
               "(failed {}, color copies {}, depth copies {}, skipped {}, unsupported dest {}), "

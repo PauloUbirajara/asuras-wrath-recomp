@@ -199,10 +199,10 @@ std::vector<std::filesystem::path> GameUiDirs() {
   std::vector<std::filesystem::path> dirs;
   if (const char* dir = std::getenv("ASURA_UI_DIR"); dir && *dir) dirs.emplace_back(dir);
   if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg) {
-    dirs.push_back(std::filesystem::path(xdg) / "asura_wrath" / "ui");
+    dirs.push_back(std::filesystem::path(xdg) / "asura_wrath_recomp" / "ui");
   }
   if (const char* home = std::getenv("HOME"); home && *home) {
-    dirs.push_back(std::filesystem::path(home) / ".cache" / "asura_wrath" / "ui");
+    dirs.push_back(std::filesystem::path(home) / ".cache" / "asura_wrath_recomp" / "ui");
   }
   std::error_code ec;
   const auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);

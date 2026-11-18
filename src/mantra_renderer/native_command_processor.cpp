@@ -2275,6 +2275,9 @@ Shader* NativeCommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32
                  dword_count);
     DumpShader(hash, is_pixel, host_address, byte_count);
     lookup = shader_cache_.Find(host_address, byte_count, is_pixel);
+    if (lookup.match != mantra::ShaderCache::Match::kExact) {
+      KeepForNextCacheBuild(hash, is_pixel, host_address, byte_count);
+    }
     switch (lookup.match) {
       case mantra::ShaderCache::Match::kExact: ++shader_stats_.cache_exact; break;
       case mantra::ShaderCache::Match::kNormalized: ++shader_stats_.cache_normalized; break;
@@ -2384,6 +2387,44 @@ void NativeCommandProcessor::DumpShader(uint64_t hash, bool is_pixel, const uint
   std::fwrite(microcode, 1, byte_count, file);
   std::fclose(file);
   ++shader_stats_.dumped;
+}
+
+void NativeCommandProcessor::KeepForNextCacheBuild(uint64_t hash, bool is_pixel,
+                                                   const uint32_t* microcode, size_t byte_count) {
+  // Programs the D3D runtime patched at draw time (vertex formats, export
+  // swizzles) only exist here, never in the game files: a cache built from
+  // the files alone has only their unpatched originals (normalized matches,
+  // which can draw wrong or not at all, e.g. the menu text). Kept next to the
+  // cache, where the launcher's shader build reads them (mantra_shadergen
+  // --dumps) to translate them exactly.
+  static const std::filesystem::path dir = [] {
+    const auto cache = mantra::ShaderCache::DefaultPath();
+    return cache.empty() ? cache : cache.parent_path() / "shader_dumps";
+  }();
+  if (dir.empty()) {
+    return;
+  }
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  const std::filesystem::path path =
+      dir / fmt::format("{}_{:016X}_{}.mc", is_pixel ? "ps" : "vs", hash, byte_count / 4);
+  if (std::filesystem::exists(path, ec)) {
+    return;
+  }
+  // Written under a temporary name, so a build never reads half a file.
+  std::filesystem::path temporary = path;
+  temporary += ".tmp";
+  if (std::FILE* file = std::fopen(temporary.c_str(), "wb")) {
+    const bool ok = std::fwrite(microcode, 1, byte_count, file) == byte_count;
+    std::fclose(file);
+    if (ok) {
+      std::filesystem::rename(temporary, path, ec);
+      MANTRA_INFO("shader {:016X} is not in the cache exactly; kept for the next cache build", hash);
+      return;
+    }
+  }
+  std::filesystem::remove(temporary, ec);
+  MANTRA_WARN_ONCE("cannot keep shaders for the next cache build in {}", dir.string());
 }
 
 // --- Guest shader constants ---------------------------------------------------

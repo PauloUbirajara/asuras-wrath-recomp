@@ -409,6 +409,9 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
 
   // Shader capture (see LoadShader / MANTRA_SHADER_DUMP).
   void DumpShader(uint64_t hash, bool is_pixel, const uint32_t* microcode, size_t byte_count);
+  // Non-exact cache matches, into <cache dir>/shader_dumps for the next build.
+  void KeepForNextCacheBuild(uint64_t hash, bool is_pixel, const uint32_t* microcode,
+                             size_t byte_count);
   struct ShaderStats {
     uint64_t loads = 0;
     uint64_t unique = 0;

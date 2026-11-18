@@ -123,6 +123,8 @@ The mantra shader cache lives in `~/.cache/asura_wrath_recomp/mantra_shaders.msh
 mantra_shadergen --game extracted --out ~/.cache/asura_wrath_recomp/mantra_shaders.mshc
 ```
 
+Some shaders only exist once the game patches them at runtime (e.g. the menu text). mantra keeps those in `~/.cache/asura_wrath_recomp/shader_dumps/` while you play; **Graphics** then says how many are missing, and **Rebuild** adds them (from the command line: `--dumps ~/.cache/asura_wrath_recomp/shader_dumps`, repeatable).
+
 ---
 
 ## 5. Run
@@ -156,7 +158,7 @@ The launcher opens first, in a window:
 
 - **Controls**: *Controller* tab (live test of buttons, sticks and triggers, button remapping, stick deadzones, 0% by default) and *Keyboard* tab (play with the keyboard, mouse camera, key rebinding, and the overlay keys F3/F4/F7/`).
 - **Achievements**: the list (read from your `default.xex`) and your unlocks, newest first, as a list or a grid, filtered by all / unlocked / locked.
-- **Saves**: saves per profile, backups (back up, restore, delete). The game has one save per profile and loads it itself; restoring a backup switches saves.
+- **Saves**: your save (last saved, size, folder and its files), open its folder or delete it.
 - **Graphics**: GPU (Automatic shows which one it picks), VSync, fullscreen, window size, how the 16:9 picture fills wide screens (fit / fill / stretch), shader cache.
 - **Settings**: game folder (or `.iso`), language (English, Japanese, German, French, Spanish, Italian) for the game, the achievements and the launcher itself.
 

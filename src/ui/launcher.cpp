@@ -338,13 +338,41 @@ std::filesystem::path ShaderCachePath() {
   return root.empty() ? root : root / "mantra_shaders.mshc";
 }
 
+std::vector<std::filesystem::path> ShaderDumpDirs() {
+  std::vector<std::filesystem::path> dirs;
+  const auto cache = ShaderCachePath();
+  if (!cache.empty()) dirs.push_back(cache.parent_path() / "shader_dumps");
+  // Development: the repository's dumps (MANTRA_SHADER_DUMP=out/mantra_dumps),
+  // from out/build/<preset>/.
+  std::error_code ec;
+  const auto repo = rex::filesystem::GetExecutableFolder().parent_path().parent_path() /
+                    "mantra_dumps";
+  if (std::filesystem::is_directory(repo, ec)) dirs.push_back(repo);
+  return dirs;
+}
+
+size_t ShadersNotInCache() {
+  std::error_code ec;
+  const auto cache = ShaderCachePath();
+  const auto built = std::filesystem::last_write_time(cache, ec);
+  if (ec) return 0;
+  size_t count = 0;
+  for (const auto& dir : ShaderDumpDirs()) {
+    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+      if (entry.path().extension() == ".mc" && entry.last_write_time(ec) > built) ++count;
+    }
+  }
+  return count;
+}
+
 bool HaveGameFonts() { return HaveExtractedUiFonts(); }
 
 // --- Shader cache build --------------------------------------------------------
 
 void LauncherDialog::ShaderBuild::Start(const std::filesystem::path& tool,
                                         const std::filesystem::path& game,
-                                        const std::filesystem::path& out) {
+                                        const std::filesystem::path& out,
+                                        const std::vector<std::filesystem::path>& dumps) {
   Stop();
   std::error_code ec;
   std::filesystem::create_directories(out.parent_path(), ec);
@@ -359,10 +387,17 @@ void LauncherDialog::ShaderBuild::Start(const std::filesystem::path& tool,
   posix_spawn_file_actions_adddup2(&actions, fds[1], STDERR_FILENO);
   posix_spawn_file_actions_addclose(&actions, fds[0]);
   const std::string tool_s = tool.string(), game_s = game.string(), out_s = out.string();
-  const char* argv[] = {tool_s.c_str(), "--game", game_s.c_str(), "--out", out_s.c_str(), nullptr};
+  std::vector<std::string> dump_s;
+  for (const auto& dir : dumps) dump_s.push_back(dir.string());
+  std::vector<const char*> argv = {tool_s.c_str(), "--game", game_s.c_str(), "--out", out_s.c_str()};
+  for (const auto& dir : dump_s) {
+    argv.push_back("--dumps");
+    argv.push_back(dir.c_str());
+  }
+  argv.push_back(nullptr);
   pid_t child = -1;
   const int rc = posix_spawn(&child, tool_s.c_str(), &actions, nullptr,
-                             const_cast<char* const*>(argv), environ);
+                             const_cast<char* const*>(argv.data()), environ);
   posix_spawn_file_actions_destroy(&actions);
   close(fds[1]);
   if (rc != 0) {
@@ -554,11 +589,11 @@ LauncherDialog::LauncherDialog(rex::ui::ImGuiDrawer* drawer,
       on_relaunch_(std::move(on_relaunch)) {
   fonts_at_start_ = HaveGameFonts();
   SetLauncherLanguage(settings_.language);
-  logo_ = LoadImage(GameUiFile("launcher_logo.png"));
-  panel_ = LoadImage(GameUiFile("launcher_panel.png"));
-  // The game's title art; until there is one, the app icon.
+  logo_ = LoadImage(GameUiFile("logo.png"));
+  if (!logo_.texture) logo_ = LoadImage(GameUiFile("launcher_logo.png"));
+  panel_ = LoadImage(GameUiFile("launcher_background.png"));
+  button_ = LoadImage(GameUiFile("menu_button.png"), true);
   title_ = LoadImage(GameUiFile("launcher_title.png"));
-  if (!title_.texture) title_ = LoadImage(GameUiFile("icon.png"));
   std::snprintf(game_data_buffer_, sizeof(game_data_buffer_), "%s", settings_.game_data.c_str());
   // GPUs in the order the SDK numbers them (vulkan_device), and the one it
   // picks on its own: the first with the most of the preferred features
@@ -609,7 +644,7 @@ LauncherDialog::~LauncherDialog() {
   if (pad_subsystem_) SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
 }
 
-LauncherDialog::Image LauncherDialog::LoadImage(const std::filesystem::path& path) {
+LauncherDialog::Image LauncherDialog::LoadImage(const std::filesystem::path& path, bool repeat) {
   Image image;
   std::ifstream file(path, std::ios::binary);
   if (!file || !immediate_drawer_) return image;
@@ -618,10 +653,26 @@ LauncherDialog::Image LauncherDialog::LoadImage(const std::filesystem::path& pat
   unsigned char* rgba = stbi_load_from_memory(bytes.data(), int(bytes.size()), &w, &h, &channels, 4);
   if (!rgba) return image;
   image.texture = immediate_drawer_->CreateTexture(
-      uint32_t(w), uint32_t(h), rex::ui::ImmediateTextureFilter::kLinear, false, rgba);
+      uint32_t(w), uint32_t(h), rex::ui::ImmediateTextureFilter::kLinear, repeat, rgba);
+  // Bounds of the visible pixels, so art with transparent margins (a logo)
+  // can be laid out by what shows.
+  int x0 = w, y0 = h, x1 = -1, y1 = -1;
+  for (int y = 0; y < h; ++y) {
+    for (int x = 0; x < w; ++x) {
+      if (rgba[(size_t(y) * w + x) * 4 + 3] < 8) continue;
+      x0 = std::min(x0, x);
+      x1 = std::max(x1, x);
+      y0 = std::min(y0, y);
+      y1 = std::max(y1, y);
+    }
+  }
   stbi_image_free(rgba);
   image.width = float(w);
   image.height = float(h);
+  if (x1 >= x0 && y1 >= y0) {
+    image.uv0 = ImVec2(float(x0) / w, float(y0) / h);
+    image.uv1 = ImVec2(float(x1 + 1) / w, float(y1 + 1) / h);
+  }
   return image;
 }
 
@@ -863,12 +914,33 @@ ImFont* LauncherDialog::HeadingFont() const {
 }
 
 bool LauncherDialog::SidebarButton(const char* label, bool selected, float width, float height) {
-  ImGui::PushStyleColor(ImGuiCol_Button, selected ? kButtonSelected : kButton);
-  ImGui::PushStyleColor(ImGuiCol_ButtonHovered, selected ? kButtonSelected : kButtonHover);
-  ImGui::PushStyleColor(ImGuiCol_ButtonActive, kButtonSelected);
-  ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.92f, 0.90f, 0.86f, 1.0f));
+  if (button_.texture) {
+    // The toast's band, scaled to the button's height and repeated along it
+    // (it loops horizontally); warm when selected, brighter when hovered.
+    const ImVec2 at = ImGui::GetCursorScreenPos();
+    const ImVec2 to(at.x + width, at.y + height);
+    const bool hovered = ImGui::IsMouseHoveringRect(at, to) && ImGui::IsWindowHovered();
+    const float repeat = width / (button_.width * height / std::max(button_.height, 1.0f));
+    const ImVec4 tint = selected  ? ImVec4(1.00f, 0.78f, 0.60f, 1.0f)
+                        : hovered ? ImVec4(1.00f, 1.00f, 1.00f, 1.0f)
+                                  : ImVec4(0.80f, 0.80f, 0.80f, 1.0f);
+    ImGui::GetWindowDrawList()->AddImage(reinterpret_cast<ImTextureID>(button_.texture.get()), at,
+                                         to, ImVec2(0, 0), ImVec2(repeat, 1), U32(tint));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.06f));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));
+  } else {
+    ImGui::PushStyleColor(ImGuiCol_Button, selected ? kButtonSelected : kButton);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, selected ? kButtonSelected : kButtonHover);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, kButtonSelected);
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.32f, 0.32f, 0.34f, 1.0f));
+  }
+  // Light text with a shadow-like weight: readable on the dark band.
+  ImGui::PushStyleColor(ImGuiCol_Text, selected ? ImVec4(1.0f, 0.93f, 0.84f, 1.0f)
+                                                : ImVec4(0.92f, 0.90f, 0.86f, 1.0f));
   const bool clicked = ImGui::Button(label, ImVec2(width, height));
-  ImGui::PopStyleColor(4);
+  ImGui::PopStyleColor(5);
   return clicked;
 }
 
@@ -897,12 +969,23 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
                                   clear, clear, solid, solid);
     y = pos.y + h * 0.62f;
   }
+  const char* sub = "RECOMPILED";
+  const float sub_size = 12.0f * scale;
   if (logo_.texture) {
-    const float w = size.x - 24 * scale;
-    const float h = w * logo_.height / std::max(logo_.width, 1.0f);
-    draw->AddImage(reinterpret_cast<ImTextureID>(logo_.texture.get()),
-                   ImVec2(pos.x + 12 * scale, y), ImVec2(pos.x + 12 * scale + w, y + h));
-    y += h + 30 * scale;
+    // The visible part of the logo, as wide as the sidebar allows.
+    const float vis_w = (logo_.uv1.x - logo_.uv0.x) * logo_.width;
+    const float vis_h = (logo_.uv1.y - logo_.uv0.y) * logo_.height;
+    const float w = size.x - 28 * scale;
+    const float h = std::min(w * vis_h / std::max(vis_w, 1.0f), 130 * scale);
+    const float draw_w = h * vis_w / std::max(vis_h, 1.0f);
+    const float x = pos.x + (size.x - draw_w) * 0.5f;
+    draw->AddImage(reinterpret_cast<ImTextureID>(logo_.texture.get()), ImVec2(x, y),
+                   ImVec2(x + draw_w, y + h), logo_.uv0, logo_.uv1);
+    y += h + 4 * scale;
+    const ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(sub_size, FLT_MAX, 0, sub);
+    draw->AddText(ImGui::GetFont(), sub_size, ImVec2(pos.x + (size.x - ts.x) * 0.5f, y),
+                  U32(kAccent), sub);
+    y += ts.y + 36 * scale;
   } else {
     ImFont* font = title_font_ ? title_font_ : ImGui::GetFont();
     for (const char* text : {"ASURA'S", "WRATH"}) {
@@ -913,8 +996,6 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
       draw->AddText(font, title_size, at, IM_COL32(240, 236, 228, 255), text);
       y += ts.y;
     }
-    const char* sub = "RECOMPILED";
-    const float sub_size = 12.0f * scale;
     const ImVec2 ts = ImGui::GetFont()->CalcTextSizeA(sub_size, FLT_MAX, 0, sub);
     draw->AddText(ImGui::GetFont(), sub_size, ImVec2(pos.x + (size.x - ts.x) * 0.5f, y + 2 * scale),
                   U32(kAccent), sub);
@@ -997,9 +1078,43 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
 void LauncherDialog::DrawPanel(const ImVec2& pos, const ImVec2& size, float scale) {
   ImDrawList* draw = ImGui::GetWindowDrawList();
   const ImVec2 end(pos.x + size.x, pos.y + size.y);
-  const float band = std::floor(size.y * 0.08f);
+  float band = std::floor(size.y * 0.08f);
+  // Where the page goes: between the bands, or inside the background's
+  // inner panel.
+  ImVec2 content_min(pos.x, pos.y + band), content_max(end.x, end.y - band);
+  float title_x = pos.x + 36 * scale;
   if (panel_.texture) {
-    draw->AddImage(reinterpret_cast<ImTextureID>(panel_.texture.get()), pos, end);
+    // Nine-slice: the frame (outside the slice lines, in image pixels) is
+    // scaled uniformly, so it keeps its look at any window size; only the
+    // edges' middles and the center stretch.
+    constexpr float kSlice[4] = {200, 140, 200, 140};          // left, top, right, bottom
+    constexpr float kInner[4] = {222, 165, 1778, 952};         // the inner panel (2000x1125)
+    const float iw = panel_.width, ih = panel_.height;
+    const float k = std::min(size.x / iw, size.y / ih) * 0.8f;
+    const float xs[4] = {pos.x, pos.x + kSlice[0] * k, end.x - kSlice[2] * k, end.x};
+    const float ys[4] = {pos.y, pos.y + kSlice[1] * k, end.y - kSlice[3] * k, end.y};
+    const float us[4] = {0, kSlice[0] / iw, 1 - kSlice[2] / iw, 1};
+    const float vs[4] = {0, kSlice[1] / ih, 1 - kSlice[3] / ih, 1};
+    const ImTextureID id = reinterpret_cast<ImTextureID>(panel_.texture.get());
+    for (int j = 0; j < 3; ++j) {
+      for (int i = 0; i < 3; ++i) {
+        draw->AddImage(id, ImVec2(xs[i], ys[j]), ImVec2(xs[i + 1], ys[j + 1]), ImVec2(us[i], vs[j]),
+                       ImVec2(us[i + 1], vs[j + 1]));
+      }
+    }
+    // Image pixel -> screen, through the same slices.
+    auto map = [](float v, float image_size, float slice0, float slice1, const float* screen) {
+      if (v <= slice0) return screen[0] + (screen[1] - screen[0]) * v / slice0;
+      if (v >= image_size - slice1)
+        return screen[2] + (screen[3] - screen[2]) * (v - (image_size - slice1)) / slice1;
+      return screen[1] + (screen[2] - screen[1]) * (v - slice0) / (image_size - slice0 - slice1);
+    };
+    content_min = ImVec2(map(kInner[0], iw, kSlice[0], kSlice[2], xs),
+                         map(kInner[1], ih, kSlice[1], kSlice[3], ys));
+    content_max = ImVec2(map(kInner[2], iw, kSlice[0], kSlice[2], xs),
+                         map(kInner[3], ih, kSlice[1], kSlice[3], ys));
+    band = content_min.y - pos.y;
+    title_x = content_min.x;
   } else {
     draw->AddRectFilled(pos, end, U32(kPanelBand));
     draw->AddRectFilled(ImVec2(pos.x, pos.y + band), ImVec2(end.x, end.y - band), U32(kPanel));
@@ -1019,13 +1134,14 @@ void LauncherDialog::DrawPanel(const ImVec2& pos, const ImVec2& size, float scal
     ImFont* font = HeadingFont() ? HeadingFont() : ImGui::GetFont();
     const float title_size = std::min(28.0f * scale, band * 0.6f);
     const ImVec2 ts = font->CalcTextSizeA(title_size, FLT_MAX, 0, title);
-    draw->AddText(font, title_size, ImVec2(pos.x + pad, pos.y + std::floor((band - ts.y) * 0.5f)),
+    draw->AddText(font, title_size, ImVec2(title_x, pos.y + std::floor((band - ts.y) * 0.5f)),
                   U32(kPanelText), title);
   }
 
   // The page, between the bands.
   const float inner = 22 * scale;
-  ImGui::SetCursorScreenPos(ImVec2(pos.x + pad, pos.y + band + inner));
+  const float side = panel_.texture ? inner : pad;
+  ImGui::SetCursorScreenPos(ImVec2(content_min.x + side, content_min.y + inner));
   ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
   ImGui::PushStyleColor(ImGuiCol_Text, kPanelText);
   ImGui::PushStyleColor(ImGuiCol_TextDisabled, kPanelTextDim);
@@ -1056,7 +1172,8 @@ void LauncherDialog::DrawPanel(const ImVec2& pos, const ImVec2& size, float scal
   ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(10 * scale, 9 * scale));
   // The game font draws smaller than ImGui's for the same size.
   ImGui::PushFont(font_, (font_ ? 18.0f : 15.0f) * scale);
-  if (ImGui::BeginChild("##panel", ImVec2(size.x - 2 * pad, size.y - 2 * band - 2 * inner))) {
+  if (ImGui::BeginChild("##panel", ImVec2(content_max.x - content_min.x - 2 * side,
+                                          content_max.y - content_min.y - 2 * inner))) {
     switch (page_) {
       case Page::kControls: DrawControls(scale); break;
       case Page::kAchievements: DrawAchievements(scale); break;
@@ -1956,6 +2073,17 @@ void LauncherDialog::DrawGraphics(float scale) {
     ImGui::TextUnformatted(T("Building..."));
   } else if (have_cache) {
     ImGui::Text(T("Ready (%.0f MB)"), double(std::filesystem::file_size(cache, ec)) / 1048576.0);
+    // Shaders the game patched while playing (checked once a second).
+    const double now = ImGui::GetTime();
+    if (now - shaders_checked_at_ > 1.0) {
+      shaders_checked_at_ = now;
+      shaders_not_in_cache_ = ShadersNotInCache();
+    }
+    if (shaders_not_in_cache_) {
+      ImGui::SetCursorPosX(label_w);
+      ImGui::TextDisabled(T("%d shaders seen while playing are missing: rebuild to add them."),
+                          int(shaders_not_in_cache_));
+    }
   } else {
     ImGui::TextUnformatted(T("Missing: the game will stutter heavily without it"));
   }
@@ -1965,7 +2093,7 @@ void LauncherDialog::DrawGraphics(float scale) {
   ImGui::BeginDisabled(state == ShaderBuild::kRunning || !have_tool || !GameDataValid() ||
                        iso_extract_.state == IsoExtract::kRunning);
   if (ImGui::Button(have_cache ? T("Rebuild") : T("Build (about 10 minutes)"))) {
-    shader_build_.Start(tool, settings_.game_data, cache);
+    shader_build_.Start(tool, settings_.game_data, cache, ShaderDumpDirs());
   }
   ImGui::EndDisabled();
   if (state != ShaderBuild::kIdle) {
@@ -2093,28 +2221,6 @@ bool IsProfileFolder(const std::filesystem::directory_entry& entry) {
          std::all_of(name.begin(), name.end(), [](unsigned char c) { return std::isxdigit(c); });
 }
 
-std::string Stamp() {
-  const std::time_t now = std::time(nullptr);
-  std::tm tm{};
-  localtime_r(&now, &tm);
-  char text[32];
-  std::strftime(text, sizeof(text), "%Y-%m-%d_%H-%M-%S", &tm);
-  return text;
-}
-
-// Moves `from` to `to` (copies and removes across file systems).
-bool MovePath(const std::filesystem::path& from, const std::filesystem::path& to) {
-  std::error_code ec;
-  std::filesystem::create_directories(to.parent_path(), ec);
-  std::filesystem::rename(from, to, ec);
-  if (!ec) return true;
-  ec.clear();
-  std::filesystem::copy(from, to, std::filesystem::copy_options::recursive, ec);
-  if (ec) return false;
-  std::filesystem::remove_all(from, ec);
-  return !ec;
-}
-
 constexpr const char* kTitleFolder = "43430817";
 constexpr const char* kSaveType = "00000001";  // XContentType saved game
 
@@ -2123,7 +2229,6 @@ constexpr const char* kSaveType = "00000001";  // XContentType saved game
 void LauncherDialog::ScanSaves() {
   saves_scanned_ = true;
   profiles_.clear();
-  backups_.clear();
   std::error_code ec;
   for (const auto& entry : std::filesystem::directory_iterator(user_data_root_, ec)) {
     if (!IsProfileFolder(entry)) continue;
@@ -2135,60 +2240,35 @@ void LauncherDialog::ScanSaves() {
       SaveInfo info;
       info.name = save.path().filename().string();
       info.path = save.path();
-      info.display_name = HeaderDisplayName(entry.path() / kTitleFolder / "Headers" / kSaveType /
-                                            (info.name + ".header"));
+      info.header = entry.path() / kTitleFolder / "Headers" / kSaveType / (info.name + ".header");
+      info.display_name = HeaderDisplayName(info.header);
       auto newest = std::filesystem::file_time_type::min();
       info.bytes = FolderBytes(save.path(), &newest);
       info.modified = FormatTime(newest);
+      for (const auto& file : std::filesystem::directory_iterator(save.path(), ec)) {
+        if (file.is_regular_file(ec)) {
+          info.files.emplace_back(file.path().filename().string(), file.file_size(ec));
+        }
+      }
+      std::sort(info.files.begin(), info.files.end());
       profile.saves.push_back(std::move(info));
     }
     ec.clear();
     if (!profile.saves.empty()) profiles_.push_back(std::move(profile));
   }
-  for (const auto& entry :
-       std::filesystem::directory_iterator(user_data_root_ / "backups", ec)) {
-    if (!entry.is_directory()) continue;
-    backups_.push_back(
-        {entry.path().filename().string(), entry.path(), FolderBytes(entry.path(), nullptr)});
-  }
-  std::sort(backups_.begin(), backups_.end(),
-            [](const BackupInfo& a, const BackupInfo& b) { return a.name > b.name; });
-}
-
-bool LauncherDialog::BackUpSaves(const std::string& label, std::string* error) {
-  const auto dest = user_data_root_ / "backups" / (label.empty() ? Stamp() : Stamp() + "_" + label);
-  std::error_code ec;
-  bool any = false;
-  for (const auto& entry : std::filesystem::directory_iterator(user_data_root_, ec)) {
-    if (!IsProfileFolder(entry)) continue;
-    const auto title = entry.path() / kTitleFolder;
-    if (!std::filesystem::is_directory(title, ec)) continue;
-    const auto to = dest / entry.path().filename() / kTitleFolder;
-    std::filesystem::create_directories(to, ec);
-    std::filesystem::copy(title, to, std::filesystem::copy_options::recursive, ec);
-    if (ec) {
-      if (error) *error = T("Backup failed: ") + ec.message();
-      return false;
-    }
-    any = true;
-  }
-  const auto unlocks = user_data_root_ / "achievements" / (std::string(kTitleFolder) + ".toml");
-  if (std::filesystem::is_regular_file(unlocks, ec)) {
-    std::filesystem::create_directories(dest / "achievements", ec);
-    std::filesystem::copy_file(unlocks, dest / "achievements" / unlocks.filename(), ec);
-    any = true;
-  }
-  if (!any && error) *error = T("There is nothing to back up yet.");
-  return any;
 }
 
 void LauncherDialog::DrawSaves(float scale) {
   if (!saves_scanned_) ScanSaves();
   if (!achievements_loaded_) LoadAchievements();
-
-  ImGui::TextDisabled("%s", user_data_root_.string().c_str());
-  if (ImGui::Button(T("Open the saves folder"))) {
-    const std::string dir = user_data_root_.string();
+  const float label_w = 200 * scale;
+  auto label = [&](const char* text) {
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(text);
+    ImGui::SameLine(label_w);
+  };
+  auto open_folder = [&](const std::filesystem::path& folder) {
+    const std::string dir = folder.string();
     const char* argv[] = {"xdg-open", dir.c_str(), nullptr};
     pid_t pid = -1;
     if (posix_spawnp(&pid, "xdg-open", nullptr, nullptr, const_cast<char* const*>(argv),
@@ -2197,144 +2277,79 @@ void LauncherDialog::DrawSaves(float scale) {
     } else {
       save_message_ = T("Could not run xdg-open.");
     }
-  }
-  ImGui::SameLine();
-  if (ImGui::Button(T("Back up now"))) {
-    std::string error;
-    save_message_ = BackUpSaves("", &error) ? std::string(T("Backed up.")) : error;
-    saves_scanned_ = false;
-  }
-  if (!achievements_.empty()) {
-    int unlocked = 0;
-    for (const auto& a : achievements_) unlocked += a.unlocked_filetime != 0;
-    ImGui::SameLine();
-    ImGui::TextDisabled(T("Achievements: %d / %d unlocked (all profiles)"), unlocked,
-                        int(achievements_.size()));
-  }
+  };
+
   ImGui::PushTextWrapPos(0);
-  ImGui::TextDisabled("%s", T("The game keeps one save per profile, with all your progress, and "
-                              "loads it by itself. To play another save, restore it from Backups "
-                              "(the current one is backed up first)."));
+  ImGui::TextDisabled("%s", T("The game keeps one save with all your progress and loads it by "
+                              "itself."));
   ImGui::PopTextWrapPos();
   if (!save_message_.empty()) ImGui::TextUnformatted(save_message_.c_str());
-
-  // A button that needs a second click to act.
-  auto confirm_button = [&](const char* label, const std::string& key) {
-    const bool armed = confirm_ == key;
-    if (armed) ImGui::PushStyleColor(ImGuiCol_Button, kAccent);
-    const bool clicked = ImGui::Button((std::string(armed ? T("Click again to confirm") : label) + "##" + key).c_str());
-    if (armed) ImGui::PopStyleColor();
-    if (!clicked) return false;
-    if (armed) {
-      confirm_.clear();
-      return true;
-    }
-    confirm_ = key;
-    return false;
-  };
-  const ImGuiTableFlags table_flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH;
 
   if (profiles_.empty()) {
     SubHeading(HeadingFont(), T("Saved games"), scale);
     ImGui::TextWrapped("%s", T("No saves yet. The game makes one when you start a new game."));
-  }
-  for (const auto& profile : profiles_) {
-    SubHeading(HeadingFont(), (std::string(T("Profile ")) + profile.xuid).c_str(), scale);
-    if (!ImGui::BeginTable(profile.xuid.c_str(), 4, table_flags)) continue;
-    ImGui::TableSetupColumn(T("Save"));
-    ImGui::TableSetupColumn(T("Size"), ImGuiTableColumnFlags_WidthFixed, 90 * scale);
-    ImGui::TableSetupColumn(T("Last saved"), ImGuiTableColumnFlags_WidthFixed, 160 * scale);
-    ImGui::TableSetupColumn("##actions", ImGuiTableColumnFlags_WidthFixed, 220 * scale);
-    HeadersRow();
-    for (const auto& save : profile.saves) {
-      ImGui::PushID(save.path.string().c_str());
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
-      ImGui::AlignTextToFramePadding();
-      ImGui::TextUnformatted(save.display_name.empty() ? save.name.c_str()
-                                                       : save.display_name.c_str());
-      ImGui::TableNextColumn();
-      ImGui::TextUnformatted(FormatBytes(save.bytes).c_str());
-      ImGui::TableNextColumn();
-      ImGui::TextUnformatted(save.modified.c_str());
-      ImGui::TableNextColumn();
-      if (confirm_button(T("Delete"), "delete:" + save.path.string())) {
-        // Moved into a backup rather than removed.
-        const auto dest = user_data_root_ / "backups" / (Stamp() + "_deleted") / profile.xuid /
-                          kTitleFolder;
-        const auto header = save.path.parent_path().parent_path() / "Headers" / kSaveType /
-                            (save.name + ".header");
-        bool ok = MovePath(save.path, dest / kSaveType / save.name);
-        std::error_code ec;
-        if (ok && std::filesystem::exists(header, ec)) {
-          ok = MovePath(header, dest / "Headers" / kSaveType / header.filename());
-        }
-        save_message_ = ok ? T("Deleted (kept in Backups).") : T("Could not delete the save.");
-        saves_scanned_ = false;
-      }
-      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", T("Moves the save to Backups"));
-      ImGui::PopID();
-    }
-    ImGui::EndTable();
+    label(T("Folder"));
+    ImGui::TextUnformatted(user_data_root_.string().c_str());
+    ImGui::SetCursorPosX(label_w);
+    if (ImGui::Button(T("Open the folder"))) open_folder(user_data_root_);
+    return;
   }
 
-  SubHeading(HeadingFont(), T("Backups"), scale);
-  if (backups_.empty()) {
-    ImGui::TextDisabled("%s", T("No backups yet."));
-  } else if (ImGui::BeginTable("##backups", 3, table_flags)) {
-    ImGui::TableSetupColumn(T("Backup"));
-    ImGui::TableSetupColumn(T("Size"), ImGuiTableColumnFlags_WidthFixed, 90 * scale);
-    ImGui::TableSetupColumn("##actions", ImGuiTableColumnFlags_WidthFixed, 380 * scale);
-    HeadersRow();
-    for (const auto& backup : backups_) {
-      ImGui::PushID(backup.path.string().c_str());
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
-      ImGui::AlignTextToFramePadding();
-      ImGui::TextUnformatted(backup.name.c_str());
-      ImGui::TableNextColumn();
-      ImGui::TextUnformatted(FormatBytes(backup.bytes).c_str());
-      ImGui::TableNextColumn();
-      if (confirm_button(T("Restore"), "restore:" + backup.path.string())) {
-        // Keep what is there now, then put the backup's saves in place.
-        std::string error;
-        BackUpSaves("before-restore", &error);
-        std::error_code ec;
-        bool ok = true;
-        for (const auto& entry : std::filesystem::directory_iterator(backup.path, ec)) {
-          if (!IsProfileFolder(entry)) continue;
-          const auto from = entry.path() / kTitleFolder;
-          const auto to = user_data_root_ / entry.path().filename() / kTitleFolder;
-          std::filesystem::remove_all(to, ec);
-          std::filesystem::create_directories(to, ec);
-          std::filesystem::copy(from, to, std::filesystem::copy_options::recursive, ec);
-          ok &= !ec;
-        }
-        const auto unlocks = backup.path / "achievements" / (std::string(kTitleFolder) + ".toml");
-        if (std::filesystem::is_regular_file(unlocks, ec)) {
-          std::filesystem::create_directories(user_data_root_ / "achievements", ec);
-          std::filesystem::copy_file(unlocks, user_data_root_ / "achievements" / unlocks.filename(),
-                                     std::filesystem::copy_options::overwrite_existing, ec);
-          ok &= !ec;
-        }
-        char text[256];
-        std::snprintf(text, sizeof(text), T("Restored %s (the previous saves were backed up)."),
-                      backup.name.c_str());
-        save_message_ = ok ? std::string(text) : std::string(T("Restore failed."));
-        saves_scanned_ = false;
-        achievements_loaded_ = false;
+  // One card per save (normally a single one: one profile, one save).
+  for (const auto& profile : profiles_) {
+    for (const auto& save : profile.saves) {
+      ImGui::PushID(save.path.string().c_str());
+      SubHeading(HeadingFont(), (save.display_name.empty() ? save.name : save.display_name).c_str(),
+                 scale);
+      label(T("Last saved"));
+      ImGui::TextUnformatted(save.modified.c_str());
+      label(T("Size"));
+      ImGui::TextUnformatted(FormatBytes(save.bytes).c_str());
+      label(T("Profile"));
+      ImGui::TextUnformatted(profile.xuid.c_str());
+      if (!achievements_.empty()) {
+        int unlocked = 0;
+        for (const auto& a : achievements_) unlocked += a.unlocked_filetime != 0;
+        label(T("Achievements"));
+        ImGui::Text("%d / %d", unlocked, int(achievements_.size()));
       }
+      label(T("Folder"));
+      ImGui::PushTextWrapPos(0);
+      ImGui::TextUnformatted(save.path.string().c_str());
+      ImGui::PopTextWrapPos();
+      ImGui::SetCursorPosX(label_w);
+      for (size_t i = 0; i < save.files.size(); ++i) {
+        if (i) ImGui::SameLine();
+        ImGui::TextDisabled("%s (%s)%s", save.files[i].first.c_str(),
+                            FormatBytes(save.files[i].second).c_str(),
+                            i + 1 < save.files.size() ? "," : "");
+      }
+
+      ImGui::Spacing();
+      ImGui::SetCursorPosX(label_w);
+      if (ImGui::Button(T("Open the folder"))) open_folder(save.path);
       ImGui::SameLine();
-      if (confirm_button(T("Delete"), "remove:" + backup.path.string())) {
+      // Deleting needs a second click; it can't be undone.
+      const std::string key = "delete:" + save.path.string();
+      const bool armed = confirm_ == key;
+      if (armed) ImGui::PushStyleColor(ImGuiCol_Button, kAccent);
+      const bool clicked = ImGui::Button(
+          (std::string(armed ? T("Click again to delete it for good") : T("Delete")) + "##delete")
+              .c_str());
+      if (armed) ImGui::PopStyleColor();
+      if (clicked && !armed) {
+        confirm_ = key;
+      } else if (clicked) {
+        confirm_.clear();
         std::error_code ec;
-        std::filesystem::remove_all(backup.path, ec);
-        save_message_ = ec ? T("Could not delete the backup.") : T("Backup deleted.");
+        std::filesystem::remove_all(save.path, ec);
+        if (!ec) std::filesystem::remove(save.header, ec);
+        save_message_ = ec ? T("Could not delete the save.") : T("Save deleted.");
         saves_scanned_ = false;
       }
-      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", T("Deletes the backup for good"));
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", T("The game starts over from the beginning"));
       ImGui::PopID();
     }
-    ImGui::EndTable();
   }
 }
 

@@ -2,7 +2,7 @@
 // the mantra renderer (the launcher's "translate shaders" step).
 //
 //   mantra_shadergen --game <extracted dir> --out <cache file>
-//                    [--dumps <dir>] [--hlsl <dir>] [--jobs N]
+//                    [--dumps <dir>]... [--hlsl <dir>] [--jobs N]
 //                    [--child-mem-mb N] [--child-timeout S] [--scan-only]
 //                    [--keep-work] [--only <hash>,<hash>...]
 //
@@ -404,7 +404,8 @@ void ReportDumpCoverage(const fs::path& dumps, const std::map<uint64_t, Shader>&
 }  // namespace
 
 int main(int argc, char** argv) {
-  fs::path game, out, dumps, hlsl_dir;
+  fs::path game, out, hlsl_dir;
+  std::vector<fs::path> dumps;  // --dumps, repeatable
   unsigned jobs = 0;  // 0: pick from cores and available memory
   bool scan_only = false;
   bool keep_work = false;
@@ -424,7 +425,11 @@ int main(int argc, char** argv) {
     const std::string arg = argv[i];
     if (arg == "--game") game = argv[i + 1];
     else if (arg == "--out") out = argv[i + 1];
-    else if (arg == "--dumps") dumps = argv[i + 1];
+    else if (arg == "--dumps") {
+      // Missing folders are fine (e.g. no game run yet).
+      std::error_code ec;
+      if (fs::is_directory(argv[i + 1], ec)) dumps.emplace_back(argv[i + 1]);
+    }
     else if (arg == "--hlsl") hlsl_dir = argv[i + 1];
     else if (arg == "--only") {
       // Comma-separated exact hashes: translate just these (debugging).
@@ -441,7 +446,7 @@ int main(int argc, char** argv) {
   }
   if (game.empty() || out.empty()) {
     std::fprintf(stderr,
-                 "usage: %s --game <extracted dir> --out <cache file> [--dumps <dir>] "
+                 "usage: %s --game <extracted dir> --out <cache file> [--dumps <dir>]... "
                  "[--hlsl <dir>] [--jobs N] [--child-mem-mb N] [--child-timeout S]\n",
                  argv[0]);
     return 1;
@@ -503,9 +508,7 @@ int main(int argc, char** argv) {
     size_t ps = 0;
     for (const auto& [hash, s] : shaders) ps += s.is_pixel;
     std::printf("scan only: %zu vertex + %zu pixel shaders\n", shaders.size() - ps, ps);
-    if (!dumps.empty()) {
-      ReportDumpCoverage(dumps, shaders, true);
-    }
+    for (const auto& dir : dumps) ReportDumpCoverage(dir, shaders, true);
     return 0;
   }
 
@@ -520,11 +523,13 @@ int main(int argc, char** argv) {
     for (const auto& [hash, s] : shaders) by_normalized[s.normalized_hash].push_back(&s);
     size_t variants = 0;
     std::vector<std::pair<uint64_t, Shader>> added;
-    for (const auto& entry : fs::directory_iterator(dumps)) {
+    std::unordered_set<uint64_t> seen;  // the same dump can be in several folders
+    for (const auto& dir : dumps)
+    for (const auto& entry : fs::directory_iterator(dir)) {
       if (entry.path().extension() != ".mc") continue;
       const auto code = ReadFile(entry.path());
       const uint64_t exact = mantra::shader_key::ExactHash(code.data(), code.size());
-      if (shaders.count(exact)) continue;
+      if (shaders.count(exact) || !seen.insert(exact).second) continue;
       const bool is_pixel = entry.path().filename().string().rfind("ps", 0) == 0;
       // Several game shaders can share a normalized hash; take one that
       // declares every interpolator the patched code exports to.
@@ -608,8 +613,8 @@ int main(int argc, char** argv) {
     return 1;
   }
   std::printf("wrote %s\n", out.c_str());
-  if (!dumps.empty()) {
-    ReportDumpCoverage(dumps, shaders);
+  for (const auto& dir : dumps) {
+    ReportDumpCoverage(dir, shaders);
   }
   return 0;
 }

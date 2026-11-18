@@ -8,10 +8,12 @@
 // Text uses the game's fonts when they were extracted (MediumFont.awf,
 // TitleFont.awf; see ui/game_font.h).
 // Optional art (found by GameUiFile, e.g. the repository's assets/ui):
-//   launcher_logo.png   drawn at the top of the sidebar instead of the title
-//   launcher_panel.png  stretched behind the content panel
-//   launcher_title.png  art at the top of the sidebar, under the title
-//                       (icon.png, the app icon, until there is one)
+//   logo.png            the game's logo at the top of the sidebar, instead of
+//                       the title text (launcher_logo.png also works)
+//   launcher_background.png  behind the content panel, nine-sliced (its frame
+//                       keeps its proportions; content goes in the inner panel)
+//   menu_button.png     sidebar buttons, tiled horizontally
+//   launcher_title.png  art at the top of the sidebar, under the logo
 // Skip it with --launcher=false (also skipped for scripted test runs).
 
 #include <array>
@@ -87,6 +89,11 @@ void ApplyOrangeAccent(ImGuiStyle& imgui_style, rex::ui::Style& ui_style);
 
 // mantra's shader cache location (MANTRA_SHADER_CACHE or the XDG cache).
 std::filesystem::path ShaderCachePath();
+// Shaders the game patched at runtime, kept by mantra for the next cache
+// build (<cache dir>/shader_dumps; plus the repository's out/mantra_dumps).
+std::vector<std::filesystem::path> ShaderDumpDirs();
+// How many of those are newer than the cache (a rebuild adds them).
+size_t ShadersNotInCache();
 // Whether the game's UI fonts were found (else ImGui's font is used).
 bool HaveGameFonts();
 
@@ -117,6 +124,8 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   struct Image {
     std::unique_ptr<rex::ui::ImmediateTexture> texture;
     float width = 0, height = 0;
+    // The visible (non-transparent) part, in UVs.
+    ImVec2 uv0{0, 0}, uv1{1, 1};
   };
   struct GpuInfo {
     std::string name;
@@ -137,7 +146,7 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
     std::mutex mutex;
     std::string last_line;  // under mutex
     void Start(const std::filesystem::path& tool, const std::filesystem::path& game,
-               const std::filesystem::path& out);
+               const std::filesystem::path& out, const std::vector<std::filesystem::path>& dumps);
     void Stop();
     std::string Line();
   };
@@ -168,29 +177,23 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
     void Join();
   };
 
-  // Saves under the user data folder: <profile>/43430817/00000001/<save>/,
-  // named by <profile>/43430817/Headers/00000001/<save>.header. Backups are
-  // copies of those folders (and the achievement unlocks) in backups/<date>.
+  // The save under the user data folder: <profile>/43430817/00000001/<save>/,
+  // named by <profile>/43430817/Headers/00000001/<save>.header.
   struct SaveInfo {
     std::string name, display_name;
-    std::filesystem::path path;
+    std::filesystem::path path, header;
     uint64_t bytes = 0;
     std::string modified;
+    std::vector<std::pair<std::string, uint64_t>> files;  // name, size
   };
   struct ProfileInfo {
     std::string xuid;
     std::vector<SaveInfo> saves;
   };
-  struct BackupInfo {
-    std::string name;
-    std::filesystem::path path;
-    uint64_t bytes = 0;
-  };
 
-  Image LoadImage(const std::filesystem::path& path);
+  Image LoadImage(const std::filesystem::path& path, bool repeat = false);
   void StartAssetJob();
   void ScanSaves();
-  bool BackUpSaves(const std::string& label, std::string* error);
   void DrawSaves(float scale);
   void DrawGraphics(float scale);
   void LoadAchievements();
@@ -226,11 +229,10 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   bool fonts_at_start_ = false;  // the game fonts were there when the launcher opened
   AssetJob asset_job_;
   std::vector<ProfileInfo> profiles_;
-  std::vector<BackupInfo> backups_;
   bool saves_scanned_ = false;
-  std::string confirm_;       // the delete/restore button waiting for a second click
+  std::string confirm_;       // the delete button waiting for a second click
   std::string save_message_;  // result of the last save action
-  Image logo_, panel_, title_;
+  Image logo_, panel_, title_, button_;
   Page page_ = Page::kSettings;
   std::vector<GpuInfo> gpus_;
   int automatic_gpu_ = -1;  // what vulkan_device=-1 picks
@@ -250,6 +252,8 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   int pad_capture_ = -1;            // controller button being rebound
   uint32_t pad_capture_held_ = 0;   // controls already down when it started
   ShaderBuild shader_build_;
+  size_t shaders_not_in_cache_ = 0;
+  double shaders_checked_at_ = -10.0;
   IsoExtract iso_extract_;
   bool playing_ = false;
   // Frame limiter (the SDK repaints dialogs continuously).

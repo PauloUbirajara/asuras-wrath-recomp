@@ -29,6 +29,8 @@
 #include <rex/input/input_system.h>
 
 #include "debug/script_input.h"
+#include "input/pad_remap.h"
+#include "ui/game_assets.h"
 #include "ui/game_font.h"
 #include "ui/game_toast.h"
 #include "ui/launcher.h"
@@ -60,6 +62,8 @@ class AsuraWrathApp : public rex::ReXApp {
     if (config.gpu_plugin.empty()) {
       config.gpu_plugin = "mantra";
     }
+    // The SDK's input drivers, with controller remapping (input/pad_remap.h).
+    config.input_factory = [](bool tool_mode) { return asura::input::CreateInputSystem(tool_mode); };
 
     // Launcher settings (GPU, vsync, fullscreen, keyboard) as defaults for
     // flags nothing else set. VSync defaults on: while any ImGui dialog is up
@@ -101,8 +105,28 @@ class AsuraWrathApp : public rex::ReXApp {
   // bitmap font (from the game data, see ui/game_font.h), optional
   // background/portrait art, the achievement's icon.
   void OnConfigureFonts(ImFontAtlas* atlas) override {
-    toast_font_ = asura::ui::AddGameFont(atlas, asura::ui::GameUiFile("MediumFont.awf"));
-    title_font_ = asura::ui::AddGameFont(atlas, asura::ui::GameUiFile("TitleFont.awf"));
+    // The fonts come from the player's game files; extract them once (into
+    // the user's cache) when the game folder is known.
+    if (!asura::ui::HaveGameFonts()) {
+      std::error_code ec;
+      const std::filesystem::path game = launcher_settings_.game_data;
+      if (!game.empty() && std::filesystem::is_regular_file(game / "default.xex", ec)) {
+        std::string error;
+        if (!asura::ui::ExtractUiFonts(game, asura::ui::UiCacheDir(), &error)) {
+          REXLOG_WARN("Game fonts: {}", error);
+        }
+      }
+    }
+    toast_font_ = asura::ui::AddGameFontFamily(atlas, "MediumFont");
+    title_font_ = asura::ui::AddGameFontFamily(atlas, "TitleFont");
+    // Without the game's fonts the launcher uses ImGui's: give it Japanese.
+    if (!toast_font_ && !atlas->Fonts.empty()) {
+      asura::ui::AddFallbackFonts(atlas, atlas->Fonts[0], false);
+    }
+  }
+  // The SDK's overlays in the launcher's orange instead of green.
+  void OnConfigureStyle(ImGuiStyle& imgui_style, rex::ui::Style& ui_style) override {
+    asura::ui::ApplyOrangeAccent(imgui_style, ui_style);
   }
   std::unique_ptr<rex::ui::AchievementNotificationDialog> CreateAchievementNotificationDialog()
       override {
@@ -121,7 +145,6 @@ class AsuraWrathApp : public rex::ReXApp {
   // (4.5 s each) once the title is running.
   void OnPostLaunchModule(rex::system::XThread* thread) override {
     (void)thread;
-    WriteAchievementCache();
     DumpAchievementIcons();
     const char* env = std::getenv("ASURA_TEST_TOAST");
     if (!env || !toast_) return;
@@ -175,6 +198,8 @@ class AsuraWrathApp : public rex::ReXApp {
   // loaded yet. Play resumes initialization with the chosen game folder.
   std::optional<rex::PathConfig> OnFinalizePaths(
       const rex::PathConfig& defaults, std::function<void(rex::PathConfig)> resume) override {
+    // Again now that the overlays registered their bind_* keys.
+    asura::ui::ApplyLauncherDefaults(launcher_settings_);
     if (!LauncherWanted() || !imgui_drawer()) {
       asura::ui::ApplyWindowSettings(launcher_settings_);
       return defaults;
@@ -190,7 +215,7 @@ class AsuraWrathApp : public rex::ReXApp {
           // GPU, present mode and cropping are fixed once the window's
           // presenter exists: start over with the new settings.
           if (asura::ui::NeedsRestart(startup_settings_, s)) {
-            Restart();
+            Restart(/*show_launcher=*/false);
           }
           launcher_settings_ = s;
           // Window settings first: they go through the flag registry (the
@@ -202,7 +227,8 @@ class AsuraWrathApp : public rex::ReXApp {
             paths.game_data_root = s.game_data;
           }
           resume(paths);
-        });
+        },
+        [] { Restart(/*show_launcher=*/true); });
     return std::nullopt;
   }
 
@@ -211,51 +237,20 @@ class AsuraWrathApp : public rex::ReXApp {
     return REXCVAR_GET(launcher) && !std::getenv("ASURA_INPUT_SCRIPT");
   }
 
-  // The achievement list and icons for the launcher's Achievements page
-  // (asura::ui::AchievementCacheDir): the launcher runs before the game is
-  // loaded, and the list only exists in the (encrypted) executable.
-  void WriteAchievementCache() {
-    if (!runtime() || !runtime()->kernel_state()) return;
-    const auto db = runtime()->kernel_state()->title_xdbf();
-    const auto list = achievements().ListAchievements();
-    const std::filesystem::path dir = asura::ui::AchievementCacheDir();
-    if (!db.is_valid() || list.empty() || dir.empty()) return;
-    std::error_code ec;
-    std::filesystem::create_directories(dir, ec);
-    auto clean = [](std::string s) {
-      std::replace_if(s.begin(), s.end(), [](char c) { return c == '\t' || c == '\n' || c == '\r'; },
-                      ' ');
-      return s;
-    };
-    std::ofstream tsv(dir / "achievements.tsv", std::ios::trunc);
-    tsv << "id\tgamerscore\tname\tdescription\tlocked_description\n";
-    for (const auto& a : list) {
-      tsv << a.id << '\t' << a.gamerscore << '\t' << clean(a.label) << '\t'
-          << clean(a.description) << '\t' << clean(a.unachieved_description) << '\n';
-      const auto icon = dir / (std::to_string(a.id) + ".png");
-      if (std::filesystem::exists(icon, ec)) continue;
-      const auto block = db.GetEntry(rex::system::util::XdbfSection::kImage, a.image_id);
-      if (block) {
-        std::ofstream(icon, std::ios::binary)
-            .write(reinterpret_cast<const char*>(block.buffer), std::streamsize(block.size));
-      }
-    }
-  }
-
   // Runs this executable again with the same arguments, skipping the
-  // launcher. Only returns if exec fails.
-  static void Restart() {
+  // launcher unless `show_launcher`. Only returns if exec fails.
+  static void Restart(bool show_launcher) {
     std::vector<std::string> args;
     if (std::ifstream in("/proc/self/cmdline", std::ios::binary); in) {
       std::string arg;
       while (std::getline(in, arg, '\0')) args.push_back(arg);
     }
     if (args.empty()) return;
-    args.push_back("--launcher=false");
+    if (!show_launcher) args.push_back("--launcher=false");
     std::vector<char*> argv;
     for (auto& a : args) argv.push_back(a.data());
     argv.push_back(nullptr);
-    REXLOG_INFO("Restarting to apply the graphics settings");
+    REXLOG_INFO("Restarting ({})", show_launcher ? "launcher" : "graphics settings");
     rex::FlushLogging();
     execv("/proc/self/exe", argv.data());
     REXLOG_ERROR("Restart failed; graphics settings apply on the next start");

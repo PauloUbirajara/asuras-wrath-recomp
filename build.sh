@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Build Asura's Wrath Recompiled on Linux.
 #
-#   ./build.sh                  release build, -march=native
+#   ./build.sh                  release build for your CPU (-march=native)
 #   ./build.sh --debug          debug build
-#   ./build.sh --portable       -msse4.1 baseline (runs on any SSE4.1 CPU)
+#   ./build.sh --portable       -msse4.1 baseline, runs on any SSE4.1 CPU (for sharing)
 #   ./build.sh --codegen        force a full rexglue codegen re-run
 #   ./build.sh --clean          wipe the build directory first
-#   ./build.sh --skip-cpu-check don't check /proc/cpuinfo (cross-machine builds)
+#   ./build.sh --skip-cpu-check skip the check of your CPU (building for another PC)
 #
 # CPU flags: the SDK core uses SSSE3/SSE4.1 intrinsics but only adds -msse4.1
 # to app targets, so the flags are passed here for everything, SDK included.
@@ -50,8 +50,8 @@ else
     missing=()
     for f in ssse3 sse4_1; do cpu_has "$f" || missing+=("$f"); done
     if [ ${#missing[@]} -gt 0 ]; then
-      echo "[!] This CPU lacks ${missing[*]}, required by the SDK (-msse4.1)." >&2
-      echo "    Use --skip-cpu-check if the binary is meant for another machine." >&2
+      echo "[!] Your CPU lacks ${missing[*]}, required by the SDK (-msse4.1)." >&2
+      echo "    Use --skip-cpu-check if the build is meant for another PC." >&2
       exit 1
     fi
   fi

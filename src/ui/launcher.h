@@ -1,7 +1,8 @@
 #pragma once
 // Launcher shown before the game starts (AsuraWrathApp::OnFinalizePaths), in
-// a window: a sidebar (Controls, Achievements, Settings, Play) and a content
-// panel. Settings are kept in <user data>/launcher.cfg and applied at startup
+// a window: a sidebar (Controls, Achievements, Saves, Graphics, Settings,
+// Play) and a content panel, in the language chosen in Settings
+// (launcher_text.h). Settings are kept in <user data>/launcher.cfg and applied at startup
 // as defaults, so command-line flags and the config TOML still win.
 //
 // Text uses the game's fonts when they were extracted (MediumFont.awf,
@@ -9,9 +10,13 @@
 // Optional art (found by GameUiFile, e.g. the repository's assets/ui):
 //   launcher_logo.png   drawn at the top of the sidebar instead of the title
 //   launcher_panel.png  stretched behind the content panel
+//   launcher_title.png  art at the top of the sidebar, under the title
+//                       (icon.png, the app icon, until there is one)
 // Skip it with --launcher=false (also skipped for scripted test runs).
 
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <functional>
@@ -24,7 +29,14 @@
 
 #include <imgui.h>
 #include <rex/ui/imgui_dialog.h>
+#include <rex/ui/style.h>
 #include <rex/ui/window_listener.h>
+
+struct SDL_Gamepad;
+
+namespace rex::input {
+struct X_INPUT_GAMEPAD;
+}
 
 namespace rex::ui {
 class ImmediateDrawer;
@@ -44,8 +56,12 @@ struct LauncherSettings {
   bool keyboard = false;  // mnk_mode
   AspectMode aspect = AspectMode::kFit;
   int window_width = 0, window_height = 0;  // windowed size, 0 = default (1280x720)
+  uint32_t language = 1;                    // user_language (XLanguage), 1 = English
+  bool achievements_grid = false;           // Achievements page: grid instead of list
   std::string game_data;                    // game_data_root, empty = flag / default
   std::map<std::string, std::string> binds;  // keybind_* flag -> keys
+  std::map<std::string, std::string> pad;    // controller remap: target -> source (pad_remap.h)
+  double deadzone_left = 0, deadzone_right = 0;  // stick deadzones, fraction of the range
 
   static std::filesystem::path PathIn(const std::filesystem::path& user_data_root);
   bool Load(const std::filesystem::path& path);  // false if missing
@@ -55,6 +71,8 @@ struct LauncherSettings {
 // Applies the settings to flags nothing else set (command line, environment,
 // config TOML). Call before the GPU plugin is set up (OnPreSetup).
 void ApplyLauncherDefaults(const LauncherSettings& settings);
+// The controller remap in the settings.
+std::array<uint8_t, 16> PadMapFrom(const LauncherSettings& settings);
 // Opens the window (not fullscreen) for the launcher, unless the fullscreen
 // flag was set elsewhere. Call after ApplyLauncherDefaults.
 void UseWindowForLauncher();
@@ -64,11 +82,13 @@ void ApplyWindowSettings(const LauncherSettings& settings);
 // cropping).
 bool NeedsRestart(const LauncherSettings& before, const LauncherSettings& after);
 
+// Turns the SDK's green ImGui accents (all overlays) orange.
+void ApplyOrangeAccent(ImGuiStyle& imgui_style, rex::ui::Style& ui_style);
+
 // mantra's shader cache location (MANTRA_SHADER_CACHE or the XDG cache).
 std::filesystem::path ShaderCachePath();
-// Where the game writes the achievement list and icons for the launcher
-// (<XDG cache>/asura_wrath_recomp/achievements).
-std::filesystem::path AchievementCacheDir();
+// Whether the game's UI fonts were found (else ImGui's font is used).
+bool HaveGameFonts();
 
 class LauncherDialog : public rex::ui::ImGuiDialog,
                        public rex::ui::WindowListener,
@@ -81,7 +101,8 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
                  LauncherSettings settings,
                  std::filesystem::path settings_path, std::filesystem::path user_data_root,
                  std::function<void(std::function<void()>)> call_in_ui_thread_deferred,
-                 std::function<void(const LauncherSettings&)> on_play);
+                 std::function<void(const LauncherSettings&)> on_play,
+                 std::function<void()> on_relaunch);
   ~LauncherDialog() override;
 
   // WindowListener / WindowInputListener.
@@ -92,7 +113,7 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   void OnDraw(ImGuiIO& io) override;
 
  private:
-  enum class Page { kControls, kAchievements, kSettings };
+  enum class Page { kControls, kAchievements, kSaves, kGraphics, kSettings };
   struct Image {
     std::unique_ptr<rex::ui::ImmediateTexture> texture;
     float width = 0, height = 0;
@@ -136,16 +157,58 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
     std::string Message();
   };
 
+  // Reads game files the launcher shows (UI fonts, achievement list) in the
+  // background.
+  struct AssetJob {
+    std::atomic<bool> running{false}, finished{false};
+    std::thread worker;
+    std::mutex mutex;
+    std::string error;  // under mutex
+    void Start(std::filesystem::path game, uint32_t language, bool fonts, bool achievements);
+    void Join();
+  };
+
+  // Saves under the user data folder: <profile>/43430817/00000001/<save>/,
+  // named by <profile>/43430817/Headers/00000001/<save>.header. Backups are
+  // copies of those folders (and the achievement unlocks) in backups/<date>.
+  struct SaveInfo {
+    std::string name, display_name;
+    std::filesystem::path path;
+    uint64_t bytes = 0;
+    std::string modified;
+  };
+  struct ProfileInfo {
+    std::string xuid;
+    std::vector<SaveInfo> saves;
+  };
+  struct BackupInfo {
+    std::string name;
+    std::filesystem::path path;
+    uint64_t bytes = 0;
+  };
+
   Image LoadImage(const std::filesystem::path& path);
+  void StartAssetJob();
+  void ScanSaves();
+  bool BackUpSaves(const std::string& label, std::string* error);
+  void DrawSaves(float scale);
+  void DrawGraphics(float scale);
   void LoadAchievements();
   void UseDroppedPath(const std::filesystem::path& path);
   void DrawSidebar(const ImVec2& pos, const ImVec2& size, float scale);
   void DrawPanel(const ImVec2& pos, const ImVec2& size, float scale);
   void DrawControls(float scale);
+  void DrawController(float scale);
+  void DrawKeyboard(float scale);
+  // The first connected controller's raw state (SDL), false if none.
+  bool ReadPad(rex::input::X_INPUT_GAMEPAD* out);
+  void ClosePad();
+  void SetPadSource(int target, int source);
   void DrawAchievements(float scale);
   void DrawSettings(float scale);
   void DrawGameFolder(float label_w, float scale);
   bool SidebarButton(const char* label, bool selected, float width, float height);
+  ImFont* HeadingFont() const;
   bool GameDataValid() const;
   void SetGameData(const std::string& path);
   void SetBind(const std::string& flag, const std::string& keys);
@@ -159,21 +222,39 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   std::filesystem::path settings_path_, user_data_root_;
   std::function<void(std::function<void()>)> call_in_ui_thread_deferred_;
   std::function<void(const LauncherSettings&)> on_play_;
-  Image logo_, panel_;
+  std::function<void()> on_relaunch_;
+  bool fonts_at_start_ = false;  // the game fonts were there when the launcher opened
+  AssetJob asset_job_;
+  std::vector<ProfileInfo> profiles_;
+  std::vector<BackupInfo> backups_;
+  bool saves_scanned_ = false;
+  std::string confirm_;       // the delete/restore button waiting for a second click
+  std::string save_message_;  // result of the last save action
+  Image logo_, panel_, title_;
   Page page_ = Page::kSettings;
   std::vector<GpuInfo> gpus_;
   int automatic_gpu_ = -1;  // what vulkan_device=-1 picks
   std::vector<Achievement> achievements_;
   bool achievements_loaded_ = false;
+  int achievement_filter_ = 0;  // 0 all, 1 unlocked, 2 locked
   char game_data_buffer_[1024] = {};
   char iso_target_buffer_[1024] = {};
   std::filesystem::path iso_path_;  // dropped / entered disc image waiting to be extracted
   std::string message_;             // shown above Play (validation errors)
   std::string capture_flag_;        // keybind being rebound
   int capture_slot_ = 0;            // 0 = primary key, 1 = alternate
+  int controls_tab_ = 0;            // 0 controller, 1 keyboard
+  SDL_Gamepad* pad_ = nullptr;      // opened while Controls is shown
+  bool pad_subsystem_ = false;      // SDL_INIT_GAMEPAD held by the launcher
+  std::string pad_name_;
+  int pad_capture_ = -1;            // controller button being rebound
+  uint32_t pad_capture_held_ = 0;   // controls already down when it started
   ShaderBuild shader_build_;
   IsoExtract iso_extract_;
   bool playing_ = false;
+  // Frame limiter (the SDK repaints dialogs continuously).
+  std::chrono::steady_clock::time_point last_frame_{}, last_input_{};
+  void LimitFrameRate(ImGuiIO& io);
 };
 
 }  // namespace asura::ui

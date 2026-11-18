@@ -19,9 +19,12 @@ include(generated/rexglue.cmake)
 # Sources
 set(ASURAWRATH_SOURCES
     src/main.cpp
+    src/input/pad_remap.cpp
+    src/ui/game_assets.cpp
     src/ui/game_font.cpp
     src/ui/game_toast.cpp
     src/ui/launcher.cpp
+    src/ui/launcher_text.cpp
 )
 
 if(WIN32)
@@ -33,6 +36,11 @@ endif()
 # The launcher lists GPUs through the SDK's VulkanInstance, whose header
 # includes renderdoc_app.h.
 target_include_directories(asura_wrath PRIVATE ${REXSDK_DIR}/thirdparty/renderdoc)
+# The launcher extracts the game's UI fonts from its .xxx packages with
+# mantra_shadergen's package reader (LZX through libmspack).
+target_sources(asura_wrath PRIVATE "${CMAKE_SOURCE_DIR}/tools/mantra_shadergen/xxx_package.cpp")
+target_include_directories(asura_wrath PRIVATE "${CMAKE_SOURCE_DIR}/tools/mantra_shadergen")
+target_link_libraries(asura_wrath PRIVATE mspack)
 
 # mantra: native-renderer GPU plugin, built from this repo (src/mantra_renderer).
 add_subdirectory(src/mantra_renderer)

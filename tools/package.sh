@@ -11,8 +11,8 @@
 #   tools/package.sh --build-dir D   package another build directory
 #   tools/package.sh --no-strip      keep symbols (for profiling)
 #
-# Build with ./build.sh --portable first for a package that runs on other
-# CPUs: the default build uses -march=native.
+# The default build is tuned for your CPU (-march=native) and may crash on
+# other CPUs: build with ./build.sh --portable first for a package to share.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -37,8 +37,8 @@ STAGE="$OUT/$NAME"
 
 [ -x "$BUILD_DIR/asura_wrath" ] || { echo "[!] No build in $BUILD_DIR (run ./build.sh)" >&2; exit 1; }
 if grep -q -- "-march=native" "$BUILD_DIR/CMakeCache.txt" 2>/dev/null; then
-  echo "[!] $BUILD_DIR was built with -march=native: the package only runs on CPUs"
-  echo "    like this one. Use ./build.sh --portable for a package to share."
+  echo "[!] $BUILD_DIR was built for your CPU (-march=native): the package may not"
+  echo "    run on other CPUs. Use ./build.sh --portable for a package to share."
 fi
 
 # --- Stage ---------------------------------------------------------------------

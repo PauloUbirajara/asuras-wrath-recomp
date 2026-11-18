@@ -62,7 +62,7 @@ cmake --build out/build/linux-amd64-release --parallel
 # Build binary (out/build/linux-amd64-release/)
 ./build.sh
 
-# Build for any x86-64 CPU with SSE4.1 (the default uses -march=native)
+# Build for any x86-64 CPU with SSE4.1 (the default is tuned for your CPU: -march=native)
 ./build.sh --portable
 
 # Other options: --debug, --codegen, --clean (./build.sh --help)
@@ -86,7 +86,7 @@ tools/package.sh --appimage
 #     └── asuras-wrath-recomp-<version>-x86_64.AppImage
 ```
 
-Build with `./build.sh --portable` first for a package that runs on other CPUs. Players supply their own game.
+The default build is tuned for your CPU and may not run on others: build with `./build.sh --portable` first for a package to share. Players supply their own game.
 
 ---
 
@@ -133,7 +133,7 @@ mantra_shadergen --game extracted --out ~/.cache/asura_wrath_recomp/mantra_shade
 ```
 ├── asura_wrath          # Executable
 ├── extracted/           # .iso contents (or set in the launcher)
-├── assets/              # launcher / toast art
+├── assets/              # launcher / toast art, app icon (assets/ui/icon.png)
 ├── librexgpu-mantra.so  # mantra renderer
 ├── librexgpu-xenos.so   # SDK renderer (--gpu_plugin=xenos)
 ├── librexruntime.so
@@ -154,9 +154,15 @@ asura_wrath
 
 The launcher opens first, in a window:
 
-- **Settings**: game folder, GPU (Automatic shows which one it picks), VSync, fullscreen, window size, how the 16:9 picture fills wide screens (fit / fill / stretch), shader cache.
-- **Controls**: play with the keyboard, mouse camera, key rebinding.
-- **Achievements**: the list and your unlocks (after the first start).
+- **Controls**: *Controller* tab (live test of buttons, sticks and triggers, button remapping, stick deadzones, 0% by default) and *Keyboard* tab (play with the keyboard, mouse camera, key rebinding, and the overlay keys F3/F4/F7/`).
+- **Achievements**: the list (read from your `default.xex`) and your unlocks, newest first, as a list or a grid, filtered by all / unlocked / locked.
+- **Saves**: saves per profile, backups (back up, restore, delete). The game has one save per profile and loads it itself; restoring a backup switches saves.
+- **Graphics**: GPU (Automatic shows which one it picks), VSync, fullscreen, window size, how the 16:9 picture fills wide screens (fit / fill / stretch), shader cache.
+- **Settings**: game folder (or `.iso`), language (English, Japanese, German, French, Spanish, Italian) for the game, the achievements and the launcher itself.
+
+Controls, Graphics and Settings each have a *Reset to defaults* button.
+
+The launcher's fonts (including the accented and Japanese ones from the game's localized packages) and achievement icons are read from your game folder into `~/.cache/asura_wrath_recomp/`.
 
 In game: F3 performance overlay, F4 settings, F7 achievements, `` ` `` console.
 

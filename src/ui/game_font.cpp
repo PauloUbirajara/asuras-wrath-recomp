@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
 #include <fstream>
 #include <iterator>
 #include <unordered_map>
@@ -82,6 +83,27 @@ bool Parse(const uint8_t* data, size_t size, FontData& font) {
     }
   }
   return font.line_height > 0;
+}
+
+// Zero-terminated [first, last] pairs covering the font's codepoints; kept
+// for the atlas' lifetime (ImFontConfig::GlyphRanges is not copied).
+const ImWchar* GlyphRangesOf(const FontData& font) {
+  static std::deque<std::vector<ImWchar>> storage;
+  std::vector<uint32_t> codepoints;
+  for (const auto& [codepoint, glyph] : font.glyphs) {
+    if (codepoint > 0 && codepoint <= IM_UNICODE_CODEPOINT_MAX) codepoints.push_back(codepoint);
+  }
+  std::sort(codepoints.begin(), codepoints.end());
+  std::vector<ImWchar>& ranges = storage.emplace_back();
+  for (size_t i = 0; i < codepoints.size();) {
+    size_t j = i;
+    while (j + 1 < codepoints.size() && codepoints[j + 1] == codepoints[j] + 1) ++j;
+    ranges.push_back(ImWchar(codepoints[i]));
+    ranges.push_back(ImWchar(codepoints[j]));
+    i = j + 1;
+  }
+  ranges.push_back(0);
+  return ranges.data();
 }
 
 FontData* Data(ImFontConfig* src) { return static_cast<FontData*>(src->FontLoaderData); }
@@ -224,10 +246,10 @@ std::filesystem::path GameUiFile(std::string_view name) {
   return dirs.empty() ? std::filesystem::path(name) : dirs.front() / name;
 }
 
-ImFont* AddGameFont(ImFontAtlas* atlas, const std::filesystem::path& path) {
+ImFont* AddGameFont(ImFontAtlas* atlas, const std::filesystem::path& path, ImFont* merge_into) {
   std::ifstream file(path, std::ios::binary);
   if (!file) {
-    REXLOG_INFO("UI font {} not found (make it with tools/asset_extract.py font)", path.string());
+    if (!merge_into) REXLOG_INFO("UI font {} not found", path.string());
     return nullptr;
   }
   std::vector<uint8_t> blob((std::istreambuf_iterator<char>(file)), {});
@@ -242,17 +264,49 @@ ImFont* AddGameFont(ImFontAtlas* atlas, const std::filesystem::path& path) {
   config.FontDataOwnedByAtlas = false;  // AddFont copies it
   config.FontLoader = Loader();
   config.SizePixels = float(check.line_height);
+  config.MergeMode = merge_into != nullptr;
+  config.DstFont = merge_into;
+  // The SDK uploads the atlas once (ImGuiDrawer: GetTexDataAsRGBA32), so only
+  // the glyphs in GlyphRanges are ever baked: list all of the file's
+  // (the default is Latin-1 only, which drops e.g. Japanese).
+  config.GlyphRanges = GlyphRangesOf(check);
   std::snprintf(config.Name, sizeof(config.Name), "%s", path.stem().string().c_str());
   ImFont* font = atlas->AddFont(&config);
   REXLOG_INFO("UI font {} {}", path.string(), font ? "loaded" : "failed to load");
-  if (font) {
-    // The game's fonts lack a few ASCII characters (# $ @ ^ { | } and more in
-    // TitleFont): take those from ImGui's default font.
-    ImFontConfig fallback;
-    fallback.MergeMode = true;
-    fallback.DstFont = font;
-    atlas->AddFontDefault(&fallback);
+  return font;
+}
+
+void AddFallbackFonts(ImFontAtlas* atlas, ImFont* font, bool imgui_font) {
+  if (!font) return;
+  // Japanese the game's font lacks (the launcher's own text), from the
+  // project's Noto Sans JP subset (assets/ui/NotoSansJP.ttf).
+  std::error_code ec;
+  const auto noto = GameUiFile("NotoSansJP.ttf");
+  if (std::filesystem::is_regular_file(noto, ec)) {
+    ImFontConfig jp;
+    jp.MergeMode = true;
+    jp.DstFont = font;
+    atlas->AddFontFromFileTTF(noto.string().c_str(), 0.0f, &jp, atlas->GetGlyphRangesJapanese());
   }
+  if (!imgui_font) return;
+  // The game's fonts lack a few ASCII characters (# $ @ ^ { | } and more in
+  // TitleFont): take those from ImGui's default font.
+  ImFontConfig fallback;
+  fallback.MergeMode = true;
+  fallback.DstFont = font;
+  atlas->AddFontDefault(&fallback);
+}
+
+ImFont* AddGameFontFamily(ImFontAtlas* atlas, std::string_view name) {
+  const std::string base(name);
+  ImFont* font = AddGameFont(atlas, GameUiFile(base + ".awf"));
+  if (!font) return nullptr;
+  // Accents (the European packages' fonts) and Japanese (the JPN one) for
+  // the glyphs the international font lacks; same typeface.
+  for (const char* language : kGameFontLanguages) {
+    AddGameFont(atlas, GameUiFile(base + "_" + language + ".awf"), font);
+  }
+  AddFallbackFonts(atlas, font);
   return font;
 }
 

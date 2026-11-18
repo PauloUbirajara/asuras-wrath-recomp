@@ -21,6 +21,7 @@ set(ASURAWRATH_SOURCES
     src/main.cpp
     src/ui/game_font.cpp
     src/ui/game_toast.cpp
+    src/ui/launcher.cpp
 )
 
 if(WIN32)
@@ -28,6 +29,10 @@ if(WIN32)
 else()
     add_executable(asura_wrath ${ASURAWRATH_SOURCES})
 endif()
+
+# The launcher lists GPUs through the SDK's VulkanInstance, whose header
+# includes renderdoc_app.h.
+target_include_directories(asura_wrath PRIVATE ${REXSDK_DIR}/thirdparty/renderdoc)
 
 # mantra: native-renderer GPU plugin, built from this repo (src/mantra_renderer).
 add_subdirectory(src/mantra_renderer)

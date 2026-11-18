@@ -245,6 +245,14 @@ ImFont* AddGameFont(ImFontAtlas* atlas, const std::filesystem::path& path) {
   std::snprintf(config.Name, sizeof(config.Name), "%s", path.stem().string().c_str());
   ImFont* font = atlas->AddFont(&config);
   REXLOG_INFO("UI font {} {}", path.string(), font ? "loaded" : "failed to load");
+  if (font) {
+    // The game's fonts lack a few ASCII characters (# $ @ ^ { | } and more in
+    // TitleFont): take those from ImGui's default font.
+    ImFontConfig fallback;
+    fallback.MergeMode = true;
+    fallback.DstFont = font;
+    atlas->AddFontDefault(&fallback);
+  }
   return font;
 }
 

@@ -238,6 +238,7 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
     uint64_t skipped_viewport = 0;   // empty viewport / scissor
     uint64_t skipped_geometry = 0;   // vertex/index data unavailable
     uint64_t failed_pipeline = 0;
+    uint64_t skipped_pending_pipeline = 0;  // pipeline still building (async)
     uint64_t missing_inputs = 0;     // inputs fed zeros (undecodable fetch / format)
     uint64_t expanded_inputs = 0;    // inputs decoded on the CPU (10:11:11 into float)
     uint64_t render_passes = 0;

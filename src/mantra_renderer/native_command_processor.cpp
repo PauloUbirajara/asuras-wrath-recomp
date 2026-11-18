@@ -2064,7 +2064,7 @@ void NativeCommandProcessor::EndFrameTiming() {
   FrameTiming& t = frame_timing_;
   const auto now = std::chrono::steady_clock::now();
   const auto ms = [](uint64_t ns) { return double(ns) / 1e6; };
-  const uint64_t pipelines = draw_pipelines_.created();
+  const uint64_t pipelines = draw_pipelines_.created() + draw_pipelines_.async_created();
   const uint64_t modules = shader_stats_.modules;
   const uint64_t texture_bytes = texture_cache_.stats().load_bytes;
   const uint64_t buffer_bytes = buffer_cache_.stats().upload_bytes;
@@ -2183,8 +2183,10 @@ void NativeCommandProcessor::ReportSwapStats() {
               constant_stats_.bytes / 1048576.0, constant_stats_.reused,
               constant_stats_.ring_full, shader_interface_.slot_bytes_used() >> 10);
   const GuestDrawStats& g = guest_draw_stats_;
-  MANTRA_INFO("pipelines: {} in use, {} created in game ({} failed); warm-up {}/{} built, {} used",
-              draw_pipelines_.size(), draw_pipelines_.created(),
+  MANTRA_INFO("pipelines: {} in use, {} created in game ({} in the background, {} draws skipped "
+              "while building; {} failed); warm-up {}/{} built, {} used",
+              draw_pipelines_.size(), draw_pipelines_.created() + draw_pipelines_.async_created(),
+              draw_pipelines_.async_created(), g.skipped_pending_pipeline,
               draw_pipelines_.creation_failures(), draw_pipelines_.warm_done(),
               draw_pipelines_.warm_total(), draw_pipelines_.warm_hits());
   MANTRA_INFO("guest draws: {} drawn in {} render passes, {} pipelines ({} failed); skipped: "

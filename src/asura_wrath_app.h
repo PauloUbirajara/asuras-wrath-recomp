@@ -8,9 +8,16 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
+#include <string>
 #include <string_view>
+#include <vector>
+
+#include <unistd.h>
 #include <system_error>
 
+#include <rex/cvar.h>
+#include <rex/filesystem.h>
 #include <rex/logging.h>
 #include <rex/rex_app.h>
 #include <rex/system/flags.h>
@@ -24,6 +31,9 @@
 #include "debug/script_input.h"
 #include "ui/game_font.h"
 #include "ui/game_toast.h"
+#include "ui/launcher.h"
+
+REXCVAR_DECLARE(bool, launcher);
 
 class AsuraWrathApp : public rex::ReXApp {
  public:
@@ -36,6 +46,14 @@ class AsuraWrathApp : public rex::ReXApp {
   }
 
   // Override virtual hooks for customization:
+  // Logs go to <exe dir>/logs (the SDK default) when that folder is
+  // writable, else to <user data>/logs (the AppImage's folder is read-only).
+  void OnConfigureLogging(rex::LogConfig& config) override {
+    if (!user_data_root_path_.empty() &&
+        access(config.log_dir.parent_path().c_str(), W_OK) != 0) {
+      config.log_dir = user_data_root_path_ / "logs";
+    }
+  }
   // void OnPostInitLogging() override {}
   void OnPreSetup(rex::RuntimeConfig& config) override {
     // Default to the in-repo mantra renderer; --gpu_plugin=xenos overrides.
@@ -43,13 +61,18 @@ class AsuraWrathApp : public rex::ReXApp {
       config.gpu_plugin = "mantra";
     }
 
-    // Present with FIFO (vsync) unless the user picked a mode: while any ImGui
-    // dialog is up (the achievement toast, SDK overlays) the presenter repaints
-    // continuously, and with immediate/mailbox that runs uncapped (500-1000
-    // fps), taking GPU time from the game on integrated GPUs. The game itself
-    // runs at 30 fps, so vsync costs nothing.
-    DefaultFlagIfUnset("vulkan_allow_present_mode_immediate", "false");
-    DefaultFlagIfUnset("vulkan_allow_present_mode_mailbox", "false");
+    // Launcher settings (GPU, vsync, fullscreen, keyboard) as defaults for
+    // flags nothing else set. VSync defaults on: while any ImGui dialog is up
+    // (the launcher, the achievement toast, SDK overlays) the presenter
+    // repaints continuously, and with immediate/mailbox that runs uncapped
+    // (500-1000 fps), taking GPU time from the game on integrated GPUs. The
+    // game itself runs at 30 fps, so vsync costs nothing.
+    asura::ui::ApplyLauncherDefaults(launcher_settings_);
+    startup_settings_ = launcher_settings_;
+    // The launcher opens in a window; Play applies the fullscreen setting.
+    if (LauncherWanted()) {
+      asura::ui::UseWindowForLauncher();
+    }
 
     // First run: the game finds no save and asks "saved data does not exist.
     // Create saved data in selected storage device?" (default button = yes).
@@ -79,6 +102,7 @@ class AsuraWrathApp : public rex::ReXApp {
   // background/portrait art, the achievement's icon.
   void OnConfigureFonts(ImFontAtlas* atlas) override {
     toast_font_ = asura::ui::AddGameFont(atlas, asura::ui::GameUiFile("MediumFont.awf"));
+    title_font_ = asura::ui::AddGameFont(atlas, asura::ui::GameUiFile("TitleFont.awf"));
   }
   std::unique_ptr<rex::ui::AchievementNotificationDialog> CreateAchievementNotificationDialog()
       override {
@@ -97,6 +121,7 @@ class AsuraWrathApp : public rex::ReXApp {
   // (4.5 s each) once the title is running.
   void OnPostLaunchModule(rex::system::XThread* thread) override {
     (void)thread;
+    WriteAchievementCache();
     DumpAchievementIcons();
     const char* env = std::getenv("ASURA_TEST_TOAST");
     if (!env || !toast_) return;
@@ -117,17 +142,123 @@ class AsuraWrathApp : public rex::ReXApp {
   void OnConfigurePaths(rex::PathConfig& paths) override {
     MigrateLegacyFolders(paths);
     user_data_root_path_ = paths.user_data_root;
+    // The config TOML next to the executable if there is one (portable
+    // installs), else in the user data folder (the AppImage's folder is
+    // read-only).
+    std::error_code ec;
+    if (!std::filesystem::exists(paths.config_path, ec)) {
+      paths.config_path = paths.user_data_root / paths.config_path.filename();
+    }
+    launcher_settings_path_ = asura::ui::LauncherSettings::PathIn(paths.user_data_root);
+    launcher_settings_.Load(launcher_settings_path_);
+    if (rex::cvar::GetFlagSource("game_data_root") == rex::cvar::Source::kDefault) {
+      if (launcher_settings_.game_data.empty()) {
+        // First start: an "extracted" folder in the working directory or
+        // next to the executable.
+        for (const auto& dir : {std::filesystem::current_path(ec) / "extracted",
+                                rex::filesystem::GetExecutableFolder() / "extracted"}) {
+          if (std::filesystem::is_regular_file(dir / "default.xex", ec)) {
+            launcher_settings_.game_data = dir.string();
+            break;
+          }
+        }
+      }
+      if (!launcher_settings_.game_data.empty()) {
+        paths.game_data_root = launcher_settings_.game_data;
+      }
+    } else {
+      launcher_settings_.game_data = paths.game_data_root.string();
+    }
+  }
+
+  // The launcher (ui/launcher.h) runs here: the window is up, the game isn't
+  // loaded yet. Play resumes initialization with the chosen game folder.
+  std::optional<rex::PathConfig> OnFinalizePaths(
+      const rex::PathConfig& defaults, std::function<void(rex::PathConfig)> resume) override {
+    if (!LauncherWanted() || !imgui_drawer()) {
+      asura::ui::ApplyWindowSettings(launcher_settings_);
+      return defaults;
+    }
+    launcher_ = std::make_unique<asura::ui::LauncherDialog>(
+        imgui_drawer(), immediate_drawer(), window(), toast_font_, title_font_, launcher_settings_,
+        launcher_settings_path_, user_data_root_path_,
+        [context = &app_context()](std::function<void()> f) {
+          context->CallInUIThreadDeferred(std::move(f));
+        },
+        [this, defaults, resume = std::move(resume)](const asura::ui::LauncherSettings& s) {
+          launcher_.reset();
+          // GPU, present mode and cropping are fixed once the window's
+          // presenter exists: start over with the new settings.
+          if (asura::ui::NeedsRestart(startup_settings_, s)) {
+            Restart();
+          }
+          launcher_settings_ = s;
+          // Window settings first: they go through the flag registry (the
+          // window follows), the rest are plain defaults.
+          asura::ui::ApplyWindowSettings(s);
+          asura::ui::ApplyLauncherDefaults(s);
+          rex::PathConfig paths = defaults;
+          if (rex::cvar::GetFlagSource("game_data_root") == rex::cvar::Source::kDefault) {
+            paths.game_data_root = s.game_data;
+          }
+          resume(paths);
+        });
+    return std::nullopt;
   }
 
  private:
-  // Sets a flag only if nothing (config, environment, command line) set it.
-  static void DefaultFlagIfUnset(std::string_view name, std::string_view value) {
-    for (auto& entry : rex::cvar::GetRegistry()) {
-      if (entry.name != name) continue;
-      if (entry.source == rex::cvar::Source::kDefault && entry.setter) entry.setter(value);
-      return;
+  static bool LauncherWanted() {
+    return REXCVAR_GET(launcher) && !std::getenv("ASURA_INPUT_SCRIPT");
+  }
+
+  // The achievement list and icons for the launcher's Achievements page
+  // (asura::ui::AchievementCacheDir): the launcher runs before the game is
+  // loaded, and the list only exists in the (encrypted) executable.
+  void WriteAchievementCache() {
+    if (!runtime() || !runtime()->kernel_state()) return;
+    const auto db = runtime()->kernel_state()->title_xdbf();
+    const auto list = achievements().ListAchievements();
+    const std::filesystem::path dir = asura::ui::AchievementCacheDir();
+    if (!db.is_valid() || list.empty() || dir.empty()) return;
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    auto clean = [](std::string s) {
+      std::replace_if(s.begin(), s.end(), [](char c) { return c == '\t' || c == '\n' || c == '\r'; },
+                      ' ');
+      return s;
+    };
+    std::ofstream tsv(dir / "achievements.tsv", std::ios::trunc);
+    tsv << "id\tgamerscore\tname\tdescription\tlocked_description\n";
+    for (const auto& a : list) {
+      tsv << a.id << '\t' << a.gamerscore << '\t' << clean(a.label) << '\t'
+          << clean(a.description) << '\t' << clean(a.unachieved_description) << '\n';
+      const auto icon = dir / (std::to_string(a.id) + ".png");
+      if (std::filesystem::exists(icon, ec)) continue;
+      const auto block = db.GetEntry(rex::system::util::XdbfSection::kImage, a.image_id);
+      if (block) {
+        std::ofstream(icon, std::ios::binary)
+            .write(reinterpret_cast<const char*>(block.buffer), std::streamsize(block.size));
+      }
     }
-    REXLOG_WARN("Flag {} not registered; default not applied", name);
+  }
+
+  // Runs this executable again with the same arguments, skipping the
+  // launcher. Only returns if exec fails.
+  static void Restart() {
+    std::vector<std::string> args;
+    if (std::ifstream in("/proc/self/cmdline", std::ios::binary); in) {
+      std::string arg;
+      while (std::getline(in, arg, '\0')) args.push_back(arg);
+    }
+    if (args.empty()) return;
+    args.push_back("--launcher=false");
+    std::vector<char*> argv;
+    for (auto& a : args) argv.push_back(a.data());
+    argv.push_back(nullptr);
+    REXLOG_INFO("Restarting to apply the graphics settings");
+    rex::FlushLogging();
+    execv("/proc/self/exe", argv.data());
+    REXLOG_ERROR("Restart failed; graphics settings apply on the next start");
   }
 
   // Builds before the rename used the folder name "asura_wrath" (user data
@@ -182,7 +313,8 @@ class AsuraWrathApp : public rex::ReXApp {
     REXLOG_INFO("Dumped achievement icons to {}", out.string());
   }
 
-  ImFont* toast_font_ = nullptr;
+  ImFont* toast_font_ = nullptr;  // MediumFont, also the launcher's text
+  ImFont* title_font_ = nullptr;  // TitleFont, the launcher's titles
   asura::ui::GameToastDialog* toast_ = nullptr;  // owned by the SDK
 
   // Saves live at <user_data>/<profile xuid>/43430817/00000001/SAVEDATA.DAT
@@ -203,4 +335,7 @@ class AsuraWrathApp : public rex::ReXApp {
   }
 
   std::filesystem::path user_data_root_path_;
+  asura::ui::LauncherSettings launcher_settings_, startup_settings_;
+  std::filesystem::path launcher_settings_path_;
+  std::unique_ptr<asura::ui::LauncherDialog> launcher_;
 };

@@ -1416,9 +1416,15 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
   }
 
   const size_t known_pipelines = draw_pipelines_.size();
-  const VkPipeline pipeline = draw_pipelines_.Get(key);
+  bool pending = false;
+  const VkPipeline pipeline = draw_pipelines_.Get(key, &pending);
   if (pipeline && draw_pipelines_.size() != known_pipelines) {
     RecordPipeline(*vs, ps, key);
+  }
+  if (pending) {
+    // Building in the background; the draw is skipped until it's ready.
+    ++guest_draw_stats_.skipped_pending_pipeline;
+    return DrawResult::kSkipped;
   }
   if (!pipeline) {
     ++guest_draw_stats_.failed_pipeline;

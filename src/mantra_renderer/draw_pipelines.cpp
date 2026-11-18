@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
 
@@ -42,6 +43,11 @@ bool DrawPipelines::Initialize(const rex::ui::vulkan::VulkanDevice* device,
   if (!rect_list_gs_) {
     MANTRA_WARN("no geometry shaders: rectangle-list draws will be skipped");
   }
+  const char* env = std::getenv("MANTRA_ASYNC_PIPELINES");
+  async_enabled_ = !(env && *env == '0');
+  if (async_enabled_) {
+    for (int i = 0; i < 2; ++i) async_threads_.emplace_back([this] { AsyncWorker(); });
+  }
   return true;
 }
 
@@ -50,6 +56,16 @@ void DrawPipelines::Shutdown() {
     return;
   }
   StopWarmUp();
+  {
+    std::lock_guard<std::mutex> lock(warm_mutex_);
+    async_stop_ = true;
+    async_queue_.clear();
+  }
+  async_cv_.notify_all();
+  for (std::thread& t : async_threads_) {
+    if (t.joinable()) t.join();
+  }
+  async_threads_.clear();
   if (save_thread_.joinable()) save_thread_.join();
   if (cache_ && cache_changes_.load() != cache_saved_changes_) {
     SaveCache();
@@ -76,20 +92,39 @@ void DrawPipelines::Shutdown() {
   device_ = nullptr;
 }
 
-VkPipeline DrawPipelines::Get(const PipelineKey& key) {
+VkPipeline DrawPipelines::Get(const PipelineKey& key, bool* pending) {
   if (auto it = pipelines_.find(key); it != pipelines_.end()) {
     return it->second;
   }
+  const bool async = pending && async_enabled_;
+  if (pending) *pending = false;
   VkPipeline pipeline = VK_NULL_HANDLE;
-  if (!warm_keys_.empty()) {
+  bool found = false;
+  if (!warm_keys_.empty() || async) {
     std::lock_guard<std::mutex> lock(warm_mutex_);
     if (auto it = warm_ready_.find(key); it != warm_ready_.end()) {
       pipeline = it->second;
       warm_ready_.erase(it);
-      ++warm_hits_;
+      found = true;
+      if (async_pending_.erase(key)) {
+        ++async_created_;
+        if (!pipeline) ++creation_failures_;
+      } else {
+        ++warm_hits_;
+      }
+    } else if (async) {
+      // Not built yet: queue it once (if the warm-up is building the same
+      // key, the second build is dropped when it lands) and skip the draw.
+      if (async_pending_.emplace(key, 0).second) {
+        async_queue_.push_back(key);
+        async_cv_.notify_one();
+      }
+      ++pending_skips_;
+      *pending = true;
+      return VK_NULL_HANDLE;
     }
   }
-  if (!pipeline) {
+  if (!found) {
     pipeline = Create(key);
     ++created_;
     if (!pipeline) {
@@ -98,6 +133,26 @@ VkPipeline DrawPipelines::Get(const PipelineKey& key) {
   }
   pipelines_.emplace(key, pipeline);
   return pipeline;
+}
+
+void DrawPipelines::AsyncWorker() {
+  for (;;) {
+    PipelineKey key;
+    {
+      std::unique_lock<std::mutex> lock(warm_mutex_);
+      async_cv_.wait(lock, [this] { return async_stop_ || !async_queue_.empty(); });
+      if (async_stop_) return;
+      key = async_queue_.front();
+      async_queue_.pop_front();
+      if (warm_ready_.count(key)) continue;  // warm-up built it meanwhile
+    }
+    const VkPipeline pipeline = Create(key);
+    std::lock_guard<std::mutex> lock(warm_mutex_);
+    // Failures land as VK_NULL_HANDLE so Get remembers them.
+    if (!warm_ready_.emplace(key, pipeline).second && pipeline) {
+      device_->functions().vkDestroyPipeline(device_->device(), pipeline, nullptr);
+    }
+  }
 }
 
 void DrawPipelines::OpenCache(const std::filesystem::path& path) {

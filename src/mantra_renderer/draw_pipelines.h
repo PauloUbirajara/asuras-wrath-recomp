@@ -7,7 +7,9 @@
 // compare/write masks and reference.
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <cstring>
 #include <filesystem>
 #include <memory>
@@ -81,7 +83,13 @@ class DrawPipelines {
 
   // Finds or creates the pipeline (VK_NULL_HANDLE if creation failed; failures
   // are remembered). Called from the GPU thread only.
-  VkPipeline Get(const PipelineKey& key);
+  //
+  // With `pending` (and async creation on, MANTRA_ASYNC_PIPELINES != 0), a
+  // pipeline that isn't built yet is queued for the background threads
+  // instead: Get returns VK_NULL_HANDLE with *pending = true and the caller
+  // skips the draw. Building one takes 30-70 ms on integrated GPUs, which
+  // otherwise stalls the frame.
+  VkPipeline Get(const PipelineKey& key, bool* pending = nullptr);
 
   // Driver pipeline cache kept on disk at `path` (loaded now, saved by
   // SaveCache and at shutdown). Call before WarmUp and the first Get.
@@ -95,6 +103,8 @@ class DrawPipelines {
   void WarmUp(std::vector<PipelineKey> keys);
 
   size_t size() const { return pipelines_.size(); }
+  uint64_t async_created() const { return async_created_; }  // taken from the async queue
+  uint64_t pending_skips() const { return pending_skips_; }  // Gets that returned pending
   uint64_t created() const { return created_; }           // by Get, on the GPU thread
   uint64_t warm_hits() const { return warm_hits_; }       // Gets served by the warm-up
   size_t warm_total() const { return warm_keys_.size(); }
@@ -137,6 +147,17 @@ class DrawPipelines {
   std::unordered_map<PipelineKey, VkPipeline, KeyHash> warm_ready_;  // under warm_mutex_
   std::chrono::steady_clock::time_point warm_start_;
   uint64_t warm_hits_ = 0;
+
+  // Async creation of pipelines first asked for in game.
+  void AsyncWorker();
+  bool async_enabled_ = true;
+  std::deque<PipelineKey> async_queue_;  // under warm_mutex_
+  std::unordered_map<PipelineKey, char, KeyHash> async_pending_;  // GPU thread only
+  std::condition_variable async_cv_;
+  std::vector<std::thread> async_threads_;
+  bool async_stop_ = false;  // under warm_mutex_
+  uint64_t async_created_ = 0;
+  uint64_t pending_skips_ = 0;
 };
 
 }  // namespace mantra

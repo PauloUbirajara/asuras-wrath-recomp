@@ -72,7 +72,24 @@ GameToastDialog::Image GameToastDialog::LoadImage(const char* name) {
   return image;
 }
 
+namespace {
+std::mutex g_options_mutex;
+ToastOptions g_options;
+}  // namespace
+
+void SetToastOptions(const ToastOptions& options) {
+  std::lock_guard lock(g_options_mutex);
+  g_options = options;
+}
+
+ToastOptions GetToastOptions() {
+  std::lock_guard lock(g_options_mutex);
+  return g_options;
+}
+
 void GameToastDialog::Push(const rex::system::AchievementEvent& event) {
+  // The unlock itself is recorded by the runtime; only the pop-up is skipped.
+  if (!GetToastOptions().enabled) return;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     queue_.push_back({event, std::nullopt});
@@ -93,6 +110,8 @@ void GameToastDialog::Push(const rex::system::AchievementEvent& event) {
 }
 
 void GameToastDialog::OnDraw(ImGuiIO& io) {
+  const ToastOptions options = GetToastOptions();
+  const float display_seconds = options.seconds;
   const auto now = std::chrono::steady_clock::now();
   rex::system::AchievementEvent event;
   float age = 0.0f;
@@ -102,7 +121,7 @@ void GameToastDialog::OnDraw(ImGuiIO& io) {
       auto& front = queue_.front();
       if (!front.visible_since) front.visible_since = now;
       age = std::chrono::duration<float>(now - *front.visible_since).count();
-      if (age < kDisplaySeconds) break;
+      if (age < display_seconds) break;
       queue_.pop_front();
     }
     if (queue_.empty()) {
@@ -117,14 +136,17 @@ void GameToastDialog::OnDraw(ImGuiIO& io) {
     event = queue_.front().event;
   }
   const float alpha =
-      std::clamp(std::min(age / kFadeIn, (kDisplaySeconds - age) / kFadeOut), 0.0f, 1.0f);
+      std::clamp(std::min(age / kFadeIn, (display_seconds - age) / kFadeOut), 0.0f, 1.0f);
 
   // A fixed 300x70 toast at 720p, scaled with the window height; the
   // background art is stretched to fit it.
   const float scale = std::max(io.DisplaySize.y / 720.0f, 0.5f);
   const float margin = 16.0f * scale, pad = 8.0f * scale;
   const ImVec2 size(kToastWidth * scale, kToastHeight * scale);
-  const ImVec2 pos(io.DisplaySize.x - size.x - margin, io.DisplaySize.y - size.y - margin);
+  const bool right = options.corner == 1 || options.corner == 3;
+  const bool bottom = options.corner >= 2;
+  const ImVec2 pos(right ? io.DisplaySize.x - size.x - margin : margin,
+                   bottom ? io.DisplaySize.y - size.y - margin : margin);
 
   ImGui::SetNextWindowPos(pos, ImGuiCond_Always);
   ImGui::SetNextWindowSize(size, ImGuiCond_Always);

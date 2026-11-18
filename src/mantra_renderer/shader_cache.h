@@ -42,6 +42,7 @@ class ShaderCache {
   bool Load(const std::filesystem::path& path);
   bool loaded() const { return !entries_.empty(); }
   size_t size() const { return entries_.size(); }
+  uint32_t version() const { return version_; }
 
   Lookup Find(const void* microcode_be, size_t byte_count, bool is_pixel) const;
 

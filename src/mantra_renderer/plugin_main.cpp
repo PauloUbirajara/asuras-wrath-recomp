@@ -2,6 +2,13 @@
 #include <rex/system/gpu_plugin.h>
 
 #include "native_graphics_system.h"
+#include "native_command_processor.h"
+
+// Guest frames presented so far (the app's FPS counter reads it through
+// dlsym, as the plugin is loaded with RTLD_LOCAL).
+extern "C" REX_GPU_PLUGIN_EXPORT uint64_t mantra_guest_swap_count(void) {
+  return rex::graphics::native::g_guest_swaps.load(std::memory_order_relaxed);
+}
 
 extern "C" REX_GPU_PLUGIN_EXPORT uint32_t rex_gpu_abi_version(void) {
   return rex::system::kGpuPluginAbiVersion;

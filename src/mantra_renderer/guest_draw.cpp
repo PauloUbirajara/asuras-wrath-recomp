@@ -617,7 +617,10 @@ bool NativeCommandProcessor::BeginDrawRendering(VkCommandBuffer cmd, uint32_t co
     height = std::min(height, depth_rt->image.height);
   }
   VkRenderingInfo info = {VK_STRUCTURE_TYPE_RENDERING_INFO};
-  info.renderArea = {{0, 0}, {width, height}};
+  // Guest pixels here and in rendering_.area; the images are larger by the
+  // render scale.
+  const VkRect2D guest_area = {{0, 0}, {width, height}};
+  info.renderArea = mantra::HostRect(guest_area, mantra::RenderScale8());
   info.layerCount = 1;
   info.colorAttachmentCount = color_count;
   info.pColorAttachments = color_attachments;
@@ -637,8 +640,8 @@ bool NativeCommandProcessor::BeginDrawRendering(VkCommandBuffer cmd, uint32_t co
     rendering_.color_format[i] = color_rts[i] ? colors[i].host_format : VK_FORMAT_UNDEFINED;
   }
   rendering_.depth = depth_rt;
-  rendering_.area = info.renderArea;
-  render_area = info.renderArea;
+  rendering_.area = guest_area;
+  render_area = guest_area;
   return true;
 }
 
@@ -1306,6 +1309,7 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
 
   mantra::SharedConstants shared;
   std::copy_n(viewport.ndc_scale, 3, shared.ndc_scale);
+  shared.pixel_scale_inv = 8.0f / float(mantra::RenderScale8());
   std::copy_n(viewport.ndc_offset, 3, shared.ndc_offset);
   {
     // Fetch results are scaled by 2^exp_adjust in the shader (mantraExpAdjust).
@@ -1436,11 +1440,12 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
   shader_interface_.Bind(cmd, offsets, texture_set);
 
   // Viewport and scissor (inside the render area).
+  const float render_scale = float(mantra::RenderScale8()) / 8.0f;
   VkViewport vk_viewport;
-  vk_viewport.x = float(viewport.xy_offset[0]);
-  vk_viewport.y = float(viewport.xy_offset[1]);
-  vk_viewport.width = float(viewport.xy_extent[0]);
-  vk_viewport.height = float(viewport.xy_extent[1]);
+  vk_viewport.x = float(viewport.xy_offset[0]) * render_scale;
+  vk_viewport.y = float(viewport.xy_offset[1]) * render_scale;
+  vk_viewport.width = float(viewport.xy_extent[0]) * render_scale;
+  vk_viewport.height = float(viewport.xy_extent[1]) * render_scale;
   vk_viewport.minDepth = viewport.z_min;
   vk_viewport.maxDepth = viewport.z_max;
   dfn.vkCmdSetViewport(cmd, 0, 1, &vk_viewport);
@@ -1454,7 +1459,8 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
     ++guest_draw_stats_.skipped_viewport;
     return DrawResult::kSkipped;
   }
-  const VkRect2D vk_scissor = {{int32_t(x0), int32_t(y0)}, {x1 - x0, y1 - y0}};
+  const VkRect2D vk_scissor =
+      mantra::HostRect({{int32_t(x0), int32_t(y0)}, {x1 - x0, y1 - y0}}, mantra::RenderScale8());
   dfn.vkCmdSetScissor(cmd, 0, 1, &vk_scissor);
 
   // Depth bias, blend constants, stencil.

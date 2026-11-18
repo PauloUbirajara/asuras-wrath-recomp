@@ -19,12 +19,15 @@ include(generated/rexglue.cmake)
 # Sources
 set(ASURAWRATH_SOURCES
     src/main.cpp
+    src/game/frame_rate.cpp
     src/input/pad_remap.cpp
     src/ui/game_assets.cpp
     src/ui/game_font.cpp
+    src/ui/fps_counter.cpp
     src/ui/game_toast.cpp
     src/ui/launcher.cpp
     src/ui/launcher_text.cpp
+    src/ui/save_data.cpp
 )
 
 if(WIN32)

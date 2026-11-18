@@ -7,6 +7,8 @@
 
 #include <rex/ui/vulkan/api.h>
 
+#include "vk_image.h"
+
 namespace rex::ui::vulkan {
 class VulkanDevice;
 }
@@ -39,11 +41,13 @@ class CopyPipelines {
 
   // Records dst[rect] = copy(src) into `cmd`. The caller transitions src to
   // SHADER_READ_ONLY_OPTIMAL and dst to COLOR_ATTACHMENT_OPTIMAL first.
-  // `descriptor_pool` must be reset only after `cmd` completes.
+  // `descriptor_pool` must be reset only after `cmd` completes. `rect`,
+  // `dst_width`/`dst_height` and `constants.src_offset` are in guest pixels;
+  // both images are `scale8` / 8 larger (RenderScale8()).
   bool Record(VkCommandBuffer cmd, VkDescriptorPool descriptor_pool, VkImageView src_view,
               bool src_multisampled, VkImageView dst_view, VkFormat dst_format,
               uint32_t dst_width, uint32_t dst_height, const CopyRect& rect,
-              const CopyPushConstants& constants);
+              const CopyPushConstants& constants, uint32_t scale8 = RenderScale8());
 
  private:
   VkPipeline GetPipeline(VkFormat dst_format, bool src_multisampled);

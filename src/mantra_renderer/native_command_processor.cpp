@@ -141,9 +141,17 @@ bool NativeCommandProcessor::SetupContext() {
   const std::filesystem::path cache_path = mantra::ShaderCache::DefaultPath();
   if (!cache_path.empty() && shader_cache_.Load(cache_path)) {
     MANTRA_INFO("shader cache: {} entries from {}", shader_cache_.size(), cache_path.string());
+    if (mantra::RenderScale8() != 8 && shader_cache_.version() < 8) {
+      MANTRA_WARN("shader cache v{} predates the render scale: rebuild it (screen-space effects "
+                  "will be misplaced)", shader_cache_.version());
+    }
   } else {
     MANTRA_WARN("no shader cache at {}; run mantra_shadergen --game <extracted> --out <path>",
                 cache_path.string());
+  }
+  if (mantra::RenderScale8() != 8) {
+    MANTRA_INFO("render scale {}x ({}/8, MANTRA_RENDER_SCALE)", mantra::RenderScale8() / 8.0,
+                mantra::RenderScale8());
   }
   StartPipelineWarmUp();
   return true;
@@ -1556,6 +1564,7 @@ void NativeCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
   EndFrameTiming();
   ScopedNs swap_timer{frame_timing_.swap_ns};
   ++swap_stats_.swaps;
+  g_guest_swaps.fetch_add(1, std::memory_order_relaxed);
   buffer_cache_.FrameEnded();
   // MANTRA_TRACE_TRIGGER=<file>: when the file appears, trace the next frame
   // (and delete the file, so it can be triggered again).
@@ -1746,8 +1755,11 @@ bool NativeCommandProcessor::PresentResolvedSurface(mantra::ResolvedSurface& sur
   const uint32_t display_width = std::max(uint32_t(1), uint32_t(video_mode.display_width));
   const uint32_t display_height = std::max(uint32_t(1), uint32_t(video_mode.display_height));
 
+  // At the internal resolution: the presenter scales it to the window.
+  const uint32_t output_width = mantra::HostSize(width, surface.image.scale8);
+  const uint32_t output_height = mantra::HostSize(height, surface.image.scale8);
   return presenter->RefreshGuestOutput(
-      width, height, display_width, display_height,
+      output_width, output_height, display_width, display_height,
       [&](ui::Presenter::GuestOutputRefreshContext& context) -> bool {
         auto& vk_context =
             static_cast<ui::vulkan::VulkanPresenter::VulkanGuestOutputRefreshContext&>(context);
@@ -1760,7 +1772,7 @@ bool NativeCommandProcessor::PresentResolvedSurface(mantra::ResolvedSurface& sur
         mantra::TransitionImage(vulkan_device_, cmd, surface.image,
                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                 VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
-        mantra::TrackedImage output = GuestOutputImage(vk_context, width, height);
+        mantra::TrackedImage output = GuestOutputImage(vk_context, output_width, output_height);
         // Fully overwritten below if the surface covers it; otherwise the
         // uncovered part is undefined anyway.
         mantra::TransitionImage(vulkan_device_, cmd, output,
@@ -1776,7 +1788,8 @@ bool NativeCommandProcessor::PresentResolvedSurface(mantra::ResolvedSurface& sur
         rect.height = std::min(height, surface.image.height);
         const bool recorded = copy_pipelines_.Record(
             cmd, descriptor_pool, surface.view, false, vk_context.image_view(),
-            ui::vulkan::VulkanPresenter::kGuestOutputFormat, width, height, rect, constants);
+            ui::vulkan::VulkanPresenter::kGuestOutputFormat, width, height, rect, constants,
+            surface.image.scale8);
         mantra::TransitionImage(vulkan_device_, cmd, output,
                                 ui::vulkan::VulkanPresenter::kGuestOutputInternalLayout,
                                 ui::vulkan::VulkanPresenter::kGuestOutputInternalStageMask,
@@ -1815,6 +1828,9 @@ float HalfToFloat(uint16_t h) {
 void NativeCommandProcessor::CaptureImage(mantra::TrackedImage& image, VkFormat format,
                                           uint32_t width, uint32_t height, uint32_t swizzle,
                                           const std::string& name) {
+  // Captures hold the image's real pixels (the render scale included).
+  width = mantra::HostSize(width, image.scale8);
+  height = mantra::HostSize(height, image.scale8);
   uint32_t texel_size;
   switch (format) {
     case VK_FORMAT_R8G8B8A8_UNORM:

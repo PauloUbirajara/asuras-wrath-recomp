@@ -67,6 +67,7 @@ uint MantraLoad_uint(uint address, uint alignment) { return g_Constants.Load(add
 #define g_NdcScale                 MantraLoad_float3(g_PushConstants.SharedConstants + 288)
 #define g_NdcOffset                MantraLoad_float3(g_PushConstants.SharedConstants + 304)
 #define g_MantraInputRemapMask     MantraLoad_uint(g_PushConstants.SharedConstants + 300)
+#define g_MantraPixelScaleInv      MantraLoad_float(g_PushConstants.SharedConstants + 316)
 
 // mantra: SharedConstants::input_remap for input `location`.
 uint MantraInputRemap(uint location)

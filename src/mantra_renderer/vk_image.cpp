@@ -1,5 +1,9 @@
 #include "vk_image.h"
 
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+
 #include <rex/ui/vulkan/device.h>
 #include <rex/ui/vulkan/util.h>
 
@@ -11,7 +15,10 @@ bool CreateTrackedImage(const vk::VulkanDevice* device, VkFormat format,
                         VkImageAspectFlags aspect, uint32_t width, uint32_t height,
                         VkSampleCountFlagBits samples, VkImageUsageFlags usage,
                         const VkFormat* view_formats, uint32_t view_format_count,
-                        TrackedImage& out) {
+                        TrackedImage& out, uint32_t scale8) {
+  const uint32_t guest_width = width, guest_height = height;
+  width = HostSize(width, scale8);
+  height = HostSize(height, scale8);
   VkImageCreateInfo info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   VkImageFormatListCreateInfo format_list = {VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO};
   if (view_format_count) {
@@ -40,10 +47,25 @@ bool CreateTrackedImage(const vk::VulkanDevice* device, VkFormat format,
   }
   out.format = format;
   out.aspect = aspect;
-  out.width = width;
-  out.height = height;
+  out.width = guest_width;
+  out.height = guest_height;
+  out.host_width = width;
+  out.host_height = height;
+  out.scale8 = scale8;
   out.samples = samples;
   return true;
+}
+
+uint32_t RenderScale8() {
+  static const uint32_t scale8 = [] {
+    const char* env = std::getenv("MANTRA_RENDER_SCALE");
+    if (!env || !*env) return 8u;
+    double v = std::strtod(env, nullptr);
+    if (v >= 100.0) v /= 720.0;  // a target height
+    if (!(v > 0.0)) return 8u;
+    return uint32_t(std::clamp<long>(std::lround(v * 8.0), 4, 32));
+  }();
+  return scale8;
 }
 
 void DestroyTrackedImage(const vk::VulkanDevice* device, TrackedImage& image) {

@@ -167,6 +167,11 @@ void AdaptInterface(TranslateResult& r) {
     if (const size_t at = hlsl.find(kPos); at != std::string::npos) {
       hlsl.replace(at, kPos.size(), "\tout precise float4 oPos : SV_Position");
     }
+  } else {
+    // Render scale: SV_Position is in host pixels, the guest's vPos (UE3's
+    // screen-space lookups) is that divided by the scale.
+    static const std::regex kPixelPos(R"(iPos\.xy - 0\.5)");
+    hlsl = std::regex_replace(hlsl, kPixelPos, "iPos.xy * g_MantraPixelScaleInv - 0.5");
   }
 }
 

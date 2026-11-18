@@ -22,6 +22,9 @@
 #include <rex/rex_app.h>
 #include <rex/system/flags.h>
 #include <rex/ui/imgui_drawer.h>
+#include <rex/ui/keybinds.h>
+#include <rex/ui/window.h>
+#include <imgui.h>
 #include <rex/system/achievement_manager.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/util/xdbf_utils.h>
@@ -29,9 +32,11 @@
 #include <rex/input/input_system.h>
 
 #include "debug/script_input.h"
+#include "game/frame_rate.h"
 #include "input/pad_remap.h"
 #include "ui/game_assets.h"
 #include "ui/game_font.h"
+#include "ui/fps_counter.h"
 #include "ui/game_toast.h"
 #include "ui/launcher.h"
 
@@ -90,6 +95,8 @@ class AsuraWrathApp : public rex::ReXApp {
   // void OnLoadXexImage(std::string& xex_image) override {}
   // void OnPostLoadXexImage() override {}
   void OnPostSetup() override {
+    // The F3 overlay's FPS (mantra's swap count).
+    SetGuestFrameStats(asura::ui::GuestFrameStats);
     // Debug: ASURA_INPUT_SCRIPT drives a scripted gamepad (debug/script_input.h).
     if (auto driver = asura::debug::ScriptInputDriver::FromEnvironment()) {
       if (auto* input = static_cast<rex::input::InputSystem*>(runtime()->input_system())) {
@@ -119,9 +126,11 @@ class AsuraWrathApp : public rex::ReXApp {
     }
     toast_font_ = asura::ui::AddGameFontFamily(atlas, "MediumFont");
     title_font_ = asura::ui::AddGameFontFamily(atlas, "TitleFont");
-    // Without the game's fonts the launcher uses ImGui's: give it Japanese.
-    if (!toast_font_ && !atlas->Fonts.empty()) {
-      asura::ui::AddFallbackFonts(atlas, atlas->Fonts[0], false);
+    // Until the game's fonts are extracted: the bundled Noto Serif (with the
+    // launcher's Japanese).
+    if (!toast_font_) {
+      toast_font_ = asura::ui::AddBundledFont(atlas, false);
+      title_font_ = asura::ui::AddBundledFont(atlas, true);
     }
   }
   // The SDK's overlays in the launcher's orange instead of green.
@@ -145,6 +154,7 @@ class AsuraWrathApp : public rex::ReXApp {
   // (4.5 s each) once the title is running.
   void OnPostLaunchModule(rex::system::XThread* thread) override {
     (void)thread;
+    asura::game::StartFrameRateHook(runtime());
     DumpAchievementIcons();
     const char* env = std::getenv("ASURA_TEST_TOAST");
     if (!env || !toast_) return;
@@ -161,7 +171,10 @@ class AsuraWrathApp : public rex::ReXApp {
       toast_->Push(event);
     }
   }
-  // void OnShutdown() override {}
+  void OnShutdown() override {
+    asura::game::StopFrameRateHook();
+    fps_counter_.reset();
+  }
   void OnConfigurePaths(rex::PathConfig& paths) override {
     MigrateLegacyFolders(paths);
     user_data_root_path_ = paths.user_data_root;
@@ -195,13 +208,22 @@ class AsuraWrathApp : public rex::ReXApp {
   }
 
   // The launcher (ui/launcher.h) runs here: the window is up, the game isn't
-  // loaded yet. Play resumes initialization with the chosen game folder.
+  // loaded. This process stays the launcher; Play starts the game as another
+  // process (this executable with --launcher=false), which takes the path
+  // below.
   std::optional<rex::PathConfig> OnFinalizePaths(
-      const rex::PathConfig& defaults, std::function<void(rex::PathConfig)> resume) override {
+      const rex::PathConfig& defaults, std::function<void(rex::PathConfig)>) override {
+    // Esc in game: the launcher over the running game. Registered before the
+    // saved keys are applied, so a rebound key sticks.
+    rex::ui::RegisterBind("bind_launcher", "Escape", "Open the launcher (in game)",
+                          [this] { ToggleLauncherInGame(); });
     // Again now that the overlays registered their bind_* keys.
     asura::ui::ApplyLauncherDefaults(launcher_settings_);
     if (!LauncherWanted() || !imgui_drawer()) {
       asura::ui::ApplyWindowSettings(launcher_settings_);
+      UpdateFpsCounter();
+      game_running_ = true;
+      UpdateCursor();
       return defaults;
     }
     launcher_ = std::make_unique<asura::ui::LauncherDialog>(
@@ -210,29 +232,85 @@ class AsuraWrathApp : public rex::ReXApp {
         [context = &app_context()](std::function<void()> f) {
           context->CallInUIThreadDeferred(std::move(f));
         },
-        [this, defaults, resume = std::move(resume)](const asura::ui::LauncherSettings& s) {
-          launcher_.reset();
-          // GPU, present mode and cropping are fixed once the window's
-          // presenter exists: start over with the new settings.
-          if (asura::ui::NeedsRestart(startup_settings_, s)) {
-            Restart(/*show_launcher=*/false);
-          }
-          launcher_settings_ = s;
-          // Window settings first: they go through the flag registry (the
-          // window follows), the rest are plain defaults.
-          asura::ui::ApplyWindowSettings(s);
-          asura::ui::ApplyLauncherDefaults(s);
-          rex::PathConfig paths = defaults;
-          if (rex::cvar::GetFlagSource("game_data_root") == rex::cvar::Source::kDefault) {
-            paths.game_data_root = s.game_data;
-          }
-          resume(paths);
-        },
         [] { Restart(/*show_launcher=*/true); });
     return std::nullopt;
   }
 
  private:
+  // Enhancements > Mouse cursor: auto-hidden in game (the SDK shows it again
+  // while the mouse moves).
+  void UpdateCursor() {
+    if (!window() || !game_running_) return;
+    window()->SetCursorVisibility(launcher_settings_.hide_cursor && !launcher_
+                                      ? rex::ui::Window::CursorVisibility::kAutoHidden
+                                      : rex::ui::Window::CursorVisibility::kVisible);
+  }
+
+  // Enhancements > Sound: mute while the window isn't focused (audio_mute is
+  // read per audio buffer), unless the config file or command line set it.
+  void OnWindowFocusChanged(bool focused) override {
+    const auto source = rex::cvar::GetFlagSource("audio_mute");
+    const bool ours = source == rex::cvar::Source::kDefault || source == rex::cvar::Source::kRuntime;
+    if (!ours) return;
+    const bool mute = !focused && launcher_settings_.mute_background && game_running_;
+    if (mute != muted_in_background_) {
+      muted_in_background_ = mute;
+      rex::cvar::SetFlagByName("audio_mute", mute ? "true" : "false");
+    }
+  }
+
+  // Graphics > "Show the frame rate".
+  void UpdateFpsCounter() {
+    if (launcher_settings_.show_fps && !fps_counter_ && imgui_drawer()) {
+      fps_counter_ = std::make_unique<asura::ui::FpsCounterDialog>(imgui_drawer(), toast_font_);
+    } else if (!launcher_settings_.show_fps) {
+      fps_counter_.reset();
+    }
+  }
+
+  // bind_launcher (Esc): opens the launcher over the game, or resumes from it.
+  // The game keeps running underneath.
+  void ToggleLauncherInGame() {
+    if (!game_running_ || !imgui_drawer()) return;
+    // Esc also closes the SDK's console and settings overlays.
+    if (ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput) return;
+    if (launcher_) {
+      launcher_->RequestResume();
+      return;
+    }
+    if (window()) window()->SetCursorVisibility(rex::ui::Window::CursorVisibility::kVisible);
+    launcher_ = std::make_unique<asura::ui::LauncherDialog>(
+        imgui_drawer(), immediate_drawer(), window(), toast_font_, title_font_, launcher_settings_,
+        launcher_settings_path_, user_data_root_path_,
+        [context = &app_context()](std::function<void()> f) {
+          context->CallInUIThreadDeferred(std::move(f));
+        },
+        [] { Restart(/*show_launcher=*/true); });
+    launcher_->SetInGame(
+        [this](const asura::ui::LauncherSettings& s) {
+          // Fixed once the game runs: the presenter's (NeedsRestart), the
+          // game folder and the game's language.
+          return asura::ui::NeedsRestart(startup_settings_, s) ||
+                 s.game_data != launcher_settings_.game_data ||
+                 s.language != launcher_settings_.language;
+        },
+        [this](const asura::ui::LauncherSettings& s, bool restart) {
+          launcher_.reset();
+          if (restart) Restart(/*show_launcher=*/false);
+          // Settings the presenter or the game fixed at start keep their
+          // running values until the next start (they're saved already).
+          const std::string game_data = launcher_settings_.game_data;
+          const uint32_t language = launcher_settings_.language;
+          launcher_settings_ = s;
+          launcher_settings_.game_data = game_data;
+          launcher_settings_.language = language;
+          asura::ui::ApplyWindowSettings(s);
+          asura::ui::ApplyLiveSettings(s);
+          UpdateFpsCounter();
+          UpdateCursor();
+        });
+  }
+
   static bool LauncherWanted() {
     return REXCVAR_GET(launcher) && !std::getenv("ASURA_INPUT_SCRIPT");
   }
@@ -331,6 +409,9 @@ class AsuraWrathApp : public rex::ReXApp {
 
   std::filesystem::path user_data_root_path_;
   asura::ui::LauncherSettings launcher_settings_, startup_settings_;
+  bool game_running_ = false;
+  bool muted_in_background_ = false;  // audio_mute set by OnWindowFocusChanged  // past the launcher (bind_launcher works from then on)
   std::filesystem::path launcher_settings_path_;
   std::unique_ptr<asura::ui::LauncherDialog> launcher_;
+  std::unique_ptr<asura::ui::FpsCounterDialog> fps_counter_;
 };

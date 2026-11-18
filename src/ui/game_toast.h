@@ -37,6 +37,15 @@ class ImmediateTexture;
 
 namespace asura::ui {
 
+// Settings > Achievement pop-ups (from the launcher settings).
+struct ToastOptions {
+  bool enabled = true;
+  int corner = 3;  // 0 top left, 1 top right, 2 bottom left, 3 bottom right
+  float seconds = 4.5f;
+};
+void SetToastOptions(const ToastOptions& options);
+ToastOptions GetToastOptions();
+
 class GameToastDialog : public rex::ui::AchievementNotificationDialog {
  public:
   GameToastDialog(rex::ui::ImGuiDrawer* drawer, rex::ui::ImmediateDrawer* immediate_drawer,
@@ -60,7 +69,6 @@ class GameToastDialog : public rex::ui::AchievementNotificationDialog {
     std::optional<std::chrono::steady_clock::time_point> visible_since;
   };
 
-  static constexpr float kDisplaySeconds = 4.5f;
   static constexpr float kFadeIn = 0.3f, kFadeOut = 0.5f;
 
   Image LoadImage(const char* name);

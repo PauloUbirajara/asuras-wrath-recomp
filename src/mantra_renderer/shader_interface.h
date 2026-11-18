@@ -54,7 +54,9 @@ struct SharedConstants {
   // mantra: bit per VS input location whose input_remap applies.
   uint32_t input_remap_mask = 0;
   float ndc_offset[3] = {};
-  float pad3 = 0.0f;
+  // mantra: 1 / render scale; pixel shaders (cache v8+) multiply SV_Position
+  // by it to get the guest's vPos.
+  float pixel_scale_inv = 1.0f;
   // mantra: per VS input location (16 bits each, location 2i in the low half
   // of word i), how the VS rebuilds the input: component j takes component
   // ((m >> 3j) & 7) of the fetched value (0..3 = xyzw, 4 = 0, 5 = 1). The D3D
@@ -73,6 +75,7 @@ static_assert(offsetof(SharedConstants, ndc_scale) == 288);
 static_assert(offsetof(SharedConstants, input_remap_mask) == 300);
 static_assert(offsetof(SharedConstants, input_remap) == 320);
 static_assert(offsetof(SharedConstants, ndc_offset) == 304);
+static_assert(offsetof(SharedConstants, pixel_scale_inv) == 316);
 
 class ShaderInterface {
  public:

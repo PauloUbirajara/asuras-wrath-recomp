@@ -34,6 +34,8 @@
 #include <rex/ui/style.h>
 #include <rex/ui/window_listener.h>
 
+#include "save_data.h"
+
 struct SDL_Gamepad;
 
 namespace rex::input {
@@ -55,6 +57,8 @@ struct LauncherSettings {
   int gpu = -1;  // vulkan_device, -1 = automatic
   bool vsync = true;
   bool fullscreen = true;
+  bool exclusive = false;  // fullscreen switches the display mode (window size) instead of borderless
+  int monitor = 0;         // 1-based, 0 = the default one
   bool keyboard = false;  // mnk_mode
   AspectMode aspect = AspectMode::kFit;
   int window_width = 0, window_height = 0;  // windowed size, 0 = default (1280x720)
@@ -64,6 +68,19 @@ struct LauncherSettings {
   std::map<std::string, std::string> binds;  // keybind_* flag -> keys
   std::map<std::string, std::string> pad;    // controller remap: target -> source (pad_remap.h)
   double deadzone_left = 0, deadzone_right = 0;  // stick deadzones, fraction of the range
+  int vibration = 100;                       // controller vibration strength, percent
+  bool show_fps = false;                     // frame rate in the top-left corner
+  int fps_cap = 30;                          // frame rate limit, 30 = the game's, 0 = unlimited
+  uint32_t turbo = 0;                        // Turbo: held controls repeat (bit = PadControl)
+  bool hide_cursor = true;                   // mouse cursor hides while it isn't moving, in game
+  bool mute_background = false;              // no sound while the window isn't focused
+  int render_height = 720;                   // internal resolution (16:9), 720 = the game's
+  // Graphics > "Higher resolution" (experimental): off, the game renders at
+  // its own 720p whatever render_height says (RenderHeight).
+  bool native_render = false;
+  bool toasts = true;                        // achievement pop-ups
+  int toast_corner = 3;                      // 0 top left, 1 top right, 2 bottom left, 3 bottom right
+  double toast_seconds = 4.5;                // how long each pop-up stays
 
   static std::filesystem::path PathIn(const std::filesystem::path& user_data_root);
   bool Load(const std::filesystem::path& path);  // false if missing
@@ -80,8 +97,18 @@ std::array<uint8_t, 16> PadMapFrom(const LauncherSettings& settings);
 void UseWindowForLauncher();
 // After Play: applies the window settings (size, fullscreen, aspect) live.
 void ApplyWindowSettings(const LauncherSettings& settings);
+// While the game runs (the launcher opened with Esc): the settings that can
+// change without a restart (keys, controller, pop-ups); the window ones go
+// through ApplyWindowSettings.
+void ApplyLiveSettings(const LauncherSettings& settings);
 // Settings that only apply when the game starts over (GPU, present mode,
 // cropping).
+// Whether the shader cache works with the given settings.
+enum class ShaderCacheFit { kReady, kMissing, kOutdated };
+ShaderCacheFit ShaderCacheFitFor(const LauncherSettings& s);
+// The render height mantra uses: render_height with "Higher resolution" on,
+// else the game's 720.
+int RenderHeight(const LauncherSettings& s);
 bool NeedsRestart(const LauncherSettings& before, const LauncherSettings& after);
 
 // Turns the SDK's green ImGui accents (all overlays) orange.
@@ -101,16 +128,25 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
                        public rex::ui::WindowListener,
                        public rex::ui::WindowInputListener {
  public:
-  // `on_play` runs on the UI thread after the frame with the click; the
-  // launcher is detached by then and may be destroyed by it.
+  // Play starts the game as a separate process (this executable with
+  // --launcher=false, in its own window) and becomes Stop while it runs.
   LauncherDialog(rex::ui::ImGuiDrawer* drawer, rex::ui::ImmediateDrawer* immediate_drawer,
                  rex::ui::Window* window, ImFont* font, ImFont* title_font,
                  LauncherSettings settings,
                  std::filesystem::path settings_path, std::filesystem::path user_data_root,
                  std::function<void(std::function<void()>)> call_in_ui_thread_deferred,
-                 std::function<void(const LauncherSettings&)> on_play,
                  std::function<void()> on_relaunch);
   ~LauncherDialog() override;
+
+  // Opened over the running game (Esc, in the game's process): Play becomes
+  // Resume, or Restart when `needs_restart` says a change needs one.
+  // `on_resume` (restart = the player chose Restart) runs on the UI thread
+  // after the frame with the click; the launcher is detached by then and may
+  // be destroyed by it.
+  void SetInGame(std::function<bool(const LauncherSettings&)> needs_restart,
+                 std::function<void(const LauncherSettings&, bool restart)> on_resume);
+  // Esc again: like Resume (changes that need a restart wait for the next start).
+  void RequestResume() { resume_requested_ = true; }
 
   // WindowListener / WindowInputListener.
   void OnFileDrop(rex::ui::FileDropEvent& e) override;
@@ -145,6 +181,7 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
     std::thread reader;
     std::mutex mutex;
     std::string last_line;  // under mutex
+    std::atomic<int> done{0}, total{0};  // shaders translated ("translated N/M" lines)
     void Start(const std::filesystem::path& tool, const std::filesystem::path& game,
                const std::filesystem::path& out, const std::vector<std::filesystem::path>& dumps);
     void Stop();
@@ -185,6 +222,8 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
     uint64_t bytes = 0;
     std::string modified;
     std::vector<std::pair<std::string, uint64_t>> files;  // name, size
+    bool has_progress = false;
+    SaveSummary progress;
   };
   struct ProfileInfo {
     std::string xuid;
@@ -195,6 +234,7 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   void StartAssetJob();
   void ScanSaves();
   void DrawSaves(float scale);
+  void DrawStory(const SaveSummary& progress, float label_w, float scale);
   void DrawGraphics(float scale);
   void LoadAchievements();
   void UseDroppedPath(const std::filesystem::path& path);
@@ -224,12 +264,16 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   LauncherSettings settings_;
   std::filesystem::path settings_path_, user_data_root_;
   std::function<void(std::function<void()>)> call_in_ui_thread_deferred_;
-  std::function<void(const LauncherSettings&)> on_play_;
   std::function<void()> on_relaunch_;
+  std::function<bool(const LauncherSettings&)> in_game_needs_restart_;  // set in game only
+  std::function<void(const LauncherSettings&, bool)> on_resume_;
+  bool resume_requested_ = false;
   bool fonts_at_start_ = false;  // the game fonts were there when the launcher opened
   AssetJob asset_job_;
   std::vector<ProfileInfo> profiles_;
   bool saves_scanned_ = false;
+  std::vector<EpisodeInfo> episodes_;  // from the game files, in settings_.language
+  uint32_t episodes_language_ = 0;
   std::string confirm_;       // the delete button waiting for a second click
   std::string save_message_;  // result of the last save action
   Image logo_, panel_, title_, button_;
@@ -246,6 +290,8 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   std::string capture_flag_;        // keybind being rebound
   int capture_slot_ = 0;            // 0 = primary key, 1 = alternate
   int controls_tab_ = 0;            // 0 controller, 1 keyboard
+  enum { kGraphicsDisplay, kGraphicsShaders, kGraphicsEnhancements };
+  int graphics_tab_request_ = -1;   // Graphics tab to open on the next frame
   SDL_Gamepad* pad_ = nullptr;      // opened while Controls is shown
   bool pad_subsystem_ = false;      // SDL_INIT_GAMEPAD held by the launcher
   std::string pad_name_;
@@ -255,7 +301,22 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   size_t shaders_not_in_cache_ = 0;
   double shaders_checked_at_ = -10.0;
   IsoExtract iso_extract_;
+  // The game started by Play.
+  struct GameProcess {
+    int pid = -1;
+    bool stopping = false;  // Stop was pressed
+    std::chrono::steady_clock::time_point stop_time{};
+    bool Start(std::string* error);
+    void Stop();  // SIGTERM, then SIGKILL if it's still there after 5 s
+    // Reaps it once it exits: false then (`failed` = it exited with an
+    // error, not by Stop).
+    bool Poll(bool* failed);
+    bool Running() const { return pid > 0; }
+  };
+  GameProcess game_;
+  std::filesystem::file_time_type settings_saved_time_{};  // after our last save
   bool playing_ = false;
+  bool play_without_shaders_ = false;  // Play was pressed once without a shader cache
   // Frame limiter (the SDK repaints dialogs continuously).
   std::chrono::steady_clock::time_point last_frame_{}, last_input_{};
   void LimitFrameRate(ImGuiIO& io);

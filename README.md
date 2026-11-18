@@ -1,12 +1,5 @@
 # Asura's Wrath Recompiled
 
-# Update 2026/11/07
-Still working slowly on free time with xenon/xenosrecomp tools, but wanted to link another repo that managed to achieve superior performance than this one for PC (help him out with playthrough issues)
-
-https://github.com/omar2300/asuras-wrath-pc/
-
----
-
 PC port of Asura's Wrath (`default.xex`, Title ID `43430817`) via Xbox 360 static PowerPC recompilation to C++23, rendered by the in-repo Vulkan renderer `mantra`.
 
 > Note: Linux only for now (Windows and Android are on the TODO list).
@@ -92,7 +85,7 @@ The default build is tuned for your CPU and may not run on others: build with `.
 
 ## 4. Game Setup
 
-The launcher (first window when starting the game) finds `extracted/` in the current directory or next to the executable. Otherwise, in **Settings**, drop the extracted folder or the `.iso` on the window (an `.iso` is extracted to a folder of your choice), or type the path.
+The launcher (first window when starting the game) finds `extracted/` in the current directory or next to the executable. Otherwise, in **System**, drop the extracted folder or the `.iso` on the window (an `.iso` is extracted to a folder of your choice), or type the path.
 
 ```bash
 # Or extract the game ISO yourself
@@ -117,13 +110,13 @@ Available ReXGlue Path Configuration Flags:
 | `--update_data_root` | Directory containing game update / DLC patches. | `(empty)` |
 | `--user_data_root` | Directory for user save games and profile data. | `~/.local/share/asura_wrath_recomp` |
 
-The mantra shader cache lives in `~/.cache/asura_wrath_recomp/mantra_shaders.mshc` (`MANTRA_SHADER_CACHE` to override). Build it once from the launcher (**Settings > Shader cache**, about 10 minutes on all cores) or from the command line:
+The mantra shader cache lives in `~/.cache/asura_wrath_recomp/mantra_shaders.mshc` (`MANTRA_SHADER_CACHE` to override). Build it once from the launcher (**Graphics > Shaders**, about 10 minutes on all cores) or from the command line:
 
 ```bash
 mantra_shadergen --game extracted --out ~/.cache/asura_wrath_recomp/mantra_shaders.mshc
 ```
 
-Some shaders only exist once the game patches them at runtime (e.g. the menu text). mantra keeps those in `~/.cache/asura_wrath_recomp/shader_dumps/` while you play; **Graphics** then says how many are missing, and **Rebuild** adds them (from the command line: `--dumps ~/.cache/asura_wrath_recomp/shader_dumps`, repeatable).
+Some shaders only exist once the game patches them at runtime (e.g. the menu text). mantra keeps those in `~/.cache/asura_wrath_recomp/shader_dumps/` while you play; **Graphics > Shaders** then says how many are missing, and **Rebuild** adds them (from the command line: `--dumps ~/.cache/asura_wrath_recomp/shader_dumps`, repeatable).
 
 ---
 
@@ -156,15 +149,26 @@ asura_wrath
 
 The launcher opens first, in a window:
 
-- **Controls**: *Controller* tab (live test of buttons, sticks and triggers, button remapping, stick deadzones, 0% by default) and *Keyboard* tab (play with the keyboard, mouse camera, key rebinding, and the overlay keys F3/F4/F7/`).
+- **Controls**: *Controller* tab (live test of buttons, sticks and triggers, button remapping, stick deadzones, 0% by default, vibration strength) and *Keyboard* tab (play with the keyboard, mouse camera, key rebinding, and the overlay keys F3/F4/F7/`).
 - **Achievements**: the list (read from your `default.xex`) and your unlocks, newest first, as a list or a grid, filtered by all / unlocked / locked.
-- **Saves**: your save (last saved, size, folder and its files), open its folder or delete it.
-- **Graphics**: GPU (Automatic shows which one it picks), VSync, fullscreen, window size, how the 16:9 picture fills wide screens (fit / fill / stretch), shader cache.
-- **Settings**: game folder (or `.iso`), language (English, Japanese, German, French, Spanish, Italian) for the game, the achievements and the launcher itself.
+- **Saves**: your save (last saved, size, folder and its files, difficulty, battle points) and its story progress: the episodes you have reached, by Part, with their best rank on Easy/Normal/Hard (titles from your game files, in your language; later episodes stay hidden to avoid spoilers). Open its folder or delete it.
+- **Graphics**, in three tabs:
+  - *Display*: GPU (Automatic shows which one it picks), VSync, display mode (windowed, borderless or exclusive fullscreen), monitor, resolution (from the monitor's modes), *Higher resolution* (experimental, off by default: the game renders at its own 1280x720, scaled to the window) and the render resolution it uses (960x540 to 3840x2160; some effects can still show green areas), and how the 16:9 picture fills wide or 4:3 screens (fit / fill / stretch).
+  - *Shaders*: the shader cache (build progress, its folder).
+  - *Enhancements*: an FPS counter; a frame rate limit slider (30, the game's, to 240 in steps of 5, or unlimited, with 30/60/120/144 buttons; above 30 is experimental: `src/game/frame_rate.cpp` replaces the engine's `GetMaxTickRate`); Turbo (hold a ticked controller button A/B/X/Y/LB/RB instead of mashing it; it repeats about 12 times a second); hiding the mouse cursor in game while it isn't moving; muting while the window isn't focused (the SDK's `audio_mute`).
 
-Controls, Graphics and Settings each have a *Reset to defaults* button.
+  A note above Play says when the shader cache is missing, or too old for the chosen render resolution (caches built before render scaling only work at 1280x720); it goes away if you change the setting back, and clicking it opens *Shaders*. Pressing Play then opens *Shaders* first; a second press starts anyway.
+- **System**: game folder (or `.iso`), language (English, Japanese, German, French, Spanish, Italian) for the game, the achievements and the launcher itself; achievement pop-ups (on/off, corner, duration).
 
-The launcher's fonts (including the accented and Japanese ones from the game's localized packages) and achievement icons are read from your game folder into `~/.cache/asura_wrath_recomp/`.
+Controls, the Graphics tabs and System each have a *Reset to defaults* button.
+
+The launcher's fonts (including the accented and Japanese ones from the game's localized packages) and achievement icons are read from your game folder into `~/.cache/asura_wrath_recomp/`. Until then (no game folder yet) the launcher uses its own fonts from `assets/ui`: Noto Serif Regular/Bold and `NotoSerifJP-Launcher.awf`, the Japanese characters of the launcher's text rendered from Noto Serif CJK JP by `tools/make_launcher_font.py` (rerun it after adding Japanese text). They are under the SIL Open Font License (`assets/ui/OFL.txt`).
+
+**Play** starts the game in its own window, as a separate process; the launcher stays open and the button becomes **Stop** (closes the game; progress since the last save is lost). Settings changed in the launcher meanwhile apply the next time the game starts. Building shaders and extracting an ISO wait until the game is closed. When the game exits, the launcher picks up settings changed in game and rescans saves and achievements.
+
+In game, **Esc** opens the launcher over the running game (rebind it under *Controls > Keyboard*). The game keeps running underneath. *Resume* (or Esc again) goes back and applies keys, controller, pop-up, window size and Enhancements changes at once. Changes that need a fresh start (graphics card, VSync, monitor, exclusive fullscreen, Fill, render resolution, game folder, language) turn the button into *Restart*, which restarts the game: progress since the last save is lost. Esc instead keeps them for the next start.
+
+The render resolution is also `MANTRA_RENDER_SCALE` (a factor such as `1.5`, or a height such as `1080`). Above 1x, rebuild the shader cache once (cache v8) so screen-space effects line up.
 
 In game: F3 performance overlay, F4 settings, F7 achievements, `` ` `` console.
 
@@ -217,6 +221,8 @@ asura_wrath --vulkan_device=1
 asura_wrath --log_file=out/run.log
 ```
 
+With the launcher, the game started by Play logs to `out/run-game.log` (the launcher keeps `out/run.log`).
+
 Performance lines (`frame times`, `cpu:`, `hitch:`) are logged every 5 seconds. `MANTRA_*` environment variables (traces, captures, per-frame stats) are documented where they are read in `src/mantra_renderer/`.
 
 ---
@@ -225,16 +231,24 @@ Performance lines (`frame times`, `cpu:`, `hitch:`) are logged every 5 seconds. 
 
 - Powered by **ReXGlue** (https://github.com/rexglue/rexglue-sdk), an open-source static recompilation framework for Xbox 360 software.
 - UI touch controls made possible by using **kenney.nl** Xbox gamepad assets (https://kenney.nl/assets/input-prompts)
+- *Asura's Wrath* and its artwork are © **CAPCOM** (https://www.capcom.com). The launcher and pop-up images in `assets/ui` come from the game, with some parts edited by hand for the launcher. The game itself, its fonts and other assets are not included: they are read from your own copy.
+- Fallback fonts: **Noto Serif** and **Noto Serif CJK JP** (https://notofonts.github.io), © The Noto Project Authors and Google, under the SIL Open Font License 1.1 (`assets/ui/OFL.txt`). `NotoSerifJP-Launcher.awf` is a subset rendered from Noto Serif CJK JP.
 
 ---
 
-## 8. Issues
+## 8. Links
+
+- Another Asura's Wrath PC port, with better performance than this one: https://github.com/omar2300/asuras-wrath-pc/ (help them out with playthrough issues).
+
+---
+
+## 9. Issues
 
 - Episodes are still being tested: Episode 1 seems playable with some minor visual issues, the others are still to be tested.
 
 ---
 
-## 9. TODO
+## 10. TODO
 
 - [ ] Port to Windows
 - [ ] Port to Android

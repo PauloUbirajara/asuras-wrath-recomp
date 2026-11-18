@@ -38,6 +38,11 @@ const char* PadControlName(int control);
 int PadControlFromName(std::string_view name);  // -1 if unknown
 
 void SetPadMap(const PadMap& map);
+// Controller vibration strength in percent (0 = off, 100 = as the game asks).
+void SetVibrationStrength(int percent);
+// Turbo: while a control in `mask` (bit = PadControl, after the remap) is
+// held, the game sees it pressed and released about 12 times a second.
+void SetTurboControls(uint32_t mask);
 PadMap GetPadMap();
 
 // Whether `control` is down on `pad` (triggers past the XInput threshold).

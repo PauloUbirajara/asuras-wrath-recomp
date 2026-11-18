@@ -1,4 +1,6 @@
 #include "copy_pipelines.h"
+
+#include <cmath>
 #include "mantra_log.h"
 
 #include <atomic>
@@ -172,7 +174,17 @@ VkPipeline CopyPipelines::GetPipeline(VkFormat dst_format, bool src_multisampled
 bool CopyPipelines::Record(VkCommandBuffer cmd, VkDescriptorPool descriptor_pool,
                            VkImageView src_view, bool src_multisampled, VkImageView dst_view,
                            VkFormat dst_format, uint32_t dst_width, uint32_t dst_height,
-                           const CopyRect& rect, const CopyPushConstants& constants) {
+                           const CopyRect& guest_rect, const CopyPushConstants& guest_constants,
+                           uint32_t scale8) {
+  const VkRect2D host = HostRect(
+      {{guest_rect.x, guest_rect.y}, {guest_rect.width, guest_rect.height}}, scale8);
+  const CopyRect rect = {host.offset.x, host.offset.y, host.extent.width, host.extent.height};
+  dst_width = HostSize(dst_width, scale8);
+  dst_height = HostSize(dst_height, scale8);
+  CopyPushConstants constants = guest_constants;
+  for (int32_t& offset : constants.src_offset) {
+    offset = int32_t(std::lround(double(offset) * scale8 / 8.0));
+  }
   if (!rect.width || !rect.height) {
     return true;
   }

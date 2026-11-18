@@ -1,4 +1,6 @@
 #pragma once
+
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstring>
@@ -29,6 +31,10 @@ class VulkanDevice;
 }
 
 namespace rex::graphics::native {
+
+// Guest swaps (IssueSwap calls) since start.
+inline std::atomic<uint64_t> g_guest_swaps{0};
+
 
 // A guest shader plus its offline translation (if the cache has one).
 class MantraShader : public Shader {

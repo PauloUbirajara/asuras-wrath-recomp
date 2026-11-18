@@ -33,11 +33,15 @@ inline constexpr const char* kGameFontLanguages[] = {"ITA", "ESN", "JPN"};
 // `merge_into`. Returns nullptr if the file is missing or invalid.
 ImFont* AddGameFont(ImFontAtlas* atlas, const std::filesystem::path& path,
                     ImFont* merge_into = nullptr);
-// Merges Noto Sans JP (when shipped in assets/ui) and, with `imgui_font`,
-// ImGui's default font into `font` for the glyphs it lacks.
-void AddFallbackFonts(ImFontAtlas* atlas, ImFont* font, bool imgui_font = true);
+// Merges ImGui's default font into `font` for the glyphs it lacks.
+void AddFallbackFonts(ImFontAtlas* atlas, ImFont* font);
 // "MediumFont" / "TitleFont": the international font, its localized copies
 // and the fallbacks.
 ImFont* AddGameFontFamily(ImFontAtlas* atlas, std::string_view name);
+// The project's own fonts (assets/ui, SIL OFL), for when the game's aren't
+// extracted yet: Noto Serif Regular or Bold, with the launcher's Japanese
+// (NotoSerifJP-Launcher.awf, tools/make_launcher_font.py) merged in.
+// nullptr if the files are missing.
+ImFont* AddBundledFont(ImFontAtlas* atlas, bool bold);
 
 }  // namespace asura::ui

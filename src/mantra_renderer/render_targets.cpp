@@ -268,7 +268,7 @@ RenderTarget* RenderTargetPool::Create(VkCommandBuffer cmd, const RtKey& key) {
         height, samples,
         VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
             VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-        nullptr, 0, rt->image);
+        nullptr, 0, rt->image, RenderScale8());
   } else {
     if (!(props.framebufferColorSampleCounts & samples)) {
       MANTRA_WARN_ONCE("{}x MSAA color is not supported by the host", uint32_t(samples));
@@ -283,7 +283,7 @@ RenderTarget* RenderTargetPool::Create(VkCommandBuffer cmd, const RtKey& key) {
                                  VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                                      VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                                      VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                                 formats, format_count, rt->image);
+                                 formats, format_count, rt->image, RenderScale8());
   }
   if (!created) {
     MANTRA_ERROR("failed to create a {}x{} {}x render target (base {} pitch {})", width, height,
@@ -364,6 +364,11 @@ void RenderTargetPool::ClearAttachment(VkCommandBuffer cmd, RenderTarget& rt, Vk
   attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
   attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
   VkRenderingInfo rendering = {VK_STRUCTURE_TYPE_RENDERING_INFO};
+  // The image is RenderScale8() larger than the guest surface.
+  clamped = HostRect(clamped, rt.image.scale8);
+  if (!clamped.extent.width || !clamped.extent.height) {
+    return;
+  }
   rendering.renderArea = clamped;
   rendering.layerCount = 1;
   if (is_depth) {
@@ -558,8 +563,8 @@ void ResolvedSurfaces::PrepareWrite(VkCommandBuffer cmd, ResolvedSurface& surfac
   VkImageCopy region = {};
   region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
   region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-  region.extent = {std::min(old->image.width, surface.image.width),
-                   std::min(old->image.height, surface.image.height), 1};
+  region.extent = {std::min(old->image.host_width, surface.image.host_width),
+                   std::min(old->image.host_height, surface.image.host_height), 1};
   cmd_copy_image_(cmd, old->image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                   surface.image.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
   surface.write_count = old->write_count;
@@ -612,7 +617,7 @@ ResolvedSurface* ResolvedSurfaces::Get(uint32_t address, uint32_t pitch, uint32_
                           VK_SAMPLE_COUNT_1_BIT,
                           VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                               VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                          nullptr, 0, surface->image)) {
+                          nullptr, 0, surface->image, RenderScale8())) {
     MANTRA_ERROR("failed to create a {}x{} resolved surface (format {})", pitch, height,
                  uint32_t(format));
     return nullptr;

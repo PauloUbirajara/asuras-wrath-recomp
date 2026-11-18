@@ -22,6 +22,7 @@ namespace {
 struct Glyph {
   uint16_t page, x, y, w, h;
   int16_t y_offset;
+  int advance = 0;  // font pixels
 };
 
 struct Page {
@@ -76,11 +77,16 @@ bool Parse(const uint8_t* data, size_t size, FontData& font) {
     page.alpha = p;
     p += bytes;
   }
-  for (const auto& [codepoint, g] : font.glyphs) {
+  for (auto& [codepoint, g] : font.glyphs) {
     if (g.page >= font.pages.size() || g.x + g.w > font.pages[g.page].width ||
         g.y + g.h > font.pages[g.page].height) {
       return false;
     }
+    // The advance is the bitmap width plus the font's kerning (-2 in the
+    // game's fonts), which overlaps the padding on the right of Latin glyphs.
+    // Japanese glyphs are cropped to their ink, so the same overlap makes
+    // them touch (イ against ト): they keep their full width.
+    g.advance = g.w + (codepoint >= 0x2E80 ? std::max<int>(font.kerning, 0) : font.kerning);
   }
   return font.line_height > 0;
 }
@@ -172,7 +178,7 @@ bool FontBakedLoadGlyph(ImFontAtlas* atlas, ImFontConfig* src, ImFontBaked* bake
   if (it == font.glyphs.end()) return false;
   const Glyph& g = it->second;
   const float scale = baked->Size / font.line_height;
-  const float advance = std::max(0.0f, float(g.w + font.kerning) * scale);
+  const float advance = std::max(0.0f, float(g.advance) * scale);
   if (out_advance_x) {
     *out_advance_x = advance;
     return true;
@@ -276,25 +282,35 @@ ImFont* AddGameFont(ImFontAtlas* atlas, const std::filesystem::path& path, ImFon
   return font;
 }
 
-void AddFallbackFonts(ImFontAtlas* atlas, ImFont* font, bool imgui_font) {
+void AddFallbackFonts(ImFontAtlas* atlas, ImFont* font) {
   if (!font) return;
-  // Japanese the game's font lacks (the launcher's own text), from the
-  // project's Noto Sans JP subset (assets/ui/NotoSansJP.ttf).
-  std::error_code ec;
-  const auto noto = GameUiFile("NotoSansJP.ttf");
-  if (std::filesystem::is_regular_file(noto, ec)) {
-    ImFontConfig jp;
-    jp.MergeMode = true;
-    jp.DstFont = font;
-    atlas->AddFontFromFileTTF(noto.string().c_str(), 0.0f, &jp, atlas->GetGlyphRangesJapanese());
-  }
-  if (!imgui_font) return;
   // The game's fonts lack a few ASCII characters (# $ @ ^ { | } and more in
   // TitleFont): take those from ImGui's default font.
   ImFontConfig fallback;
   fallback.MergeMode = true;
   fallback.DstFont = font;
   atlas->AddFontDefault(&fallback);
+}
+
+ImFont* AddBundledFont(ImFontAtlas* atlas, bool bold) {
+  const auto path = GameUiFile(bold ? "NotoSerif-Bold.ttf" : "NotoSerif-Regular.ttf");
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(path, ec)) {
+    REXLOG_INFO("UI font {} not found", path.string());
+    return nullptr;
+  }
+  // Latin, Latin-1 and Extended-A (the European languages), general
+  // punctuation, the euro and trademark signs. Baked once (the SDK's ImGui
+  // backend has no dynamic atlas) at a size that scales down cleanly.
+  static const ImWchar kRanges[] = {0x0020, 0x024F, 0x2000, 0x206F, 0x20AC, 0x20AC,
+                                    0x2122, 0x2122, 0};
+  ImFontConfig config;
+  config.OversampleH = 2;
+  std::snprintf(config.Name, sizeof(config.Name), "%s", path.stem().string().c_str());
+  ImFont* font = atlas->AddFontFromFileTTF(path.string().c_str(), 40.0f, &config, kRanges);
+  REXLOG_INFO("UI font {} {}", path.string(), font ? "loaded" : "failed to load");
+  if (font) AddGameFont(atlas, GameUiFile("NotoSerifJP-Launcher.awf"), font);
+  return font;
 }
 
 ImFont* AddGameFontFamily(ImFontAtlas* atlas, std::string_view name) {

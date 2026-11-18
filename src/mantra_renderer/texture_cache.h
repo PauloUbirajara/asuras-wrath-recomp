@@ -111,6 +111,9 @@ class TextureCache {
     // games sample them with tfetch3D (color-grading LUTs, for example).
     bool stacked = false;
     uint32_t width = 0, height = 0, depth = 1, layers = 1, levels = 1;
+    // Copies of resolved surfaces are at the render scale (width/height stay
+    // guest texels); textures loaded from memory are 8 (1x).
+    uint32_t scale8 = 8;
     uint8_t decode = 0;     // how guest blocks become host texels
     uint8_t host_bpb = 0;   // bytes per host block
     uint32_t dump_counter = 0;
@@ -174,6 +177,16 @@ class TextureCache {
   PFN_vkCmdCopyImage cmd_copy_image_ = nullptr;
   ResolvedSurfaces* resolved_ = nullptr;
   std::unordered_map<Key, std::unique_ptr<Texture>, KeyHash> textures_;
+  // Images replaced when a texture changes between a resolve copy (render
+  // scale) and memory (1x); in-flight frames may still use them, so they
+  // are freed at shutdown (once per texture and change of source).
+  struct RetiredImage {
+    VkImage image;
+    VkDeviceMemory memory;
+    std::vector<VkImageView> views;
+  };
+  std::vector<RetiredImage> retired_images_;
+  void RetireImage(Texture& texture);
   std::unordered_map<uint64_t, VkSampler> samplers_;
   std::unordered_map<uint32_t, ResolveRecord> resolves_;
   std::vector<uint8_t> swapped_base_, swapped_mips_;

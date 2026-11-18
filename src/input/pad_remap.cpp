@@ -1,6 +1,8 @@
 #include "pad_remap.h"
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <vector>
 
 #include <rex/cvar.h>
@@ -51,6 +53,26 @@ PadMap Unpack(uint64_t packed) {
 }
 
 std::atomic<uint64_t> g_map{Pack(IdentityPadMap())};
+std::atomic<int> g_vibration{100};
+std::atomic<uint32_t> g_turbo{0};
+
+// Held turbo controls read as released every other 40 ms (the game polls
+// at 30 fps, so each phase spans at least one of its frames).
+void ApplyTurbo(X_INPUT_GAMEPAD& pad, uint32_t mask) {
+  using namespace std::chrono;
+  const auto ms = duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+  if ((ms / 40) % 2 == 0) return;  // the "pressed" phase
+  for (int c = 0; c < kPadControlCount; ++c) {
+    if (!(mask & (1u << c))) continue;
+    if (c == kPadLT) {
+      pad.left_trigger = 0;
+    } else if (c == kPadRT) {
+      pad.right_trigger = 0;
+    } else {
+      pad.buttons = uint16_t(pad.buttons) & ~kBits[c];
+    }
+  }
+}
 
 uint8_t Value(const X_INPUT_GAMEPAD& pad, int control) {
   if (control == kPadLT) return pad.left_trigger;
@@ -72,6 +94,9 @@ class RemappedPadDriver final : public InputDriver {
     if (result == X_ERROR_SUCCESS && out_state) {
       const PadMap map = GetPadMap();
       if (map != IdentityPadMap()) RemapPad(out_state->gamepad, map);
+      if (const uint32_t turbo = g_turbo.load(std::memory_order_relaxed)) {
+        ApplyTurbo(out_state->gamepad, turbo);
+      }
     }
     return result;
   }
@@ -79,6 +104,16 @@ class RemappedPadDriver final : public InputDriver {
     return inner_->GetDeviceCapabilities(id, flags, out);
   }
   X_RESULT SetDeviceVibration(DeviceId id, X_INPUT_VIBRATION* vibration) override {
+    const int percent = g_vibration.load(std::memory_order_relaxed);
+    if (vibration && percent != 100) {
+      X_INPUT_VIBRATION scaled = *vibration;
+      auto scale = [&](uint16_t speed) {
+        return uint16_t(std::min<uint32_t>(uint32_t(speed) * uint32_t(percent) / 100u, 0xFFFF));
+      };
+      scaled.left_motor_speed = scale(vibration->left_motor_speed);
+      scaled.right_motor_speed = scale(vibration->right_motor_speed);
+      return inner_->SetDeviceVibration(id, &scaled);
+    }
     return inner_->SetDeviceVibration(id, vibration);
   }
   X_RESULT GetDeviceKeystroke(DeviceId id, uint32_t flags, X_INPUT_KEYSTROKE* out) override {
@@ -110,6 +145,8 @@ int PadControlFromName(std::string_view name) {
 }
 
 void SetPadMap(const PadMap& map) { g_map = Pack(map); }
+void SetVibrationStrength(int percent) { g_vibration = std::clamp(percent, 0, 200); }
+void SetTurboControls(uint32_t mask) { g_turbo = mask & ((1u << kPadControlCount) - 1); }
 PadMap GetPadMap() { return Unpack(g_map); }
 
 bool PadDown(const X_INPUT_GAMEPAD& pad, int control) {

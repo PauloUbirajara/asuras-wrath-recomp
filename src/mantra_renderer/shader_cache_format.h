@@ -26,7 +26,10 @@ constexpr char kMagic[4] = {'M', 'S', 'H', 'C'};
 //    container microcode. The D3D runtime patches formats and swizzles into
 //    the fetches of some shaders; the VS remaps an input whose runtime
 //    swizzle differs (SharedConstants::input_remap).
-constexpr uint32_t kVersion = 7;
+// 8: pixel shaders read SV_Position through SharedConstants::pixel_scale_inv
+//    (render scale); older caches load but screen-space effects misalign
+//    above 1x.
+constexpr uint32_t kVersion = 8;
 constexpr uint32_t kMinVersion = 5;
 
 struct CacheHeader {

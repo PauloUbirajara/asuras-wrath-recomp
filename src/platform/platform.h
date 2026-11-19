@@ -67,6 +67,10 @@ void LowerThreadPriority();
 // The whole process (and the processes it starts) at background priority.
 void LowerProcessPriority();
 
+// Puts UTF-8 text on the clipboard through the OS itself (Windows); the
+// fallback when SDL's clipboard fails. False with *why set otherwise.
+bool CopyText(const std::string& text, std::string* why);
+
 // CPU time of the calling thread, in nanoseconds.
 uint64_t ThreadCpuNs();
 

@@ -14,6 +14,7 @@
 #include <winternl.h>
 
 #include <cstdlib>
+#include <cstring>
 #include <cwchar>
 #include <process.h>
 
@@ -357,6 +358,35 @@ ExitStatus Process::Wait() {
   GetExitCodeProcess(static_cast<HANDLE>(handle_), &code);
   id_ = -1;
   return ExitStatus{true, int(code)};
+}
+
+bool CopyText(const std::string& text, std::string* why) {
+  // Windows text uses CRLF line ends.
+  std::wstring wide;
+  for (const wchar_t c : Widen(text)) {
+    if (c == L'\n' && (wide.empty() || wide.back() != L'\r')) wide += L'\r';
+    wide += c;
+  }
+  // Another program may hold the clipboard for a moment: retry briefly.
+  bool open = false;
+  for (int attempt = 0; attempt < 10 && !(open = OpenClipboard(nullptr)); ++attempt) Sleep(20);
+  if (!open) {
+    if (why) *why = "OpenClipboard failed (error " + std::to_string(GetLastError()) + ")";
+    return false;
+  }
+  bool ok = false;
+  EmptyClipboard();
+  if (HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, (wide.size() + 1) * sizeof(wchar_t))) {
+    if (void* p = GlobalLock(mem)) {
+      std::memcpy(p, wide.c_str(), (wide.size() + 1) * sizeof(wchar_t));
+      GlobalUnlock(mem);
+      ok = SetClipboardData(CF_UNICODETEXT, mem) != nullptr;
+    }
+    if (!ok) GlobalFree(mem);  // owned by the clipboard once set
+  }
+  if (!ok && why) *why = "SetClipboardData failed (error " + std::to_string(GetLastError()) + ")";
+  CloseClipboard();
+  return ok;
 }
 
 }  // namespace asura::platform

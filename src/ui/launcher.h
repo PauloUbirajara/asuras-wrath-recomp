@@ -370,6 +370,7 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   int saves_tab_request_ = -1;      // Saves tab to open on the next frame
   bool link_hovered_ = false;       // About's repository link, last frame
   double copied_at_ = -10.0;        // About > Copy (ImGui time; -2 = failed)
+  std::string copy_error_;          // why it failed
   SDL_Gamepad* pad_ = nullptr;      // opened while Controls is shown
   bool pad_subsystem_ = false;      // SDL_INIT_GAMEPAD held by the launcher
   std::string pad_name_;

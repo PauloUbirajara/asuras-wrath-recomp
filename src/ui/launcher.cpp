@@ -2931,11 +2931,20 @@ void LauncherDialog::DrawAbout(float scale) {
       if (!gpu.vulkan.empty()) text += ", Vulkan " + gpu.vulkan;
       text += "\n";
     }
-    copied_at_ = SDL_SetClipboardText(text.c_str()) ? ImGui::GetTime() : -2.0;
+    // The OS clipboard directly where the platform layer has one (Windows),
+    // else SDL's (X11/Wayland need SDL's window).
+    copy_error_.clear();
+    bool copied = platform::CopyText(text, &copy_error_);
+    if (!copied) {
+      copied = SDL_SetClipboardText(text.c_str());
+      if (!copied) copy_error_ += std::string("; SDL: ") + SDL_GetError();
+    }
+    if (!copied) REXLOG_WARN("launcher: could not copy the system info: {}", copy_error_);
+    copied_at_ = copied ? ImGui::GetTime() : -2.0;
   }
   ImGui::SameLine();
   if (copied_at_ == -2.0) {
-    ImGui::TextDisabled("%s", T("Could not copy."));
+    ImGui::TextDisabled("%s %s", T("Could not copy."), copy_error_.c_str());
   } else if (ImGui::GetTime() - copied_at_ < 2.0) {
     ImGui::TextDisabled("%s", T("Copied."));
   } else {

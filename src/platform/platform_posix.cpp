@@ -278,4 +278,9 @@ ExitStatus Process::Wait() {
   return r == id ? ToExitStatus(status) : ExitStatus{};
 }
 
+bool CopyText(const std::string&, std::string* why) {
+  if (why) *why = "no native clipboard";  // X11/Wayland: SDL's, which has the window
+  return false;
+}
+
 }  // namespace asura::platform

@@ -64,6 +64,8 @@ void* LoadedLibrarySymbol(const char* library, const char* symbol);
 
 // Puts the calling thread below normal priority (background work).
 void LowerThreadPriority();
+// The whole process (and the processes it starts) at background priority.
+void LowerProcessPriority();
 
 // CPU time of the calling thread, in nanoseconds.
 uint64_t ThreadCpuNs();

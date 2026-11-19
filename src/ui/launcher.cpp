@@ -12,6 +12,7 @@
 #include <fstream>
 #include <iterator>
 #include <sstream>
+#include <unordered_set>
 #include <utility>
 
 #include <rex/cvar.h>
@@ -505,6 +506,45 @@ std::vector<std::filesystem::path> ShaderDumpDirs() {
   return dirs;
 }
 
+// mantra_shadergen, next to the game.
+std::filesystem::path ShadergenPath() {
+#ifdef _WIN32
+  return rex::filesystem::GetExecutableFolder() / "mantra_shadergen.exe";
+#else
+  return rex::filesystem::GetExecutableFolder() / "mantra_shadergen";
+#endif
+}
+
+// The exact hashes in the shader cache (read again when the file changes).
+const std::unordered_set<uint64_t>& CachedShaderHashes() {
+  namespace sc = mantra::shader_cache;
+  static std::filesystem::file_time_type time{};
+  static std::unordered_set<uint64_t> hashes;
+  std::error_code ec;
+  const auto cache = ShaderCachePath();
+  const auto written = std::filesystem::last_write_time(cache, ec);
+  if (ec) {
+    hashes.clear();
+    time = {};
+    return hashes;
+  }
+  if (written == time) return hashes;
+  time = written;
+  hashes.clear();
+  std::ifstream in(cache, std::ios::binary);
+  sc::CacheHeader header{};
+  if (!in.read(reinterpret_cast<char*>(&header), sizeof(header)) ||
+      std::memcmp(header.magic, sc::kMagic, 4) != 0) {
+    return hashes;
+  }
+  std::vector<sc::CacheEntry> entries(header.entry_count);
+  if (in.read(reinterpret_cast<char*>(entries.data()),
+              std::streamsize(entries.size() * sizeof(sc::CacheEntry)))) {
+    for (const sc::CacheEntry& e : entries) hashes.insert(e.exact_hash);
+  }
+  return hashes;
+}
+
 size_t ShadersNotInCache() {
   std::error_code ec;
   const auto cache = ShaderCachePath();
@@ -521,13 +561,22 @@ size_t ShadersNotInCache() {
 
 namespace {
 std::filesystem::path g_log_dir, g_log_file;
+bool g_logs_follow_files = false;  // the logs are in <Files folder>/logs (no --log_dir)
 }  // namespace
 
 void SetLogLocation(const std::filesystem::path& dir, const std::filesystem::path& file) {
   g_log_dir = dir;
   g_log_file = file;
+  const auto files = platform::FilesDir();
+  g_logs_follow_files = !files.empty() && dir.lexically_normal() == (files / "logs").lexically_normal();
 }
-const std::filesystem::path& LogDirectory() { return g_log_dir; }
+// After a Files folder change, the new folder's logs: the game started by
+// Play writes its log there (this process's own log stays where it was).
+std::filesystem::path LogDirectory() {
+  if (!g_logs_follow_files) return g_log_dir;
+  const auto files = platform::FilesDir();
+  return files.empty() ? g_log_dir : files / "logs";
+}
 const std::filesystem::path& LogFile() { return g_log_file; }
 
 // The cache file's format version, 0 if missing or not a cache (read again
@@ -576,8 +625,9 @@ void LauncherDialog::ShaderBuild::Start(const std::filesystem::path& tool,
                                         const std::filesystem::path& game,
                                         const std::filesystem::path& out,
                                         const std::vector<std::filesystem::path>& dumps,
-                                        bool update) {
+                                        bool update, bool in_background) {
   Stop();
+  background = in_background;
   std::error_code ec;
   std::filesystem::create_directories(out.parent_path(), ec);
   std::vector<std::string> args = {tool.string(), "--game", game.string(), "--out", out.string()};
@@ -586,6 +636,11 @@ void LauncherDialog::ShaderBuild::Start(const std::filesystem::path& tool,
     args.push_back(dir.string());
   }
   if (update) args.push_back("--update");
+  if (in_background) {
+    // Only what the game used, at low priority, next to the running game.
+    args.push_back("--requested-only");
+    args.push_back("--background");
+  }
   if (std::string error; !process.Start(tool, args, /*capture_output=*/true, &error)) {
     std::lock_guard<std::mutex> lock(mutex);
     last_line = T("Could not start ") + tool.string() + ": " + error;
@@ -599,6 +654,8 @@ void LauncherDialog::ShaderBuild::Start(const std::filesystem::path& tool,
   }
   done = 0;
   total = 0;
+  read = 0;
+  packages = 0;
   reader = std::thread([this] {
     std::string line;
     char buffer[4096];
@@ -613,6 +670,9 @@ void LauncherDialog::ShaderBuild::Start(const std::filesystem::path& tool,
             if (std::sscanf(line.c_str(), " translated %u/%u", &n, &m) == 2 && m) {
               done = int(n);
               total = int(m);
+            } else if (std::sscanf(line.c_str(), " read %u/%u packages", &n, &m) == 2 && m) {
+              read = int(n);
+              packages = int(m);
             }
             std::lock_guard<std::mutex> lock(mutex);
             last_line = line;
@@ -1125,8 +1185,10 @@ bool LauncherDialog::GameProcess::Start(std::string* error) {
   // SDK prunes both together and the next launcher run takes the next number.
   if (!have_log_file && !LogFile().empty()) {
     const std::filesystem::path& own = LogFile();
+    std::error_code ec;
+    std::filesystem::create_directories(LogDirectory(), ec);
     game_args.push_back("--log_file=" +
-                        (own.parent_path() / (own.stem().string() + ".game.log")).string());
+                        (LogDirectory() / (own.stem().string() + ".game.log")).string());
   }
   game_args.push_back("--launcher=false");
   // The game applies Render resolution itself; only a value from the shell
@@ -1267,6 +1329,43 @@ void LauncherDialog::LimitFrameRate(ImGuiIO& io) {
   last_frame_ = std::max(clock::now(), last_frame_ + period);
 }
 
+void LauncherDialog::MaybeTranslateForGame() {
+  const double now = ImGui::GetTime();
+  if (!game_.Running() || now - game_shaders_checked_at_ < 2.0) return;
+  game_shaders_checked_at_ = now;
+  if (shader_build_.state == ShaderBuild::kRunning || !GameDataValid()) return;
+  // A cache of another version would be rebuilt whole: leave that to Build.
+  const std::filesystem::path cache = ShaderCachePath();
+  std::error_code ec;
+  const uint32_t version = ShaderCacheVersion();
+  if (std::filesystem::exists(cache, ec) && version != mantra::shader_cache::kVersion) return;
+  // The programs the game kept for the cache build ({vs|ps}_<hash>_<dwords>.mc)
+  // that the cache lacks and no build here tried yet (some have no
+  // counterpart in the game files: they would be tried again and again).
+  const auto& cached = CachedShaderHashes();
+  size_t pending = 0;
+  std::vector<uint64_t> seen;
+  for (const auto& dir : ShaderDumpDirs()) {
+    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+      const std::string name = entry.path().filename().string();
+      unsigned long long hash = 0;
+      if (entry.path().extension() != ".mc" || name.size() < 20 ||
+          std::sscanf(name.c_str() + 3, "%16llx", &hash) != 1) {
+        continue;
+      }
+      seen.push_back(hash);
+      pending += !cached.count(hash) && !shaders_tried_.count(hash);
+    }
+  }
+  if (!pending) return;
+  const std::filesystem::path tool = ShadergenPath();
+  if (!std::filesystem::is_regular_file(tool, ec)) return;
+  shaders_tried_.insert(seen.begin(), seen.end());
+  REXLOG_INFO("launcher: translating {} shaders the game used that the cache lacks", pending);
+  shader_build_.Start(tool, settings_.game_data, cache, ShaderDumpDirs(), /*update=*/true,
+                      /*background=*/true);
+}
+
 void LauncherDialog::OnDraw(ImGuiIO& io) {
   if (playing_) return;
   LimitFrameRate(io);
@@ -1286,6 +1385,7 @@ void LauncherDialog::OnDraw(ImGuiIO& io) {
     achievements_loaded_ = false;
     if (failed) message_ = T("The game closed with an error (see the log).");
   }
+  MaybeTranslateForGame();
   if (iso_extract_.state == IsoExtract::kDone) {
     if (iso_extract_.worker.joinable()) iso_extract_.worker.join();
     iso_extract_.state = IsoExtract::kIdle;
@@ -1554,6 +1654,9 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
         fraction = float(done) / float(total);
       } else {
         std::snprintf(text, sizeof(text), "%s", T("Reading the game files..."));
+        if (shader_build_.packages) {
+          fraction = float(shader_build_.read) / float(shader_build_.packages);
+        }
       }
       detail = std::string(T("Building the shader cache")) + ": " + text;
     } else {
@@ -2583,7 +2686,12 @@ void LauncherDialog::SetFilesFolder(const std::filesystem::path& folder) {
   // At once for this launcher (the saves and shader cache it shows, the game
   // Play starts); its own log stays where it is until the next start.
   platform::SetEnv(platform::kDataDirVariable, chosen.string().c_str());
+  // Everything listed from the Files folder: read again from the new one.
   shaders_checked_at_ = -10.0;
+  logs_checked_at_ = -10.0;
+  traces_checked_at_ = -10.0;
+  saves_scanned_ = false;
+  achievements_loaded_ = false;
   SaveSettings();
 }
 
@@ -2628,6 +2736,10 @@ void LauncherDialog::DrawFilesFolder(float label_w, float scale) {
     move_files_.state = MoveFiles::kIdle;
     files_at_start_ = now;
     shaders_checked_at_ = -10.0;
+    logs_checked_at_ = -10.0;
+    traces_checked_at_ = -10.0;
+    saves_scanned_ = false;
+    achievements_loaded_ = false;
   }
   if (now == files_at_start_ || MovableFiles(files_at_start_).empty()) {
     return;
@@ -3352,7 +3464,11 @@ void LauncherDialog::DrawShaders(float scale) {
     } else {
       std::snprintf(text, sizeof(text), "%s", T("Reading the game files..."));
     }
-    ProgressBarText(total ? float(done) / float(total) : 0.0f, ImGui::GetFrameHeight(), text);
+    // Reading the packages comes first, then translating.
+    const int packages = shader_build_.packages;
+    const float fraction = total ? float(done) / float(total)
+                           : packages ? float(shader_build_.read) / float(packages) : 0.0f;
+    ProgressBarText(fraction, ImGui::GetFrameHeight(), text);
   } else if (have_cache) {
     ImGui::Text(T("Ready (%.0f MB)"), double(std::filesystem::file_size(cache, ec)) / 1048576.0);
     // Shaders the game patched while playing (checked once a second).
@@ -3370,7 +3486,7 @@ void LauncherDialog::DrawShaders(float scale) {
     ImGui::TextUnformatted(T("Missing: the game will stutter heavily without it"));
   }
   ImGui::SetCursorPosX(label_w);
-  const std::filesystem::path tool = rex::filesystem::GetExecutableFolder() / "mantra_shadergen";
+  const std::filesystem::path tool = ShadergenPath();
   const bool have_tool = std::filesystem::is_regular_file(tool, ec);
   // Not while the game runs: it reads the cache at start and adds to it.
   ImGui::BeginDisabled(state == ShaderBuild::kRunning || !have_tool || !GameDataValid() ||
@@ -3429,7 +3545,7 @@ void LauncherDialog::DrawLogs(float scale) {
     ImGui::TextDisabled("%s", text);
     ImGui::PopTextWrapPos();
   };
-  const std::filesystem::path& dir = LogDirectory();
+  const std::filesystem::path dir = LogDirectory();
   std::error_code ec;
   const double now = ImGui::GetTime();
   if (now - logs_checked_at_ > 2.0) {
@@ -3438,6 +3554,11 @@ void LauncherDialog::DrawLogs(float scale) {
     for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
       if (!entry.is_regular_file(ec) || entry.path().extension() != ".log") continue;
       logs_.push_back({entry.path(), entry.file_size(ec), entry.last_write_time(ec)});
+    }
+    // This launcher's own log, still in the previous Files folder.
+    if (const auto& own = LogFile(); !own.empty() && own.parent_path() != dir &&
+                                     std::filesystem::is_regular_file(own, ec)) {
+      logs_.push_back({own, std::filesystem::file_size(own, ec), std::filesystem::last_write_time(own, ec)});
     }
     std::sort(logs_.begin(), logs_.end(),
               [](const LogEntry& a, const LogEntry& b) { return a.time > b.time; });
@@ -3477,7 +3598,7 @@ void LauncherDialog::DrawLogs(float scale) {
       ImGui::TableNextColumn();
       ImGui::AlignTextToFramePadding();
       const std::string name = log.path.filename().string();
-      const bool current = log.path == LogFile();
+      const bool current = !LogFile().empty() && log.path.filename() == LogFile().filename();  // moved too
       if (current) {
         ImGui::Text("%s (%s)", name.c_str(), T("this one"));
       } else {
@@ -3635,7 +3756,7 @@ void LauncherDialog::DrawTraces(float scale) {
   // The traces are in the logs: their folder.
   ImGui::Spacing();
   const float label_w = 200 * scale;
-  const std::filesystem::path& dir = LogDirectory();
+  const std::filesystem::path dir = LogDirectory();
   ImGui::AlignTextToFramePadding();
   ImGui::TextUnformatted(T("Location"));
   ImGui::SameLine(label_w);

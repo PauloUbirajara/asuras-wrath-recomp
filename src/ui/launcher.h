@@ -27,6 +27,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include <imgui.h>
@@ -129,7 +130,7 @@ size_t ShadersNotInCache();
 // The log folder and this process's log file (the app sets them once logging
 // is up). The game started by Play logs next to it: <name>.game.log.
 void SetLogLocation(const std::filesystem::path& dir, const std::filesystem::path& file);
-const std::filesystem::path& LogDirectory();
+std::filesystem::path LogDirectory();
 const std::filesystem::path& LogFile();
 // Makes mantra trace the next frame into the game's log: creates the
 // MANTRA_TRACE_TRIGGER file (Game data > Traces, the bind_trace key).
@@ -203,11 +204,13 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
     std::mutex mutex;
     std::string last_line;  // under mutex
     std::atomic<int> done{0}, total{0};  // shaders translated ("translated N/M" lines)
+    std::atomic<int> read{0}, packages{0};  // game packages read ("read N/M packages")
     // update: keep the shaders `out` already has, translate only new ones.
     void Start(const std::filesystem::path& tool, const std::filesystem::path& game,
                const std::filesystem::path& out, const std::vector<std::filesystem::path>& dumps,
-               bool update = false);
+               bool update = false, bool background = false);
     void Stop();
+    bool background = false;  // started while the game runs (MaybeTranslateForGame)
     std::string Line();
   };
 
@@ -397,6 +400,11 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
     bool Running() const { return process.Running(); }
   };
   GameProcess game_;
+  // While the game runs: translates the shaders it used that the cache lacks
+  // (it reloads the cache when the file changes).
+  void MaybeTranslateForGame();
+  double game_shaders_checked_at_ = -10.0;
+  std::unordered_set<uint64_t> shaders_tried_;  // by MaybeTranslateForGame
   std::filesystem::file_time_type settings_saved_time_{};  // after our last save
   bool playing_ = false;
   bool play_without_shaders_ = false;  // Play was pressed once without a shader cache

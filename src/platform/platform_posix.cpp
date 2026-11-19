@@ -141,6 +141,8 @@ void* LoadedLibrarySymbol(const char* library, const char* symbol) {
 }
 
 void LowerThreadPriority() { setpriority(PRIO_PROCESS, pid_t(syscall(SYS_gettid)), 10); }
+// Linux: the calling thread; threads and processes it starts inherit it.
+void LowerProcessPriority() { setpriority(PRIO_PROCESS, 0, 15); }
 
 uint64_t ThreadCpuNs() {
   timespec ts{};

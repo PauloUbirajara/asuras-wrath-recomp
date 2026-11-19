@@ -179,6 +179,8 @@ void* LoadedLibrarySymbol(const char* library, const char* symbol) {
 }
 
 void LowerThreadPriority() { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL); }
+// Child processes inherit the idle class.
+void LowerProcessPriority() { SetPriorityClass(GetCurrentProcess(), IDLE_PRIORITY_CLASS); }
 
 namespace {
 uint64_t FileTimeNs(const FILETIME& t) {

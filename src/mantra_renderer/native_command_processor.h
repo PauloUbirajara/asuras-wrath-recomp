@@ -5,7 +5,9 @@
 #include <cstdint>
 #include <cstring>
 #include <map>
+#include <filesystem>
 #include <memory>
+#include <optional>
 #include <span>
 #include <tuple>
 #include <unordered_map>
@@ -40,8 +42,12 @@ inline std::atomic<uint64_t> g_guest_swaps{0};
 class MantraShader : public Shader {
  public:
   using Shader::Shader;
-  const mantra::shader_cache::CacheEntry* cache_entry = nullptr;
+  // A copy: the cache is replaced when it is rebuilt while the game runs.
+  std::optional<mantra::shader_cache::CacheEntry> cache_entry;
   VkShaderModule module = VK_NULL_HANDLE;
+  // The cache had no exact translation: the big-endian microcode, to look the
+  // shader up again when the cache is rebuilt (ReloadShaderCacheIfChanged).
+  std::vector<uint32_t> ucode_be;
 
   // Vertex shaders: the translated shader's inputs, with the vfetch each one
   // comes from decoded from this (possibly driver-patched) microcode.
@@ -450,6 +456,18 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
   std::map<std::tuple<uint64_t, uint64_t, uint32_t>, uint64_t> draw_census_;
   void ReportDrawCensus();
   mantra::ShaderCache shader_cache_;
+  // The launcher rebuilds the cache while the game runs (shaders the game
+  // used that it lacked); checked every few seconds at swap.
+  void ReloadShaderCacheIfChanged();
+  // Fills in a shader's translation from a cache lookup; returns whether it
+  // got a shader module.
+  bool AttachTranslation(MantraShader& shader, const mantra::ShaderCache::Lookup& lookup,
+                         const uint32_t* microcode_be, size_t byte_count);
+  std::filesystem::path shader_cache_path_;
+  std::filesystem::file_time_type shader_cache_time_{};
+  uintmax_t shader_cache_bytes_ = 0;
+  std::chrono::steady_clock::time_point shader_cache_checked_{};
+  std::vector<VkShaderModule> retired_modules_;  // replaced, maybe still in flight
 
   const ui::vulkan::VulkanDevice* vulkan_device_ = nullptr;
 

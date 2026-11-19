@@ -2,7 +2,7 @@
 
 PC port of Asura's Wrath (`default.xex`, Title ID `43430817`) via Xbox 360 static PowerPC recompilation to C++23, rendered by the in-repo Vulkan renderer `mantra`.
 
-> Note: Linux only for now (Windows and Android are on the TODO list).
+> Note: made and tested on Linux. A Windows build can be made (natively or cross-compiled from Linux) but hasn't been tested on Windows yet. Android is on the TODO list.
 
 <a href="https://www.youtube.com/playlist?list=PLVyuezqTsTB0">
         <img alt="cover" src="https://github.com/user-attachments/assets/339f7f1b-85d4-48ac-9b5f-ac4fad276dad" />
@@ -18,7 +18,9 @@ https://www.youtube.com/playlist?list=PLVyuezqTsTB0
 
 - A copy of the Xbox 360 game ISO (`Asura's Wrath.iso`).
 - Optional: [extract-xiso](https://github.com/XboxDev/extract-xiso) to extract the `.iso` yourself (the launcher can also extract it).
-- clang-20, CMake 3.25+, Ninja, glslc (shaderc), Vulkan drivers, Git.
+- Linux: clang-20, CMake 3.25+, Ninja, glslc (shaderc), Vulkan drivers, Git.
+- Windows (native build): Visual Studio 2022 Build Tools (Windows SDK + C runtime), LLVM clang 20+ on PATH, CMake 3.25+, Ninja, Git, the Vulkan SDK.
+- Windows (cross build from Linux): the Linux requirements plus lld-20 and llvm-20 (`llvm-rc`, `llvm-ar`, `llvm-mt`); `tools/setup_windows_cross.sh` downloads Microsoft's SDK and runtime (see below).
 
 ---
 
@@ -61,6 +63,35 @@ cmake --build out/build/linux-amd64-release --parallel
 # Other options: --debug, --codegen, --clean (./build.sh --help)
 ```
 
+### Option C: Windows, native (PowerShell)
+
+Run from a *Developer PowerShell for VS 2022* (x64), so clang finds the Windows SDK:
+
+```powershell
+# Build binary (out\build\win-amd64-release\)
+.\build.ps1
+
+# Portable build (for sharing); other options: -Config debug|relwithdebinfo, -Codegen, -Clean
+.\build.ps1 -Portable
+```
+
+### Option D: Windows, cross-compiled from Linux
+
+Builds `asura_wrath.exe` on Linux with clang-20 targeting the MSVC ABI and lld-link. Microsoft's Windows SDK and C/C++ runtime can't be redistributed, so a script downloads them (through [xwin](https://github.com/Jake-Shadle/xwin)) into `out/toolchain/xwin`; running it accepts [Microsoft's license](https://go.microsoft.com/fwlink/?LinkId=2086102).
+
+```bash
+# Once: Windows SDK 10.0.22621 + MSVC runtime (~600 MB; --debug-libs for Debug builds)
+tools/setup_windows_cross.sh
+
+# The Linux build first: the Windows build runs its codegen tool
+./build.sh
+
+# Windows build (out/build/win-amd64-release-cross/); --portable for sharing, --debug
+./build.sh --windows --portable
+```
+
+The same with presets: `cmake --preset win-amd64-release-cross` then `cmake --build out/build/win-amd64-release-cross --parallel` (toolchain file `cmake/windows-cross.cmake`; `XWIN_DIR` and `LLVM_SUFFIX` override the SDK folder and the `-20` suffix).
+
 ### Package
 
 ```bash
@@ -76,7 +107,23 @@ tools/package.sh --appimage --clean --version 0.1.0
 
 Without `--version`, the files are named after the git tag on HEAD (`v0.1.0` → `0.1.0`), else the short commit; uncommitted changes only print a warning. `--clean` deletes earlier packages in `out/package`; the staging folders are always removed. The AppImage needs appimagetool (`APPIMAGETOOL=<path>`, PATH, or `../appimagetool/appimagetool`), which downloads its runtime unless `APPIMAGE_RUNTIME=<file>` is set.
 
-For a GitHub release, attach the three files in `out/package`. The default build is tuned for your CPU and may not run on others, so share only `--portable` builds. Players supply their own game: never attach game files or a shader cache built from them.
+Windows packages are a `.zip` (binaries, `assets/`, a `README.txt`):
+
+```bash
+# Cross build on Linux: out/package/asuras-wrath-recomp-<version>-windows-x86_64.zip + SHA256SUMS-windows
+./build.sh --windows --portable
+tools/package.sh --windows --version 0.1.0
+```
+
+```powershell
+# Native build on Windows: out\package\asuras-wrath-recomp-<version>-windows-x86_64.zip + SHA256SUMS.txt
+.\build.ps1 -Portable
+tools\package.ps1 -Version 0.1.0
+```
+
+The Windows build links the Microsoft C++ runtime dynamically: players without it install the [Visual C++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe) (the zip's README says so).
+
+For a GitHub release, attach the files in `out/package`. The default build is tuned for your CPU and may not run on others, so share only `--portable` builds. Players supply their own game: never attach game files or a shader cache built from them.
 
 ---
 
@@ -115,6 +162,8 @@ mantra_shadergen --game extracted --out ~/.cache/asura_wrath_recomp/mantra_shade
 
 Some shaders only exist once the game patches them at runtime (e.g. the menu text). mantra keeps those in `~/.cache/asura_wrath_recomp/shader_dumps/` while you play; **Game data > Shaders** then says how many are missing, and **Add the N new shaders** translates only those, keeping the rest of the cache (**Rebuild all** starts over). From the command line: `--dumps ~/.cache/asura_wrath_recomp/shader_dumps` (repeatable), plus `--update` to keep what the `--out` cache already has (only for a cache of the same format version; otherwise it translates everything).
 
+Without a cache, mantra can't draw what uses an untranslated shader (the screen stays black, audio plays). When the game is started with **Play**, the launcher translates the shaders the game has used but the cache lacks in the background, at low priority (`mantra_shadergen --update --requested-only --background`), and the running game picks up the new cache within a few seconds. The first run has to read the game files once (cached in `shader_scan.bin` next to the shader cache, so later runs skip it), so building the full cache before playing is still the smoothest.
+
 ---
 
 ## 5. Run
@@ -133,11 +182,25 @@ Some shaders only exist once the game patches them at runtime (e.g. the menu tex
 └── libdxcompiler.so     # used by mantra_shadergen
 ```
 
+#### Windows
+```
+├── asura_wrath.exe      # Executable
+├── extracted/           # .iso contents (or set in the launcher)
+├── assets/              # launcher / toast art, app icon
+├── rexgpu-mantra.dll    # mantra renderer
+├── rexgpu-xenos.dll     # SDK renderer (--gpu_plugin=xenos)
+├── rexruntime.dll
+├── mantra_shadergen.exe # shader cache builder
+├── dxcompiler.dll       # used by mantra_shadergen
+└── dxil.dll
+```
+
 ### Save Locations
 
 | OS | Location |
 | :--- | :--- |
 | Linux | `~/.local/share/asura_wrath_recomp` (saves, achievements, `launcher.cfg`, `asura_wrath_recomp.toml`) |
+| Windows | `Documents\asura_wrath_recomp` (saves, achievements, `cache\`, `logs\`), or the launcher's *Files folder* |
 
 ### Linux
 ```bash
@@ -253,7 +316,7 @@ Performance lines (`frame times`, `cpu:`, `hitch:`) are logged every 5 seconds. 
 
 ## 10. TODO
 
-- [ ] Port to Windows
+- [ ] Port to Windows (builds natively and cross-compiled from Linux; not tested on Windows yet)
 - [ ] Port to Android
 - [ ] Add touch controls for Android (?)
 - [ ] Test all episodes

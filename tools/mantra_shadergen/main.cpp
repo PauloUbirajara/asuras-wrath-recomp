@@ -31,6 +31,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -510,6 +511,107 @@ void ReportDumpCoverage(const fs::path& dumps, const std::map<uint64_t, Shader>&
   }
 }
 
+
+// --- Scan index (shader_scan.bin) ----------------------------------------------
+// Every shader container found in the game files, so a build doesn't have to
+// read the 3 GB of packages again. Valid while the files' names, sizes and
+// times are the same.
+struct ScanCounts {
+  uint32_t hits = 0, packages = 0, failed_packages = 0, code_chunks = 0;
+};
+constexpr char kScanMagic[4] = {'M', 'S', 'C', 'N'};
+constexpr uint32_t kScanVersion = 1;
+
+uint64_t ScanSignature(const std::vector<fs::path>& files) {
+  std::vector<uint8_t> bytes;
+  auto put = [&](const void* data, size_t size) {
+    const auto* p = static_cast<const uint8_t*>(data);
+    bytes.insert(bytes.end(), p, p + size);
+  };
+  for (const fs::path& file : files) {
+    std::error_code ec;
+    const std::string name = file.string();
+    const uint64_t size = fs::file_size(file, ec);
+    const int64_t time = fs::last_write_time(file, ec).time_since_epoch().count();
+    put(name.data(), name.size());
+    put(&size, sizeof(size));
+    put(&time, sizeof(time));
+  }
+  put(&kScanVersion, sizeof(kScanVersion));
+  return mantra::shader_key::ExactHash(bytes.data(), bytes.size());
+}
+
+bool SaveScan(const fs::path& path, uint64_t signature, const std::map<uint64_t, Shader>& shaders,
+              const ScanCounts& counts) {
+  std::vector<uint8_t> out;
+  auto put = [&](const void* data, size_t size) {
+    const auto* p = static_cast<const uint8_t*>(data);
+    out.insert(out.end(), p, p + size);
+  };
+  auto put32 = [&](uint32_t v) { put(&v, 4); };
+  put(kScanMagic, 4);
+  put32(kScanVersion);
+  put(&signature, 8);
+  put(&counts, sizeof(counts));
+  put32(uint32_t(shaders.size()));
+  for (const auto& [hash, s] : shaders) {
+    put(&s.exact_hash, 8);
+    put(&s.normalized_hash, 8);
+    put32(s.microcode_dwords);
+    put32(s.is_pixel);
+    put32(uint32_t(s.source.size()));
+    put(s.source.data(), s.source.size());
+    put32(uint32_t(s.container.size()));
+    put(s.container.data(), s.container.size());
+  }
+  std::error_code ec;
+  fs::create_directories(path.parent_path(), ec);
+  const fs::path tmp = path.string() + ".tmp";
+  if (!WriteFile(tmp, out.data(), out.size())) return false;
+  fs::rename(tmp, path, ec);
+  return !ec;
+}
+
+bool LoadScan(const fs::path& path, uint64_t signature, std::map<uint64_t, Shader>& shaders,
+              ScanCounts& counts) {
+  std::error_code ec;
+  if (!fs::is_regular_file(path, ec)) return false;
+  const std::vector<uint8_t> data = ReadFile(path);
+  size_t at = 0;
+  auto get = [&](void* dest, size_t size) {
+    if (size > data.size() - at) return false;
+    std::memcpy(dest, data.data() + at, size);
+    at += size;
+    return true;
+  };
+  char magic[4];
+  uint32_t version = 0, count = 0;
+  uint64_t stored = 0;
+  if (!get(magic, 4) || std::memcmp(magic, kScanMagic, 4) || !get(&version, 4) ||
+      version != kScanVersion || !get(&stored, 8) || stored != signature ||
+      !get(&counts, sizeof(counts)) || !get(&count, 4)) {
+    return false;
+  }
+  std::map<uint64_t, Shader> loaded;
+  for (uint32_t i = 0; i < count; ++i) {
+    Shader s;
+    uint32_t is_pixel = 0, size = 0;
+    if (!get(&s.exact_hash, 8) || !get(&s.normalized_hash, 8) || !get(&s.microcode_dwords, 4) ||
+        !get(&is_pixel, 4) || !get(&size, 4) || size > data.size() - at) {
+      return false;
+    }
+    s.is_pixel = is_pixel != 0;
+    s.source.assign(reinterpret_cast<const char*>(data.data() + at), size);
+    at += size;
+    if (!get(&size, 4) || size > data.size() - at) return false;
+    s.container.assign(data.begin() + at, data.begin() + at + size);
+    at += size;
+    loaded.emplace(s.exact_hash, std::move(s));
+  }
+  shaders = std::move(loaded);
+  return true;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -530,12 +632,24 @@ int main(int argc, char** argv) {
   bool scan_only = false;
   bool keep_work = false;
   bool update = false;  // --update: keep what the --out cache already has
+  // --requested-only: translate only the shaders the game used (the --dumps
+  // programs); the others are left out of the cache, for a later full build.
+  bool requested_only = false;
+  // --background: while the game runs: lower priority, half the cores.
+  bool background = false;
+  fs::path scan_cache;  // --scan-cache (default <out dir>/shader_scan.bin)
   std::unordered_set<uint64_t> only;  // --only  // --keep-work: keep the per-shader logs (<work>/<index>.log)
   ChildLimits limits;
   for (int i = 1; i < argc;) {
     const std::string flag = argv[i];
-    if (flag == "--scan-only" || flag == "--keep-work" || flag == "--update") {
-      (flag == "--scan-only" ? scan_only : flag == "--keep-work" ? keep_work : update) = true;
+    bool* set = flag == "--scan-only"        ? &scan_only
+                : flag == "--keep-work"      ? &keep_work
+                : flag == "--update"         ? &update
+                : flag == "--requested-only" ? &requested_only
+                : flag == "--background"     ? &background
+                                             : nullptr;
+    if (set) {
+      *set = true;
       for (int j = i; j + 1 < argc; ++j) argv[j] = argv[j + 1];
       --argc;
     } else {
@@ -552,6 +666,7 @@ int main(int argc, char** argv) {
       if (fs::is_directory(argv[i + 1], ec)) dumps.emplace_back(argv[i + 1]);
     }
     else if (arg == "--hlsl") hlsl_dir = argv[i + 1];
+    else if (arg == "--scan-cache") scan_cache = argv[i + 1];
     else if (arg == "--only") {
       // Comma-separated exact hashes: translate just these (debugging).
       std::string list = argv[i + 1];
@@ -568,12 +683,15 @@ int main(int argc, char** argv) {
   if (game.empty() || out.empty()) {
     std::fprintf(stderr,
                  "usage: %s --game <extracted dir> --out <cache file> [--dumps <dir>]... "
-                 "[--update] [--hlsl <dir>] [--jobs N] [--child-mem-mb N] [--child-timeout S]\n",
+                 "[--update] [--requested-only] [--background] [--scan-cache <file>] [--hlsl <dir>] [--jobs N] [--child-mem-mb N] [--child-timeout S]\n",
                  argv[0]);
     return 1;
   }
+  if (background) {
+    asura::platform::LowerProcessPriority();  // the workers inherit it
+  }
   if (!jobs) {
-    jobs = std::max(1u, std::thread::hardware_concurrency());
+    jobs = std::max(1u, std::thread::hardware_concurrency() / (background ? 2 : 1));
     // MemAvailable (free memory plus reclaimable cache; _SC_AVPHYS_PAGES only
     // counts free pages). The child limit is an address-space cap, far above
     // what a translation actually uses, so budget ~1 GB per child.
@@ -590,30 +708,97 @@ int main(int argc, char** argv) {
 
   std::map<uint64_t, Shader> shaders;
   uint32_t hits = 0;
-  {
-    const fs::path cache = cooked / "GlobalShaderCache-Xbox360.bin";
-    ScanContainers(ReadFile(cache), cache.filename().string(), shaders, hits);
-    std::printf("GlobalShaderCache: %zu unique shaders\n", shaders.size());
-  }
-  PackageStats stats;
   uint32_t packages = 0, failed_packages = 0, code_chunks = 0;
+  std::vector<fs::path> package_paths;
   for (const auto& entry : fs::recursive_directory_iterator(game)) {
-    if (entry.path().extension() != ".xxx") {
-      continue;
-    }
-    std::vector<uint8_t> body;
-    if (!DecompressPackage(ReadFile(entry.path()), body, stats)) {
-      ++failed_packages;
-    }
-    ++packages;
-    ScanContainers(body, entry.path().filename().string(), shaders, hits);
-    // Material shaders: UE3 keeps each package's shader code LZX-compressed
-    // per shader type inside its ShaderCache export.
-    std::vector<uint8_t> code;
-    if (const uint32_t chunks = DecompressEmbeddedChunks(body, code)) {
-      code_chunks += chunks;
-      ScanContainers(code, entry.path().filename().string(), shaders, hits);
-    }
+    if (entry.path().extension() == ".xxx") package_paths.push_back(entry.path());
+  }
+  const fs::path global_cache = cooked / "GlobalShaderCache-Xbox360.bin";
+  // What was found is kept next to the cache (shader_scan.bin), so later
+  // builds (the launcher's, while the game runs) skip reading the packages.
+  if (scan_cache.empty()) scan_cache = out.parent_path() / "shader_scan.bin";
+  std::vector<fs::path> scanned_files = package_paths;
+  scanned_files.push_back(global_cache);
+  const uint64_t scan_signature = ScanSignature(scanned_files);
+  ScanCounts counts;
+  if (LoadScan(scan_cache, scan_signature, shaders, counts)) {
+    hits = counts.hits;
+    packages = counts.packages;
+    failed_packages = counts.failed_packages;
+    code_chunks = counts.code_chunks;
+    std::printf("read %s\n", scan_cache.string().c_str());
+  } else {
+  ScanContainers(ReadFile(global_cache), global_cache.filename().string(), shaders, hits);
+  std::printf("GlobalShaderCache: %zu unique shaders\n", shaders.size());
+  // The packages are independent: read them on `jobs` threads, each into its
+  // own map, and merge the maps in directory order so the first package that
+  // has a shader still provides it (the same result as one thread).
+  struct PackageScan {
+    std::map<uint64_t, Shader> shaders;
+    uint32_t hits = 0, code_chunks = 0, chunks = 0, failed_chunks = 0;
+    bool failed = false, ready = false;
+  };
+  std::vector<PackageScan> scans(package_paths.size());
+  PackageStats stats;
+  {
+    std::mutex mutex;
+    size_t next = 0, merged = 0;
+    auto merge_ready = [&] {  // under `mutex`
+      while (merged < scans.size() && scans[merged].ready) {
+        PackageScan& scan = scans[merged++];
+        for (auto& [hash, shader] : scan.shaders) shaders.try_emplace(hash, std::move(shader));
+        hits += scan.hits;
+        code_chunks += scan.code_chunks;
+        stats.chunks += scan.chunks;
+        stats.failed_chunks += scan.failed_chunks;
+        failed_packages += scan.failed;
+        ++packages;
+        scan = PackageScan{};
+        scan.ready = true;
+        if (packages % 20 == 0 || packages == scans.size()) {
+          std::printf("  read %u/%zu packages\n", packages, scans.size());
+          std::fflush(stdout);
+        }
+      }
+    };
+    auto work = [&] {
+      for (;;) {
+        size_t i;
+        {
+          std::lock_guard<std::mutex> lock(mutex);
+          if (next == package_paths.size()) return;
+          i = next++;
+        }
+        PackageScan scan;
+        const std::string name = package_paths[i].filename().string();
+        std::vector<uint8_t> body;
+        PackageStats package_stats;
+        scan.failed = !DecompressPackage(ReadFile(package_paths[i]), body, package_stats);
+        scan.chunks = package_stats.chunks;
+        scan.failed_chunks = package_stats.failed_chunks;
+        ScanContainers(body, name, scan.shaders, scan.hits);
+        // Material shaders: UE3 keeps each package's shader code LZX-compressed
+        // per shader type inside its ShaderCache export.
+        std::vector<uint8_t> code;
+        if ((scan.code_chunks = DecompressEmbeddedChunks(body, code))) {
+          ScanContainers(code, name, scan.shaders, scan.hits);
+        }
+        scan.ready = true;
+        std::lock_guard<std::mutex> lock(mutex);
+        scans[i] = std::move(scan);
+        merge_ready();
+      }
+    };
+    std::vector<std::thread> threads;
+    const unsigned count = std::max(1u, std::min<unsigned>(jobs, unsigned(package_paths.size())));
+    for (unsigned t = 1; t < count; ++t) threads.emplace_back(work);
+    work();
+    for (auto& t : threads) t.join();
+  }
+  counts = {hits, packages, failed_packages, code_chunks};
+  if (!SaveScan(scan_cache, scan_signature, shaders, counts)) {
+    std::fprintf(stderr, "could not write %s\n", scan_cache.string().c_str());
+  }
   }
   std::printf("packages: %u read (%u with failed chunks), %u shader code chunks, "
               "%u container hits, %zu unique shaders\n",
@@ -622,10 +807,22 @@ int main(int argc, char** argv) {
     size_t ps = 0;
     for (const auto& [hash, s] : shaders) ps += s.is_pixel;
     std::printf("scan only: %zu vertex + %zu pixel shaders\n", shaders.size() - ps, ps);
+    // Identifies the scan result (which container and package each shader
+    // came from), to compare scans.
+    std::vector<uint8_t> all;
+    for (const auto& [hash, s] : shaders) {
+      all.insert(all.end(), reinterpret_cast<const uint8_t*>(&hash),
+                 reinterpret_cast<const uint8_t*>(&hash) + 8);
+      all.insert(all.end(), s.source.begin(), s.source.end());
+      all.insert(all.end(), s.container.begin(), s.container.end());
+    }
+    std::printf("scan digest: %016llx\n",
+                (unsigned long long)mantra::shader_key::ExactHash(all.data(), all.size()));
     for (const auto& dir : dumps) ReportDumpCoverage(dir, shaders, true);
     return 0;
   }
 
+  std::unordered_set<uint64_t> requested;  // exact hashes of the --dumps programs
   // Runtime-patched variants: the D3D runtime patches vertex shaders at draw
   // time (vertex fetch formats/offsets, export swizzles and masks for the
   // pixel shader's inputs). Each dumped program whose normalized hash matches
@@ -643,6 +840,7 @@ int main(int argc, char** argv) {
       if (entry.path().extension() != ".mc") continue;
       const auto code = ReadFile(entry.path());
       const uint64_t exact = mantra::shader_key::ExactHash(code.data(), code.size());
+      requested.insert(exact);
       if (shaders.count(exact) || !seen.insert(exact).second) continue;
       const bool is_pixel = entry.path().filename().string().rfind("ps", 0) == 0;
       // Several game shaders can share a normalized hash; take one that
@@ -694,6 +892,10 @@ int main(int argc, char** argv) {
   for (auto it = shaders.begin(); it != shaders.end();) {
     if (!only.empty() && !only.count(it->first)) {
       it = shaders.erase(it);
+      continue;
+    }
+    if (requested_only && !it->second.from_cache && !requested.count(it->first)) {
+      it = shaders.erase(it);  // not used by the game yet: for a full build
       continue;
     }
     if (!it->second.from_cache) list.push_back(&it->second);

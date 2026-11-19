@@ -141,6 +141,13 @@ bool NativeCommandProcessor::SetupContext() {
   // Offline-translated shaders (mantra_shadergen). Optional for now: nothing
   // draws yet, lookups only feed the stats.
   const std::filesystem::path cache_path = mantra::ShaderCache::DefaultPath();
+  shader_cache_path_ = cache_path;
+  {
+    std::error_code ec;
+    shader_cache_time_ = std::filesystem::last_write_time(cache_path, ec);
+    shader_cache_bytes_ = std::filesystem::file_size(cache_path, ec);
+    if (ec) shader_cache_bytes_ = 0;
+  }
   if (!cache_path.empty() && shader_cache_.Load(cache_path)) {
     MANTRA_INFO("shader cache: {} entries from {}", shader_cache_.size(), cache_path.string());
     if (mantra::RenderScale8() != 8 && shader_cache_.version() < 8) {
@@ -1548,6 +1555,7 @@ void NativeCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
   ++swap_stats_.swaps;
   g_guest_swaps.fetch_add(1, std::memory_order_relaxed);
   buffer_cache_.FrameEnded();
+  ReloadShaderCacheIfChanged();
   // MANTRA_TRACE_TRIGGER=<file>: when the file appears, trace the next frame
   // (and delete the file, so it can be triggered again). Once the traced
   // frame ends, <file>.done holds its number (the launcher's toast and its
@@ -2319,63 +2327,130 @@ Shader* NativeCommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32
   }
   auto shader = std::make_unique<MantraShader>(shader_type, hash, host_address, dword_count);
   shader->AnalyzeUcode(ucode_disasm_buffer_);
-  if (!lookup.spirv.empty()) {
-    shader->cache_entry = lookup.entry;
-    shader->ps_outputs = lookup.entry->ps_outputs;
-    shader->vertex_index_divisor = lookup.entry->vertex_index_divisor;
-    if (!is_pixel) {
-      shader->DecodeVertexInputs(lookup.vertex_elements, lookup.vertex_swizzles);
-    }
-    std::span<const uint8_t> spirv = lookup.spirv;
-    std::vector<uint8_t> remapped;
-    if (!is_pixel && lookup.match == mantra::ShaderCache::Match::kNormalized &&
-        !lookup.exports.empty()) {
-      // The driver patched this shader's exports for the pixel shader it is
-      // drawn with: renumber the translation's interpolator outputs to match.
-      uint8_t map[16];
-      const std::vector<uint32_t> runtime_exports =
-          mantra::shader_key::InterpolatorExports(host_address, byte_count);
-      if (!mantra::shader_key::InterpolatorLocationMap(lookup.exports, runtime_exports, map)) {
-        // Identity, or exports that don't correspond (then left as is).
-        auto list = [](const std::vector<uint32_t>& exports) {
-          std::string s;
-          for (uint32_t e : exports) {
-            s += fmt::format(" {}:{}{}", e >> 8, (e >> 4) & 1 ? 's' : 'v', e & 0xF);
-          }
-          return s;
-        };
-        if (lookup.uncovered) {
-          MANTRA_WARN("vs {:016X} (cached {:016X}, {} candidates): runtime exports not all "
-                      "translated; translated{} | runtime{}",
-                      hash, lookup.entry->exact_hash, lookup.candidates, list(lookup.exports),
-                      list(runtime_exports));
-        }
-      } else {
-        remapped.assign(spirv.begin(), spirv.end());
-        const uint32_t patched = RemapOutputLocations(remapped, map);
-        spirv = remapped;
-        ++shader_stats_.remapped;
-        std::string text;
-        for (uint32_t i = 0; i < 16; ++i) {
-          if (map[i] != i) text += fmt::format(" o{}->{}", i, map[i]);
-        }
-        MANTRA_INFO("vs {:016X} (cached {:016X}, {} candidates{}): interpolators{} ({} "
-                    "decorations)",
-                    hash, lookup.entry->exact_hash, lookup.candidates,
-                    lookup.uncovered ? ", exports not all translated" : "", text, patched);
-      }
-    }
-    shader->module = shader_interface_.CreateModule(spirv);
-    if (shader->module) {
-      ++shader_stats_.modules;
-    } else {
-      ++shader_stats_.module_failures;
-      MANTRA_WARN("shader {:016X}: vkCreateShaderModule failed", hash);
-    }
+  AttachTranslation(*shader, lookup, host_address, byte_count);
+  if (lookup.match != mantra::ShaderCache::Match::kExact) {
+    shader->ucode_be.assign(host_address, host_address + dword_count);
   }
   Shader* result = shader.get();
   shaders.emplace(hash, std::move(shader));
   return result;
+}
+
+bool NativeCommandProcessor::AttachTranslation(MantraShader& shader,
+                                               const mantra::ShaderCache::Lookup& lookup,
+                                               const uint32_t* microcode_be, size_t byte_count) {
+  if (lookup.spirv.empty()) {
+    return false;
+  }
+  const bool is_pixel = shader.type() == xenos::ShaderType::kPixel;
+  shader.cache_entry = *lookup.entry;
+  shader.ps_outputs = lookup.entry->ps_outputs;
+  shader.vertex_index_divisor = lookup.entry->vertex_index_divisor;
+  if (!is_pixel) {
+    shader.DecodeVertexInputs(lookup.vertex_elements, lookup.vertex_swizzles);
+  }
+  std::span<const uint8_t> spirv = lookup.spirv;
+  std::vector<uint8_t> remapped;
+  if (!is_pixel && lookup.match == mantra::ShaderCache::Match::kNormalized &&
+      !lookup.exports.empty()) {
+    // The driver patched this shader's exports for the pixel shader it is
+    // drawn with: renumber the translation's interpolator outputs to match.
+    uint8_t map[16];
+    const std::vector<uint32_t> runtime_exports =
+        mantra::shader_key::InterpolatorExports(microcode_be, byte_count);
+    if (!mantra::shader_key::InterpolatorLocationMap(lookup.exports, runtime_exports, map)) {
+      // Identity, or exports that don't correspond (then left as is).
+      auto list = [](const std::vector<uint32_t>& exports) {
+        std::string s;
+        for (uint32_t e : exports) {
+          s += fmt::format(" {}:{}{}", e >> 8, (e >> 4) & 1 ? 's' : 'v', e & 0xF);
+        }
+        return s;
+      };
+      if (lookup.uncovered) {
+        MANTRA_WARN("vs {:016X} (cached {:016X}, {} candidates): runtime exports not all "
+                    "translated; translated{} | runtime{}",
+                    shader.ucode_data_hash(), lookup.entry->exact_hash, lookup.candidates, list(lookup.exports),
+                    list(runtime_exports));
+      }
+    } else {
+      remapped.assign(spirv.begin(), spirv.end());
+      const uint32_t patched = RemapOutputLocations(remapped, map);
+      spirv = remapped;
+      ++shader_stats_.remapped;
+      std::string text;
+      for (uint32_t i = 0; i < 16; ++i) {
+        if (map[i] != i) text += fmt::format(" o{}->{}", i, map[i]);
+      }
+      MANTRA_INFO("vs {:016X} (cached {:016X}, {} candidates{}): interpolators{} ({} "
+                  "decorations)",
+                  shader.ucode_data_hash(), lookup.entry->exact_hash, lookup.candidates,
+                  lookup.uncovered ? ", exports not all translated" : "", text, patched);
+    }
+  }
+  shader.module = shader_interface_.CreateModule(spirv);
+  if (shader.module) {
+    ++shader_stats_.modules;
+  } else {
+    ++shader_stats_.module_failures;
+    MANTRA_WARN("shader {:016X}: vkCreateShaderModule failed", shader.ucode_data_hash());
+  }
+  return shader.module != VK_NULL_HANDLE;
+}
+
+void NativeCommandProcessor::ReloadShaderCacheIfChanged() {
+  const auto now = std::chrono::steady_clock::now();
+  if (shader_cache_path_.empty() || now - shader_cache_checked_ < std::chrono::seconds(2)) {
+    return;
+  }
+  shader_cache_checked_ = now;
+  std::error_code ec;
+  const auto time = std::filesystem::last_write_time(shader_cache_path_, ec);
+  if (ec) return;
+  const uintmax_t bytes = std::filesystem::file_size(shader_cache_path_, ec);
+  if (ec || (time == shader_cache_time_ && bytes == shader_cache_bytes_)) return;
+  mantra::ShaderCache cache;
+  if (!cache.Load(shader_cache_path_)) {
+    return;  // being written (it is renamed into place), or not a cache: next time
+  }
+  shader_cache_time_ = time;
+  shader_cache_bytes_ = bytes;
+  shader_cache_ = std::move(cache);
+  // Shaders without an exact translation: look them up again.
+  uint32_t added = 0, improved = 0, waiting = 0;
+  for (auto& shaders : shaders_) {
+    for (auto& [hash, base] : shaders) {
+      auto& shader = *static_cast<MantraShader*>(base.get());
+      if (shader.ucode_be.empty()) continue;
+      const size_t byte_count = shader.ucode_be.size() * sizeof(uint32_t);
+      const bool is_pixel = shader.type() == xenos::ShaderType::kPixel;
+      mantra::ShaderCache::Lookup lookup =
+          shader_cache_.Find(shader.ucode_be.data(), byte_count, is_pixel);
+      const bool had = shader.module != VK_NULL_HANDLE;
+      // Better than before: a translation where there was none, or an exact
+      // one for a normalized match.
+      if (lookup.spirv.empty() ||
+          (had && lookup.match != mantra::ShaderCache::Match::kExact)) {
+        waiting += !had;
+        continue;
+      }
+      const VkShaderModule old = shader.module;
+      shader.module = VK_NULL_HANDLE;
+      shader.vertex_inputs.clear();
+      if (!AttachTranslation(shader, lookup, shader.ucode_be.data(), byte_count)) {
+        shader.module = old;
+        continue;
+      }
+      if (old) retired_modules_.push_back(old);
+      (had ? improved : added)++;
+      if (lookup.match == mantra::ShaderCache::Match::kExact) {
+        shader.ucode_be.clear();
+        shader.ucode_be.shrink_to_fit();
+      }
+    }
+  }
+  MANTRA_INFO("shader cache rebuilt: {} entries; {} shaders now translated, {} made exact, {} "
+              "still missing", shader_cache_.size(), added, improved, waiting);
 }
 
 void NativeCommandProcessor::ReportDrawCensus() {
@@ -2531,6 +2606,10 @@ bool NativeCommandProcessor::PrepareDrawConstants(mantra::DrawConstantOffsets& o
 
 void NativeCommandProcessor::DestroyShaderModules() {
   const auto& dfn = vulkan_device_->functions();
+  for (VkShaderModule module : retired_modules_) {
+    dfn.vkDestroyShaderModule(vulkan_device_->device(), module, nullptr);
+  }
+  retired_modules_.clear();
   for (auto& shaders : shaders_) {
     for (auto& [hash, shader] : shaders) {
       auto* s = static_cast<MantraShader*>(shader.get());

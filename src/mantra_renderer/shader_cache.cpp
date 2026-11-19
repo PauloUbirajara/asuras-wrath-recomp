@@ -26,11 +26,21 @@ bool ShaderCache::Load(const std::filesystem::path& path) {
   by_exact_.clear();
   by_normalized_.clear();
 
-  std::ifstream file(path, std::ios::binary);
+  std::ifstream file(path, std::ios::binary | std::ios::ate);
   if (!file) {
     return false;
   }
-  data_.assign(std::istreambuf_iterator<char>(file), {});
+  // One read: the cache is hundreds of MB, and a byte-wise copy took seconds.
+  const std::streamoff length = file.tellg();
+  if (length < 0) {
+    return false;
+  }
+  data_.resize(size_t(length));
+  file.seekg(0);
+  if (!file.read(reinterpret_cast<char*>(data_.data()), length)) {
+    data_.clear();
+    return false;
+  }
 
   CacheHeader header;
   if (data_.size() < sizeof(header)) {

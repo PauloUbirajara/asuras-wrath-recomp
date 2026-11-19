@@ -1542,8 +1542,8 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
   dfn.vkCmdSetStencilReference(cmd, VK_STENCIL_FACE_BACK_BIT, back.stencilref);
 
   if (trace_current_draw_) {
-    MANTRA_INFO(
-        "trace:   state vp {},{} {}x{} z {}..{} ndc ({} {} {}) + ({} {} {}) scissor {},{}-{},{} "
+    MANTRA_FRAME_TRACE(
+        "  state vp {},{} {}x{} z {}..{} ndc ({} {} {}) + ({} {} {}) scissor {},{}-{},{} "
         "area {}x{} cull {} front {} colormask {:X} depth t{} w{} f{} stencil {} ops {}/{}/{}/{} "
         "ref {} mask {} wmask {} a2c {} count {} vofs {} indexed {}",
         viewport.xy_offset[0], viewport.xy_offset[1], viewport.xy_extent[0],

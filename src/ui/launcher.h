@@ -76,6 +76,7 @@ struct LauncherSettings {
   int fps_corner = 0;                        // 0 top left, 1 top right, 2 bottom left, 3 bottom right
   int fps_cap = 30;                          // frame rate limit, 30 = the game's, 0 = unlimited
   bool skip_intro = false;                   // skip the logos and the autosave notice at start
+  bool detailed_logs = false;                // Game data > Logs: log_level debug, for bug reports
   uint32_t turbo = 0;                        // Turbo: held controls repeat (bit = PadControl)
   bool hide_cursor = true;                   // mouse cursor hides while it isn't moving, in game
   bool mute_background = false;              // no sound while the window isn't focused
@@ -132,8 +133,14 @@ size_t ShadersNotInCache();
 void SetLogLocation(const std::filesystem::path& dir, const std::filesystem::path& file);
 std::filesystem::path LogDirectory();
 const std::filesystem::path& LogFile();
-// Makes mantra trace the next frame into the game's log: creates the
-// MANTRA_TRACE_TRIGGER file (Game data > Traces, the bind_trace key).
+// Where mantra writes each traced frame (MANTRA_TRACE_DIR): one set in the
+// shell, else <Files folder>/traces.
+std::filesystem::path TraceDirectory();
+// Game data > Logs > Detailed logs: log_level debug, unless something else
+// set log_level.
+void ApplyDetailedLogs(bool on);
+// Makes mantra trace the next frame into a file in TraceDirectory(): creates
+// the MANTRA_TRACE_TRIGGER file (Game data > Traces, the bind_trace key).
 bool RequestTrace();
 // A trace this process asked for, or any not yet picked up, isn't done yet.
 bool TracePending();
@@ -218,9 +225,13 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
     void Tick();
     // Stops it and waits (closing the launcher).
     void Stop();
-    bool background = false;  // started while the game runs (MaybeTranslateForGame)
+    bool background = false;  // only the shaders the game used (MaybeTranslateForGame)
     std::string Line();
   };
+  // One per process, never destroyed: in the game, the launcher over it
+  // (Esc) is made again each time, and a translation started there keeps
+  // going after Resume (it stops with the game: --parent).
+  static ShaderBuild& SharedShaderBuild();
 
   // Copies the game files out of a disc image in the background.
   struct IsoExtract {
@@ -271,18 +282,14 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   void DrawShaders(float scale);  // Game data > Shaders
   void DrawLogs(float scale);     // Game data > Logs
   void DrawTraces(float scale);   // Game data > Traces
-  // One frame traced by mantra (the "trace: triggered" line in a log).
+  // One frame traced by mantra: <date>_<time>_frame<N>.log in TraceDirectory().
   struct TraceEntry {
-    std::filesystem::path log;
-    std::string when;  // the log line's time
+    std::filesystem::path file;
+    std::string when;  // from the name: YYYY-MM-DD HH:MM:SS
     uint64_t swap = 0;
+    uintmax_t size = 0;
   };
   std::vector<TraceEntry> traces_;  // newest first
-  // Each log's traces, with the size it had when read (read again once it grows).
-  // Per log: how far it was read, and its traces so far (logs only grow,
-  // so each check reads only what was added; a game log with traces is
-  // hundreds of MB).
-  std::map<std::filesystem::path, std::pair<uintmax_t, std::vector<TraceEntry>>> trace_scan_;
   double traces_checked_at_ = -10.0;
   bool trace_was_pending_ = false;
   void DrawStory(const SaveSummary& progress, float label_w, float scale);
@@ -386,7 +393,7 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   std::string pad_name_;
   int pad_capture_ = -1;            // controller button being rebound
   uint32_t pad_capture_held_ = 0;   // controls already down when it started
-  ShaderBuild shader_build_;
+  ShaderBuild& shader_build_ = SharedShaderBuild();
   size_t shaders_not_in_cache_ = 0;
   double shaders_checked_at_ = -10.0;
   // Settings > Logs, newest first (read every 2 s while shown).
@@ -411,11 +418,14 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
     bool Running() const { return process.Running(); }
   };
   GameProcess game_;
-  // While the game runs: translates the shaders it used that the cache lacks
-  // (it reloads the cache when the file changes).
+  // Translates the shaders the game used that the cache lacks (exact
+  // translations of the ones it patched at runtime): in the launcher over
+  // the game (Esc), and in the one that started it once it has closed.
   void MaybeTranslateForGame();
   double game_shaders_checked_at_ = -10.0;
-  std::unordered_set<uint64_t> shaders_tried_;  // by MaybeTranslateForGame
+  // Tried by MaybeTranslateForGame, in this process (over the game, across Esc).
+  static std::unordered_set<uint64_t>& ShadersTried();
+  std::unordered_set<uint64_t>& shaders_tried_ = ShadersTried();
   std::filesystem::file_time_type settings_saved_time_{};  // after our last save
   bool playing_ = false;
   bool play_without_shaders_ = false;  // Play was pressed once without a shader cache

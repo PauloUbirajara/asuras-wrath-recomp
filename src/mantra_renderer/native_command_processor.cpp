@@ -14,6 +14,7 @@
 #include <cstring>
 #include <ctime>
 #include <functional>
+#include <mutex>
 #include <unordered_map>
 #include <optional>
 #include <span>
@@ -39,6 +40,68 @@
 #include <rex/ui/vulkan/presenter.h>
 #include <rex/ui/vulkan/provider.h>
 #include <rex/ui/vulkan/util.h>
+
+namespace mantra {
+namespace {
+std::mutex g_trace_file_mutex;
+std::FILE* g_trace_file = nullptr;
+}  // namespace
+
+void TraceLine(std::string line) {
+  {
+    std::lock_guard<std::mutex> lock(g_trace_file_mutex);
+    if (g_trace_file) {
+      line += '\n';
+      std::fwrite(line.data(), 1, line.size(), g_trace_file);
+      return;
+    }
+  }
+  MANTRA_INFO("trace: {}", line);
+}
+
+namespace {
+constexpr size_t kTracesKept = 30;  // the oldest go when a new one starts
+
+// Opens <MANTRA_TRACE_DIR>/<date>_<time>_frame<N>.log for the traced frame's
+// lines. Returns the path, or empty (no folder: they stay in the log).
+std::filesystem::path BeginTraceFile(uint64_t frame) {
+  const char* dir_env = std::getenv("MANTRA_TRACE_DIR");
+  if (!dir_env || !*dir_env) return {};
+  namespace fs = std::filesystem;
+  const fs::path dir(dir_env);
+  std::error_code ec;
+  fs::create_directories(dir, ec);
+  std::vector<fs::path> old;
+  for (const auto& entry : fs::directory_iterator(dir, ec)) {
+    if (entry.path().extension() == ".log" &&
+        entry.path().filename().string().find("_frame") != std::string::npos) {
+      old.push_back(entry.path());
+    }
+  }
+  std::sort(old.begin(), old.end());  // the names start with the date
+  for (size_t i = 0; i + kTracesKept <= old.size(); ++i) fs::remove(old[i], ec);
+  const std::time_t now = std::time(nullptr);
+  char when[32] = "trace";
+  if (const std::tm* tm = std::localtime(&now)) {
+    std::strftime(when, sizeof(when), "%Y-%m-%d_%H-%M-%S", tm);
+  }
+  const fs::path path = dir / fmt::format("{}_frame{}.log", when, frame);
+  std::lock_guard<std::mutex> lock(g_trace_file_mutex);
+  if (g_trace_file) std::fclose(g_trace_file);
+  g_trace_file = std::fopen(path.string().c_str(), "w");
+  if (!g_trace_file) return {};
+  std::fprintf(g_trace_file, "mantra trace of frame %llu, %s\n",
+               static_cast<unsigned long long>(frame), when);
+  return path;
+}
+
+void EndTraceFile() {
+  std::lock_guard<std::mutex> lock(g_trace_file_mutex);
+  if (g_trace_file) std::fclose(g_trace_file);
+  g_trace_file = nullptr;
+}
+}  // namespace
+}  // namespace mantra
 
 namespace rex::graphics::native {
 
@@ -626,7 +689,7 @@ mantra::RenderTarget* NativeCommandProcessor::GetColorTarget(
   ++CurrentSlot().descriptor_sets_used;
   const bool to_32 = rt->key.cls == mantra::RtClass::kColor32;
   if (TracingThisFrame()) {
-    MANTRA_INFO("trace: convert 7e3 {} 32bpp at base {} pitch {} (fmt {}, from fmt {})",
+    MANTRA_FRAME_TRACE("convert 7e3 {} 32bpp at base {} pitch {} (fmt {}, from fmt {})",
                 to_32 ? "->" : "<-", base_tiles, pitch_px, uint32_t(format),
                 uint32_t(from->last_format));
   }
@@ -770,7 +833,7 @@ void NativeCommandProcessor::TracePsConstantWrite(uint32_t start_index, const ui
   } else if (host) {
     from = fmt::format("v{:08X}", memory_->HostToGuestVirtual(host));
   }
-  MANTRA_INFO("trace: ps const write {} regs from {}:{}", count, from, s);
+  MANTRA_FRAME_TRACE("ps const write {} regs from {}:{}", count, from, s);
 }
 
 void NativeCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
@@ -890,7 +953,7 @@ bool NativeCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
     if (ps && ps->cache_entry && ps->cache_entry->exact_hash == skip_rule->hash &&
         std::abs(register_file_->Get<float>(kPsConstFirst + skip_rule->constant * 4) -
                  skip_rule->value[0]) < 1e-3f) {
-      if (TracingThisFrame()) MANTRA_INFO("trace: skipped by MANTRA_SKIP_PS_CONST");
+      if (TracingThisFrame()) MANTRA_FRAME_TRACE("skipped by MANTRA_SKIP_PS_CONST");
       return true;
     }
   }
@@ -901,7 +964,7 @@ bool NativeCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
     ++draw_stats_.copy_draws;
     if (TracingThisFrame()) {
       const auto& regs = *register_file_;
-      MANTRA_INFO("trace: copy rt src {} -> {:08X} fmt {} clear {}",
+      MANTRA_FRAME_TRACE("copy rt src {} -> {:08X} fmt {} clear {}",
                   regs.Get<reg::RB_COPY_CONTROL>().copy_src_select,
                   regs[XE_GPU_REG_RB_COPY_DEST_BASE],
                   uint32_t(regs.Get<reg::RB_COPY_DEST_INFO>().copy_dest_format),
@@ -932,7 +995,7 @@ bool NativeCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
         });
     if (hi > lo) buffer_cache_.NotifyGpuWrite(lo, hi - lo);
     if (TracingThisFrame()) {
-      MANTRA_INFO("trace: memexport vs {:016X} n {} ran {} wrote {:08X}..{:08X}",
+      MANTRA_FRAME_TRACE("memexport vs {:016X} n {} ran {} wrote {:08X}..{:08X}",
                   mvs->ucode_data_hash(), index_count, ran, lo, hi);
     }
     if (ran && !register_file_->Get<reg::RB_COLOR_MASK>().value) return true;
@@ -1144,7 +1207,7 @@ bool NativeCommandProcessor::Resolve() {
         }
         if (FirstRoute((uint64_t(info.depth_original_base) << 40) ^ (uint64_t(pitch_px) << 26) ^
                        dest_address ^ (uint64_t(3) << 62)))
-          MANTRA_INFO("resolve: depth base {} pitch {} fmt {} rect {},{} {}x{} -> 0x{:08X}",
+          MANTRA_DEBUG("resolve: depth base {} pitch {} fmt {} rect {},{} {}x{} -> 0x{:08X}",
                       info.depth_original_base, pitch_px, uint32_t(depth_info.depth_format),
                       rect.x, rect.y, rect.width, rect.height, dest_address);
       }
@@ -1227,7 +1290,7 @@ bool NativeCommandProcessor::Resolve() {
         if (FirstRoute((uint64_t(info.color_original_base) << 40) ^ (uint64_t(pitch_px) << 26) ^
                        (uint64_t(color_info.color_format) << 22) ^ dest_address ^
                        (uint64_t(dest_format) << 52) ^ (uint64_t(1) << 63)))
-          MANTRA_INFO(
+          MANTRA_DEBUG(
             "resolve: rt base {} pitch {} fmt {} rect {},{} {}x{} -> 0x{:08X} fmt {} pitch {}{}",
             info.color_original_base, pitch_px, uint32_t(color_info.color_format), rect.x, rect.y,
             rect.width, rect.height, dest_address, uint32_t(dest_format),
@@ -1348,7 +1411,7 @@ void NativeCommandProcessor::MaybeTraceOnResolve(uint32_t address, uint32_t widt
   ++traces;
   last_swap = swaps;
   trace_swap_ = swaps + 2;
-  MANTRA_INFO("trace: resolve {}x{} to 0x{:08X} at swap {}, tracing swap {} ({}/{})", width,
+  MANTRA_FRAME_TRACE("resolve {}x{} to 0x{:08X} at swap {}, tracing swap {} ({}/{})", width,
               height, address, swaps, trace_swap_, traces, max_traces);
 }
 
@@ -1405,13 +1468,13 @@ void NativeCommandProcessor::DumpDrawBuffers(uint32_t index_count,
                                 uint32_t(fetch.size) << 2));
     }
   }
-  if (!files.empty()) MANTRA_INFO("trace:   buffers{}", files);
+  if (!files.empty()) MANTRA_FRAME_TRACE("  buffers{}", files);
   // All 256 bool constants (8 registers of 32): VS 0..127, PS 128..255.
   std::string bools;
   for (uint32_t i = 0; i < 8; ++i) {
     bools += fmt::format(" {:08X}", (*register_file_)[XE_GPU_REG_SHADER_CONSTANT_BOOL_000_031 + i]);
   }
-  MANTRA_INFO("trace:   bools{}", bools);
+  MANTRA_FRAME_TRACE("  bools{}", bools);
 }
 
 void NativeCommandProcessor::TraceDraw(xenos::PrimitiveType prim_type, uint32_t index_count,
@@ -1464,8 +1527,8 @@ void NativeCommandProcessor::TraceDraw(xenos::PrimitiveType prim_type, uint32_t 
       }
     }
   }
-  MANTRA_INFO(
-      "trace: {} mode {} prim {} n {} vs {:016X}{} ps {:016X}{} rt base {} fmt {} pitch {} "
+  MANTRA_FRAME_TRACE(
+      "{} mode {} prim {} n {} vs {:016X}{} ps {:016X}{} rt base {} fmt {} pitch {} "
       "mask {:X} blend {}/{}/{} {}/{}/{} z {}{} at {}{}",
       outcome, uint32_t(regs.Get<reg::RB_MODECONTROL>().edram_mode), uint32_t(prim_type),
       index_count, vs ? vs->ucode_data_hash() : 0, vs && vs->module ? "" : "(none)",
@@ -1477,10 +1540,10 @@ void NativeCommandProcessor::TraceDraw(xenos::PrimitiveType prim_type, uint32_t 
       uint32_t(blend.alpha_destblend), uint32_t(blend.alpha_comb_fcn), uint32_t(depth.z_enable),
       uint32_t(depth.zfunc), color_control.alpha_test_enable ? uint32_t(color_control.alpha_func) : 99,
       textures);
-  MANTRA_INFO("trace:   surf clip {:08X} mode {:08X} depthctl {:08X} sref_bf {:08X}",
+  MANTRA_FRAME_TRACE("  surf clip {:08X} mode {:08X} depthctl {:08X} sref_bf {:08X}",
               regs[XE_GPU_REG_PA_CL_CLIP_CNTL], regs[XE_GPU_REG_PA_SU_SC_MODE_CNTL],
               regs[XE_GPU_REG_RB_DEPTHCONTROL], regs[XE_GPU_REG_RB_STENCILREFMASK_BF]);
-  MANTRA_INFO("trace:   surf msaa {} depth base {} fmt {} stencil {} zw {} sref {} swmask {:X} sop {}/{}/{}/{}",
+  MANTRA_FRAME_TRACE("  surf msaa {} depth base {} fmt {} stencil {} zw {} sref {} swmask {:X} sop {}/{}/{}/{}",
               uint32_t(surface_info.msaa_samples),
               uint32_t(regs.Get<reg::RB_DEPTH_INFO>().depth_base),
               uint32_t(regs.Get<reg::RB_DEPTH_INFO>().depth_format), uint32_t(depth.stencil_enable),
@@ -1517,8 +1580,8 @@ void NativeCommandProcessor::TraceDraw(xenos::PrimitiveType prim_type, uint32_t 
       }
       inputs += "]";
     }
-    MANTRA_INFO("trace:   vs inputs{}", inputs);
-    MANTRA_INFO("trace:   vs {:016X} fetches{}", vs->cache_entry ? vs->cache_entry->exact_hash : 0,
+    MANTRA_FRAME_TRACE("  vs inputs{}", inputs);
+    MANTRA_FRAME_TRACE("  vs {:016X} fetches{}", vs->cache_entry ? vs->cache_entry->exact_hash : 0,
                 vs->vfetch_debug);
     std::string vs_constants;
     for (uint32_t i = 0; i < 256; ++i) {
@@ -1532,10 +1595,10 @@ void NativeCommandProcessor::TraceDraw(xenos::PrimitiveType prim_type, uint32_t 
                                   regs.Get<float>(base + 1), regs.Get<float>(base + 2),
                                   regs.Get<float>(base + 3));
     }
-    MANTRA_INFO("trace:   vsc{}", vs_constants);
+    MANTRA_FRAME_TRACE("  vsc{}", vs_constants);
     const auto tl = regs.Get<reg::PA_SC_WINDOW_SCISSOR_TL>();
     const auto br = regs.Get<reg::PA_SC_WINDOW_SCISSOR_BR>();
-    MANTRA_INFO("trace:   scissor {},{} - {},{}", tl.tl_x, tl.tl_y, br.br_x, br.br_y);
+    MANTRA_FRAME_TRACE("  scissor {},{} - {},{}", tl.tl_x, tl.tl_y, br.br_x, br.br_y);
   }
   // PS float constants c0..c31 (they follow the 256 VS registers).
   std::string constants;
@@ -1545,7 +1608,7 @@ void NativeCommandProcessor::TraceDraw(xenos::PrimitiveType prim_type, uint32_t 
                              regs.Get<float>(base + 1), regs.Get<float>(base + 2),
                              regs.Get<float>(base + 3));
   }
-  MANTRA_INFO("trace:   ps{}", constants);
+  MANTRA_FRAME_TRACE("  ps{}", constants);
 }
 
 void NativeCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
@@ -1554,6 +1617,16 @@ void NativeCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
   ScopedNs swap_timer{frame_timing_.swap_ns};
   ++swap_stats_.swaps;
   g_guest_swaps.fetch_add(1, std::memory_order_relaxed);
+  // The traced frame (TracingThisFrame) is the one after swap trace_swap_ - 1:
+  // its lines go to a file of their own (mantra::TraceLine).
+  if (!trace_file_.empty() && swap_stats_.swaps >= trace_swap_) {
+    mantra::EndTraceFile();
+    MANTRA_INFO("trace: frame {} written to {}", trace_swap_, trace_file_.string());
+    trace_file_.clear();
+  }
+  if (trace_swap_ && swap_stats_.swaps + 1 == trace_swap_ && trace_file_.empty()) {
+    trace_file_ = mantra::BeginTraceFile(trace_swap_);
+  }
   buffer_cache_.FrameEnded();
   ReloadShaderCacheIfChanged();
   // MANTRA_TRACE_TRIGGER=<file>: when the file appears, trace the next frame
@@ -2165,7 +2238,7 @@ void NativeCommandProcessor::ReportSwapStats() {
   const double seconds = std::chrono::duration<double>(elapsed).count();
   const double swaps_per_second =
       double(swap_stats_.swaps - swap_stats_.swaps_at_last_report) / seconds;
-  MANTRA_INFO(
+  MANTRA_DEBUG(
       "swaps: {} total ({:.1f}/s), presented {}, skipped {}, refresh failed {}; last frame "
       "{:.1f}% non-black",
       swap_stats_.swaps, swaps_per_second, swap_stats_.presented, swap_stats_.skipped,
@@ -2183,7 +2256,7 @@ void NativeCommandProcessor::ReportSwapStats() {
     const ThreadTimes threads = ThreadTimes::Sample();
     if (g_window_threads_time.time_since_epoch().count()) {
       const double wall = std::chrono::duration<double, std::milli>(now - g_window_threads_time).count();
-      MANTRA_INFO("cpu: gpu thread busy {:.1f} ms per frame ({:.0f}%); busiest threads: {}",
+      MANTRA_DEBUG("cpu: gpu thread busy {:.1f} ms per frame ({:.0f}%); busiest threads: {}",
                   t.busy_ms / n, 100.0 * t.busy_ms / std::max(t.total_ms, 1e-3),
                   threads.Busiest(g_window_threads, wall, 6));
     }
@@ -2194,7 +2267,7 @@ void NativeCommandProcessor::ReportSwapStats() {
     t.frames = t.over_50 = t.over_100 = 0;
     t.max_ms = t.total_ms = t.fence_ms = t.draw_ms = t.copy_ms = t.swap_ms = t.busy_ms = 0;
   }
-  MANTRA_INFO("  presented {} from resolves, {} from guest memory; draws {}, resolves {} "
+  MANTRA_DEBUG("  presented {} from resolves, {} from guest memory; draws {}, resolves {} "
               "(failed {}, color copies {}, depth copies {}, skipped {}, unsupported dest {}), "
               "clears color {} depth {}; 7e3 conversions {}; solid fills color {} depth {} skipped {}; {} render targets, "
               "{} resolved surfaces",
@@ -2205,41 +2278,41 @@ void NativeCommandProcessor::ReportSwapStats() {
               draw_stats_.fills_color,
               draw_stats_.fills_depth, draw_stats_.fills_skipped, render_targets_.size(),
               resolved_surfaces_.size());
-  MANTRA_INFO("shaders: {} loads, {} unique, {} dumped; cache {} exact, {} normalized "
+  MANTRA_DEBUG("shaders: {} loads, {} unique, {} dumped; cache {} exact, {} normalized "
               "({} remapped), {} failed, {} miss; {} modules ({} failed)",
               shader_stats_.loads, shader_stats_.unique, shader_stats_.dumped,
               shader_stats_.cache_exact, shader_stats_.cache_normalized, shader_stats_.remapped,
               shader_stats_.cache_failed, shader_stats_.cache_miss, shader_stats_.modules,
               shader_stats_.module_failures);
-  MANTRA_INFO("constants: {} draws prepared, {} without translation; {} uploads ({:.1f} MB), "
+  MANTRA_DEBUG("constants: {} draws prepared, {} without translation; {} uploads ({:.1f} MB), "
               "{} reused, {} ring-full submits; last submission used {} KB of the ring",
               constant_stats_.draws, constant_stats_.no_translation, constant_stats_.uploads,
               constant_stats_.bytes / 1048576.0, constant_stats_.reused,
               constant_stats_.ring_full, shader_interface_.slot_bytes_used() >> 10);
   const GuestDrawStats& g = guest_draw_stats_;
-  MANTRA_INFO("pipelines: {} in use, {} created in game ({} in the background, {} draws skipped "
+  MANTRA_DEBUG("pipelines: {} in use, {} created in game ({} in the background, {} draws skipped "
               "while building; {} failed); warm-up {}/{} built, {} used",
               draw_pipelines_.size(), draw_pipelines_.created() + draw_pipelines_.async_created(),
               draw_pipelines_.async_created(), g.skipped_pending_pipeline,
               draw_pipelines_.creation_failures(), draw_pipelines_.warm_done(),
               draw_pipelines_.warm_total(), draw_pipelines_.warm_hits());
-  MANTRA_INFO("guest draws: {} drawn in {} render passes, {} pipelines ({} failed); skipped: "
+  MANTRA_DEBUG("guest draws: {} drawn in {} render passes, {} pipelines ({} failed); skipped: "
               "primitive {}, no target {}, viewport {}, geometry {}; {} zero-fed inputs, {} expanded "
               "(decoding {:.0f} ms); streamed {:.1f} MB vertices, {:.1f} MB indices",
               g.drawn, g.render_passes, draw_pipelines_.size(), draw_pipelines_.creation_failures(),
               g.skipped_primitive, g.skipped_no_target, g.skipped_viewport, g.skipped_geometry,
               g.missing_inputs, g.expanded_inputs, g.expand_ns / 1e6, g.vertex_bytes / 1048576.0, g.index_bytes / 1048576.0);
-  MANTRA_INFO("memexport: {} draws, {} vertices, {} elements ({:.1f} MB), {} unsupported",
+  MANTRA_DEBUG("memexport: {} draws, {} vertices, {} elements ({:.1f} MB), {} unsupported",
               memexport_stats_.draws, memexport_stats_.vertices, memexport_stats_.elements,
               memexport_stats_.bytes / 1048576.0, memexport_stats_.unsupported);
   const auto& bc = buffer_cache_.stats();
-  MANTRA_INFO("buffer cache: {} entries in {} blocks; {} hits, {} uploads ({} re-uploads, "
+  MANTRA_DEBUG("buffer cache: {} entries in {} blocks; {} hits, {} uploads ({} re-uploads, "
               "{:.1f} MB), {} CPU-write invalidations, {} uncacheable, {} volatile, {} resets",
               buffer_cache_.size(), buffer_cache_.blocks_in_use(), bc.hits, bc.uploads,
               bc.reuploads, bc.upload_bytes / 1048576.0, buffer_cache_.invalidations(),
               bc.not_cacheable, bc.volatile_skips, bc.resets);
   const auto& tc = texture_cache_.stats();
-  MANTRA_INFO("textures: {} cached, {} samplers; {} loads ({} after CPU writes, {:.1f} MB), "
+  MANTRA_DEBUG("textures: {} cached, {} samplers; {} loads ({} after CPU writes, {:.1f} MB), "
               "{} from resolves ({} sampled directly, {} copies, {} not copyable), {} unsupported, {} failed; {} volatile "
               "({} hashes); descriptor sets {} ({} reused); loads took {:.0f} ms (watch {:.0f}, "
               "hash {:.0f}, swap {:.0f}, untile {:.0f})",
@@ -2382,7 +2455,7 @@ bool NativeCommandProcessor::AttachTranslation(MantraShader& shader,
       for (uint32_t i = 0; i < 16; ++i) {
         if (map[i] != i) text += fmt::format(" o{}->{}", i, map[i]);
       }
-      MANTRA_INFO("vs {:016X} (cached {:016X}, {} candidates{}): interpolators{} ({} "
+      MANTRA_DEBUG("vs {:016X} (cached {:016X}, {} candidates{}): interpolators{} ({} "
                   "decorations)",
                   shader.ucode_data_hash(), lookup.entry->exact_hash, lookup.candidates,
                   lookup.uncovered ? ", exports not all translated" : "", text, patched);
@@ -2399,23 +2472,40 @@ bool NativeCommandProcessor::AttachTranslation(MantraShader& shader,
 }
 
 void NativeCommandProcessor::ReloadShaderCacheIfChanged() {
-  const auto now = std::chrono::steady_clock::now();
-  if (shader_cache_path_.empty() || now - shader_cache_checked_ < std::chrono::seconds(2)) {
+  if (shader_cache_loading_.valid()) {
+    if (shader_cache_loading_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+      return;
+    }
+    PendingShaderCache loaded = shader_cache_loading_.get();
+    if (!loaded.cache) {
+      return;  // being written (it is renamed into place), or not a cache: next time
+    }
+    shader_cache_time_ = loaded.time;
+    shader_cache_bytes_ = loaded.bytes;
+    shader_cache_ = std::move(*loaded.cache);
+  } else {
+    const auto now = std::chrono::steady_clock::now();
+    if (shader_cache_path_.empty() || now - shader_cache_checked_ < std::chrono::seconds(2)) {
+      return;
+    }
+    shader_cache_checked_ = now;
+    std::error_code ec;
+    const auto time = std::filesystem::last_write_time(shader_cache_path_, ec);
+    if (ec) return;
+    const uintmax_t bytes = std::filesystem::file_size(shader_cache_path_, ec);
+    if (ec || (time == shader_cache_time_ && bytes == shader_cache_bytes_)) return;
+    shader_cache_loading_ = std::async(std::launch::async, [path = shader_cache_path_, time, bytes] {
+      PendingShaderCache loaded;
+      auto cache = std::make_unique<mantra::ShaderCache>();
+      if (cache->Load(path)) {
+        loaded.cache = std::move(cache);
+        loaded.time = time;
+        loaded.bytes = bytes;
+      }
+      return loaded;
+    });
     return;
   }
-  shader_cache_checked_ = now;
-  std::error_code ec;
-  const auto time = std::filesystem::last_write_time(shader_cache_path_, ec);
-  if (ec) return;
-  const uintmax_t bytes = std::filesystem::file_size(shader_cache_path_, ec);
-  if (ec || (time == shader_cache_time_ && bytes == shader_cache_bytes_)) return;
-  mantra::ShaderCache cache;
-  if (!cache.Load(shader_cache_path_)) {
-    return;  // being written (it is renamed into place), or not a cache: next time
-  }
-  shader_cache_time_ = time;
-  shader_cache_bytes_ = bytes;
-  shader_cache_ = std::move(cache);
   // Shaders without an exact translation: look them up again.
   uint32_t added = 0, improved = 0, waiting = 0;
   for (auto& shaders : shaders_) {
@@ -2461,11 +2551,11 @@ void NativeCommandProcessor::ReportDrawCensus() {
     auto it = shaders_[type].find(hash);
     return it != shaders_[type].end() ? it->second->ucode_dword_count() : 0;
   };
-  MANTRA_INFO("draw census: {} distinct (vs, ps, edram mode, prim)", entries.size());
+  MANTRA_DEBUG("draw census: {} distinct (vs, ps, edram mode, prim)", entries.size());
   for (size_t i = 0; i < std::min<size_t>(entries.size(), 16); ++i) {
     const auto& [count, key] = entries[i];
     const auto& [vs, ps, mode] = key;
-    MANTRA_INFO("  {:7} x vs {:016X} ({} dw) ps {:016X} ({} dw) edram {} prim {}", count, vs,
+    MANTRA_DEBUG("  {:7} x vs {:016X} ({} dw) ps {:016X} ({} dw) edram {} prim {}", count, vs,
                 dwords(0, vs), ps, dwords(1, ps), mode & 0xFF, mode >> 8);
   }
 }
@@ -2523,7 +2613,7 @@ void NativeCommandProcessor::KeepForNextCacheBuild(uint64_t hash, bool is_pixel,
     std::fclose(file);
     if (ok) {
       std::filesystem::rename(temporary, path, ec);
-      MANTRA_INFO("shader {:016X} is not in the cache exactly; kept for the next cache build", hash);
+      MANTRA_DEBUG("shader {:016X} is not in the cache exactly; kept for the next cache build", hash);
       return;
     }
   }

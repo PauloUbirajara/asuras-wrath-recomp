@@ -227,7 +227,7 @@ NativeCommandProcessor::SolidFillResult NativeCommandProcessor::TrySolidFillRect
                        (uint64_t(surface_info.surface_pitch) << 13) ^
                        (uint64_t(color_info.color_format) << 29);
       if (FirstRoute(route)) {
-        MANTRA_INFO("fill: rt base {} pitch {} fmt {} rect {},{} {}x{} color {:.3f} {:.3f} {:.3f} {:.3f}",
+        MANTRA_DEBUG("fill: rt base {} pitch {} fmt {} rect {},{} {}x{} color {:.3f} {:.3f} {:.3f} {:.3f}",
                     uint32_t(color_info.color_base), uint32_t(surface_info.surface_pitch),
                     uint32_t(color_info.color_format), x0, y0, x1 - x0, y1 - y0, value[0],
                     value[1], value[2], value[3]);
@@ -289,7 +289,7 @@ NativeCommandProcessor::SolidFillResult NativeCommandProcessor::TrySolidFillRect
           render_targets_.ClearColor(cmd, *alias.rt, alias.rt->last_format, alias.rect, word);
           render_targets_.MarkWritten(*alias.rt, alias.rt->last_format);
           if (TracingThisFrame()) {
-            MANTRA_INFO("trace: fill depth -> color alias base {} pitch {} fmt {} rect {},{} {}x{} "
+            MANTRA_FRAME_TRACE("fill depth -> color alias base {} pitch {} fmt {} rect {},{} {}x{} "
                         "word {:08X}",
                         alias.rt->key.base_tiles, alias.rt->key.pitch_px,
                         uint32_t(alias.rt->last_format), alias.rect.offset.x, alias.rect.offset.y,
@@ -299,7 +299,7 @@ NativeCommandProcessor::SolidFillResult NativeCommandProcessor::TrySolidFillRect
       }
       static std::atomic<uint32_t> logged{0};
       if (logged.fetch_add(1) < 8 || TracingThisFrame()) {
-        MANTRA_INFO("fill depth: base {} pitch {} msaa {} rect {},{} {}x{} depth {} stencil {} "
+        MANTRA_DEBUG("fill depth: base {} pitch {} msaa {} rect {},{} {}x{} depth {} stencil {} "
                     "({}) aliases {}",
                     uint32_t(depth_info.depth_base), uint32_t(surface_info.surface_pitch),
                     uint32_t(surface_info.msaa_samples), x0, y0, x1 - x0, y1 - y0,

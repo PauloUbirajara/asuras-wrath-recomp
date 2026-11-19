@@ -315,6 +315,7 @@ bool LauncherSettings::Load(const std::filesystem::path& path) {
     else if (key == "hide_cursor") hide_cursor = on;
     else if (key == "mute_background") mute_background = on;
     else if (key == "skip_intro") skip_intro = on;
+    else if (key == "detailed_logs") detailed_logs = on;
     else if (key == "turbo") {
       turbo = 0;
       std::stringstream names(value);
@@ -350,7 +351,8 @@ bool LauncherSettings::Save(const std::filesystem::path& path) const {
       << "\ndeadzone_right=" << deadzone_right << "\nvibration=" << vibration
       << "\nshow_fps=" << show_fps << "\nfps_corner=" << fps_corner << "\nfps_cap=" << fps_cap << "\nrender_height=" << render_height << "\nnative_render=" << native_render << "\ntoasts=" << toasts << "\ntoast_corner=" << toast_corner
       << "\ntoast_seconds=" << toast_seconds << "\nhide_cursor=" << hide_cursor
-      << "\nmute_background=" << mute_background << "\nskip_intro=" << skip_intro << "\nturbo=";
+      << "\nmute_background=" << mute_background << "\nskip_intro=" << skip_intro
+      << "\ndetailed_logs=" << detailed_logs << "\nturbo=";
   for (int c = 0, n = 0; c < input::kPadControlCount; ++c) {
     if (turbo & (1u << c)) out << (n++ ? "," : "") << input::PadControlName(c);
   }
@@ -751,6 +753,16 @@ void LauncherDialog::ShaderBuild::Stop() {
   if (!out.empty()) std::filesystem::remove(out.string() + ".stop", ec);
 }
 
+LauncherDialog::ShaderBuild& LauncherDialog::SharedShaderBuild() {
+  static ShaderBuild* build = new ShaderBuild;  // its thread may outlive any launcher
+  return *build;
+}
+
+std::unordered_set<uint64_t>& LauncherDialog::ShadersTried() {
+  static auto* tried = new std::unordered_set<uint64_t>;
+  return *tried;
+}
+
 std::string LauncherDialog::ShaderBuild::Line() {
   std::lock_guard<std::mutex> lock(mutex);
   return last_line;
@@ -1071,7 +1083,7 @@ LauncherDialog::~LauncherDialog() {
     window_->RemoveInputListener(this);
     window_->RemoveListener(this);
   }
-  shader_build_.Stop();
+  if (!OverGame()) shader_build_.Stop();  // over the game: see SharedShaderBuild
   iso_extract_.Stop();
   move_files_.Join();
   asset_job_.Join();
@@ -1250,6 +1262,9 @@ bool LauncherDialog::GameProcess::Start(std::string* error) {
                         (LogDirectory() / (own.stem().string() + ".game.log")).string());
   }
   game_args.push_back("--launcher=false");
+  if (const auto traces = TraceDirectory(); !traces.empty()) {
+    platform::SetEnv("MANTRA_TRACE_DIR", traces.string().c_str());
+  }
   // The game applies Render resolution itself; only a value from the shell
   // is passed on.
   if (!RenderScaleFromEnvironment()) platform::SetEnv("MANTRA_RENDER_SCALE", nullptr);
@@ -1390,7 +1405,10 @@ void LauncherDialog::LimitFrameRate(ImGuiIO& io) {
 
 void LauncherDialog::MaybeTranslateForGame() {
   const double now = ImGui::GetTime();
-  if (!game_.Running() || now - game_shaders_checked_at_ < 2.0) return;
+  // Not during play: each new cache made the game reload it and swap
+  // shaders mid-game. Over the game (Esc) the picture behind the menu takes
+  // the swap; the launcher that started the game waits for it to close.
+  if (game_.Running() || now - game_shaders_checked_at_ < 2.0) return;
   game_shaders_checked_at_ = now;
   if (shader_build_.state == ShaderBuild::kRunning || !GameDataValid()) return;
   // A cache of another version would be rebuilt whole: leave that to Build.
@@ -3723,6 +3741,17 @@ void LauncherDialog::DrawLogs(float scale) {
   ImGui::EndDisabled();
   hint(T("Each start writes a launcher log; the game started by Play writes the .game.log with the same number."));
   ImGui::Spacing();
+  label(T("Detailed logs"));
+  ImGui::BeginDisabled(SetElsewhere("log_level"));
+  if (ImGui::Checkbox("##detailed_logs", &settings_.detailed_logs)) {
+    ApplyDetailedLogs(settings_.detailed_logs);
+    SaveSettings();
+  }
+  ImGui::EndDisabled();
+  LockedNote("log_level");
+  hint(T("For bug reports: also writes debug messages. The logs get much larger; turn it off "
+         "afterwards."));
+  ImGui::Spacing();
   const ImGuiTableFlags flags =
       ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY;
   const float table_h = std::max(ImGui::GetContentRegionAvail().y - 8 * scale, 120 * scale);
@@ -3790,6 +3819,19 @@ std::optional<std::chrono::steady_clock::time_point> g_trace_requested;
 std::filesystem::file_time_type g_trace_done_before;  // <trigger>.done's time then
 }  // namespace
 
+std::filesystem::path TraceDirectory() {
+  // Read once, before this process sets it for the game Play starts.
+  static const std::string from_shell = [] {
+    const char* dir = std::getenv("MANTRA_TRACE_DIR");
+    return std::string(dir ? dir : "");
+  }();
+  if (!from_shell.empty()) return from_shell;
+  const auto files = platform::FilesDir();
+  return files.empty() ? files : files / "traces";
+}
+
+void ApplyDetailedLogs(bool on) { SetLive("log_level", on ? "debug" : "info"); }
+
 std::filesystem::path TraceDoneFile() {
   const auto trigger = TraceTrigger();
   return trigger.empty() ? trigger : std::filesystem::path(trigger.string() + ".done");
@@ -3837,15 +3879,15 @@ void LauncherDialog::DrawTraces(float scale) {
   std::error_code ec;
   const std::filesystem::path trigger = TraceTrigger();
   ImGui::PushTextWrapPos(0);
-  ImGui::TextDisabled("%s", T("A trace writes what the renderer does during one frame into the "
-                              "game's log, for bug reports about the picture. Go to the moment "
-                              "that looks wrong, then trace it."));
+  ImGui::TextDisabled("%s", T("A trace writes what the renderer does during one frame into a "
+                              "file of its own, for bug reports about the picture. Go to the "
+                              "moment that looks wrong, then trace it. The newest 30 are kept."));
   ImGui::PopTextWrapPos();
   ImGui::Spacing();
   const bool running = game_.Running() || OverGame();
   const bool picked_up = !std::filesystem::exists(trigger, ec);
   const bool waiting = TracePending();
-  if (trace_was_pending_ && !waiting) traces_checked_at_ = -10.0;  // the new one is in the log
+  if (trace_was_pending_ && !waiting) traces_checked_at_ = -10.0;  // the new one is written
   trace_was_pending_ = waiting;
   ImGui::BeginDisabled(!running || waiting || trigger.empty());
   if (ImGui::Button(T("Trace the next frame"))) {
@@ -3862,46 +3904,33 @@ void LauncherDialog::DrawTraces(float scale) {
     ImGui::TextDisabled("%s", T("Start the game first."));
   }
 
-  // The traces in the logs, checked every few seconds.
+  // The trace files, checked every few seconds.
+  const std::filesystem::path dir = TraceDirectory();
   const double now = ImGui::GetTime();
   if (now - traces_checked_at_ > 3.0) {
     traces_checked_at_ = now;
     traces_.clear();
-    for (const auto& entry : std::filesystem::directory_iterator(LogDirectory(), ec)) {
-      if (!entry.is_regular_file(ec) || entry.path().extension() != ".log") continue;
-      const uintmax_t size = entry.file_size(ec);
-      auto& [read_size, found] = trace_scan_[entry.path()];
-      if (size < read_size) {  // a new file under the same name
-        read_size = 0;
-        found.clear();
+    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+      const std::string name = entry.path().stem().string();
+      const size_t at = name.rfind("_frame");
+      if (!entry.is_regular_file(ec) || entry.path().extension() != ".log" ||
+          at == std::string::npos) {
+        continue;
       }
-      if (size > read_size) {
-        std::ifstream in(entry.path(), std::ios::binary);
-        in.seekg(std::streamoff(read_size));
-        // "trace: triggered at swap N, tracing swap M": M is the traced frame.
-        static constexpr std::string_view kMark = ", tracing swap ";
-        std::string line;
-        uintmax_t at_line = read_size;
-        while (std::getline(in, line)) {
-          if (in.eof()) break;  // no newline yet: being written, read it next time
-          at_line += line.size() + 1;
-          const size_t at = line.find(kMark);
-          if (at == std::string::npos || line.find("trace: triggered at swap ") == std::string::npos) continue;
-          TraceEntry trace{entry.path(), line.size() > 20 && line[0] == '[' ? line.substr(1, 19) : "",
-                           std::strtoull(line.c_str() + at + kMark.size(), nullptr, 10)};
-          found.push_back(std::move(trace));
-        }
-        read_size = at_line;
+      // 2026-11-19_15-34-39_frame10306
+      std::string when = name.substr(0, at);
+      if (when.size() == 19) {
+        when[10] = ' ';
+        when[13] = when[16] = ':';
       }
-      traces_.insert(traces_.end(), found.begin(), found.end());
+      traces_.push_back({entry.path(), when,
+                         std::strtoull(name.c_str() + at + 6, nullptr, 10), entry.file_size(ec)});
     }
     std::sort(traces_.begin(), traces_.end(),
               [](const TraceEntry& a, const TraceEntry& b) { return a.when > b.when; });
   }
-  // The traces are in the logs: their folder.
   ImGui::Spacing();
   const float label_w = 200 * scale;
-  const std::filesystem::path dir = LogDirectory();
   ImGui::AlignTextToFramePadding();
   ImGui::TextUnformatted(T("Location"));
   ImGui::SameLine(label_w);
@@ -3919,10 +3948,11 @@ void LauncherDialog::DrawTraces(float scale) {
   const ImGuiTableFlags flags =
       ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY;
   const float table_h = std::max(ImGui::GetContentRegionAvail().y - 8 * scale, 120 * scale);
-  if (ImGui::BeginTable("##traces", 4, flags, ImVec2(0, table_h))) {
+  if (ImGui::BeginTable("##traces", 5, flags, ImVec2(0, table_h))) {
     ImGui::TableSetupScrollFreeze(0, 1);
-    ImGui::TableSetupColumn(T("Log"));
+    ImGui::TableSetupColumn(T("File"));
     ImGui::TableSetupColumn(T("Frame"), ImGuiTableColumnFlags_WidthFixed, 100 * scale);
+    ImGui::TableSetupColumn(T("Size"), ImGuiTableColumnFlags_WidthFixed, 90 * scale);
     ImGui::TableSetupColumn(T("When"), ImGuiTableColumnFlags_WidthFixed, 190 * scale);
     ImGui::TableSetupColumn("##open", ImGuiTableColumnFlags_WidthFixed, 80 * scale);
     HeadersRow();
@@ -3932,13 +3962,19 @@ void LauncherDialog::DrawTraces(float scale) {
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
       ImGui::AlignTextToFramePadding();
-      ImGui::TextUnformatted(trace.log.filename().string().c_str());
+      ImGui::TextUnformatted(trace.file.filename().string().c_str());
       ImGui::TableNextColumn();
       ImGui::Text("%llu", static_cast<unsigned long long>(trace.swap));
       ImGui::TableNextColumn();
+      if (trace.size >= 1048576) {
+        ImGui::Text("%.1f MB", double(trace.size) / 1048576.0);
+      } else {
+        ImGui::Text("%.0f KB", std::ceil(double(trace.size) / 1024.0));
+      }
+      ImGui::TableNextColumn();
       ImGui::TextUnformatted(trace.when.c_str());
       ImGui::TableNextColumn();
-      if (ImGui::SmallButton(T("Open"))) OpenFolder(trace.log);
+      if (ImGui::SmallButton(T("Open"))) OpenFolder(trace.file);
       ImGui::PopID();
     }
     if (traces_.empty()) {

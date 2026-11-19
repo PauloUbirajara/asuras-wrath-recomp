@@ -6,6 +6,7 @@
 #include <cstring>
 #include <map>
 #include <filesystem>
+#include <future>
 #include <memory>
 #include <optional>
 #include <span>
@@ -159,6 +160,7 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
   bool TracingThisFrame();
   void MaybeTraceOnResolve(uint32_t address, uint32_t width, uint32_t height);
   uint64_t trace_swap_ = 0;
+  std::filesystem::path trace_file_;  // the traced frame's lines (mantra::TraceLine)
   bool trace_from_trigger_ = false;  // trace_swap_ came from MANTRA_TRACE_TRIGGER
   // Serial of the last resolve; a resolved surface's write_count is the
   // serial of its last write (unique across recreated surfaces).
@@ -467,6 +469,14 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
   std::filesystem::file_time_type shader_cache_time_{};
   uintmax_t shader_cache_bytes_ = 0;
   std::chrono::steady_clock::time_point shader_cache_checked_{};
+  // The rebuilt cache, loaded on another thread (a load takes about a second:
+  // on this one, the game froze each time the launcher added shaders).
+  struct PendingShaderCache {
+    std::unique_ptr<mantra::ShaderCache> cache;
+    std::filesystem::file_time_type time{};
+    uintmax_t bytes = 0;
+  };
+  std::future<PendingShaderCache> shader_cache_loading_;
   std::vector<VkShaderModule> retired_modules_;  // replaced, maybe still in flight
 
   const ui::vulkan::VulkanDevice* vulkan_device_ = nullptr;

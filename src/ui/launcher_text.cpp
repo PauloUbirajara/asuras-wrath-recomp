@@ -466,18 +466,38 @@ constexpr Entry kEntries[] = {
     {"Folders", "フォルダ", "Ordner", "Dossiers", "Carpetas", "Cartelle"},
     // Game data > Traces.
     {"Traces", "トレース", "Traces", "Traces", "Trazas", "Tracce"},
-    {"A trace writes what the renderer does during one frame into the game's log, for bug "
-     "reports about the picture. Go to the moment that looks wrong, then trace it.",
-     "トレースは、1フレームの間に描画処理が行ったことをゲームのログに記録します。画面の不具合を"
-     "報告するときに使います。おかしく見える場面まで進めてから記録してください。",
-     "Ein Trace schreibt, was der Renderer während eines Frames tut, in das Log des Spiels – für "
-     "Fehlerberichte zur Grafik. Geh zu der Stelle, die falsch aussieht, und trace sie dann.",
-     "Une trace écrit dans le journal du jeu ce que fait le moteur de rendu pendant une image, "
-     "pour signaler un problème d'affichage. Allez au moment qui s'affiche mal, puis tracez-le.",
-     "Una traza escribe en el registro del juego lo que hace el renderizador durante un fotograma, "
-     "para informar de errores de imagen. Ve al momento que se ve mal y trázalo.",
-     "Una traccia scrive nel log del gioco ciò che fa il renderer durante un fotogramma, per "
-     "segnalare problemi di immagine. Vai al momento che si vede male, poi traccialo."},
+    {"A trace writes what the renderer does during one frame into a file of its own, for bug "
+     "reports about the picture. Go to the moment that looks wrong, then trace it. The newest 30 "
+     "are kept.",
+     "トレースは、1フレームの間にレンダラーが行ったことを、それぞれ別のファイルに記録します。"
+     "画面の不具合を報告するときに使います。おかしく見える場面まで進めてから記録してください。"
+     "新しい30件が残ります。",
+     "Ein Trace schreibt, was der Renderer während eines Frames tut, in eine eigene Datei – für "
+     "Fehlerberichte zur Grafik. Geh zu der Stelle, die falsch aussieht, und trace sie dann. Die "
+     "neuesten 30 bleiben erhalten.",
+     "Une trace écrit dans un fichier à part ce que fait le moteur de rendu pendant une image, "
+     "pour signaler un problème d'affichage. Allez au moment qui s'affiche mal, puis tracez-le. "
+     "Les 30 plus récentes sont conservées.",
+     "Una traza escribe en un archivo propio lo que hace el renderizador durante un fotograma, "
+     "para informar de errores de imagen. Ve al momento que se ve mal y trázalo. Se conservan "
+     "las 30 más recientes.",
+     "Una traccia scrive in un file a parte ciò che fa il renderer durante un fotogramma, per "
+     "segnalare problemi di immagine. Vai al momento che si vede male, poi traccialo. Vengono "
+     "conservate le 30 più recenti."},
+    {"Detailed logs", "詳細なログ", "Ausführliche Logs", "Journaux détaillés", "Registros detallados",
+     "Log dettagliati"},
+    {"For bug reports: also writes debug messages. The logs get much larger; turn it off "
+     "afterwards.",
+     "不具合の報告用に、デバッグ情報もログに記録します。ログが大きくなるので、終わったらオフに"
+     "してください。",
+     "Für Fehlerberichte: schreibt auch Debug-Meldungen. Die Logs werden viel größer; schalte es "
+     "danach wieder aus.",
+     "Pour les rapports de bug : écrit aussi les messages de débogage. Les journaux deviennent "
+     "bien plus gros ; désactivez-le ensuite.",
+     "Para informes de errores: también escribe mensajes de depuración. Los registros crecen "
+     "mucho; desactívalo después.",
+     "Per le segnalazioni di bug: scrive anche i messaggi di debug. I log diventano molto più "
+     "grandi; disattivalo dopo."},
     {"Trace the next frame", "次のフレームを記録", "Nächsten Frame tracen", "Tracer l'image suivante",
      "Trazar el siguiente fotograma", "Traccia il prossimo fotogramma"},
     {"The game traces it once you resume.", "ゲームに戻ると記録されます。",

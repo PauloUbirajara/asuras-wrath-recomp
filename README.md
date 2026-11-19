@@ -2,7 +2,7 @@
 
 PC port of Asura's Wrath (`default.xex`, Title ID `43430817`) via Xbox 360 static PowerPC recompilation to C++23, rendered by the in-repo Vulkan renderer `mantra`.
 
-> Note: made and tested on Linux. A Windows build can be made (natively or cross-compiled from Linux) but hasn't been tested on Windows yet. Android is on the TODO list.
+> Note: made and tested on Linux. A Windows build can be made (natively or cross-compiled from Linux). Android is on the TODO list.
 
 <a href="https://www.youtube.com/playlist?list=PLVyuezqTsTB0">
         <img alt="cover" src="https://github.com/user-attachments/assets/339f7f1b-85d4-48ac-9b5f-ac4fad276dad" />
@@ -11,6 +11,16 @@ PC port of Asura's Wrath (`default.xex`, Title ID `43430817`) via Xbox 360 stati
 https://www.youtube.com/playlist?list=PLVyuezqTsTB0
 
 > Original illustration by Satoshi Sakai
+
+---
+
+## TL;DR (first run)
+
+1. Have your copy of the game ISO ready.
+2. Build (`./build.sh`, see [Build](#3-build)) and start `asura_wrath`: the launcher opens.
+3. **Game data > Folders**: drop the `.iso` on the window (or pick it with *Disc image...*) and let it extract.
+4. **Game data > Shaders**: build the shader cache (about 10 minutes, once).
+5. **Play**.
 
 ---
 
@@ -164,7 +174,7 @@ A build can be stopped (**Stop the build**, or closing the launcher): it saves i
 
 Some shaders only exist once the game patches them at runtime (e.g. the menu text). mantra keeps those in `~/.cache/asura_wrath_recomp/shader_dumps/` while you play; **Game data > Shaders** then says how many are missing, and **Add the N new shaders** translates only those, keeping the rest of the cache (**Rebuild all** starts over). From the command line: `--dumps ~/.cache/asura_wrath_recomp/shader_dumps` (repeatable), plus `--update` to keep what the `--out` cache already has (only for a cache of the same format version; otherwise it translates everything).
 
-Without a cache, mantra can't draw what uses an untranslated shader (the screen stays black, audio plays). When the game is started with **Play**, the launcher translates the shaders the game has used but the cache lacks in the background, at low priority (`mantra_shadergen --update --requested-only --background`), and the running game picks up the new cache within a few seconds. The first run has to read the game files once (cached in `shader_scan.bin` next to the shader cache, so later runs skip it), so building the full cache before playing is still the smoothest.
+Without a cache, mantra can't draw what uses an untranslated shader (the screen stays black, audio plays). Once a game started with **Play** has closed, the launcher translates the shaders it used but the cache lacks, in the background at low priority (`mantra_shadergen --update --requested-only --background`); the next run uses them. It also does this while the in-game menu (Esc) is open, since the picture behind the menu can take the swap. It doesn't do it during play: reloading the cache and swapping shaders mid-game caused stutters and briefly missing models. Build the full cache before playing.
 
 ---
 
@@ -204,41 +214,34 @@ Without a cache, mantra can't draw what uses an untranslated shader (the screen 
 | Linux | `~/.local/share/asura_wrath_recomp` (saves, achievements, `launcher.cfg`, `asura_wrath_recomp.toml`) |
 | Windows | `Documents\asura_wrath_recomp` (saves, achievements, `cache\`, `logs\`), or the launcher's *Files folder* |
 
-### Linux
+### Launcher
 ```bash
 asura_wrath
 ```
 
-The launcher opens first, in a window:
+The launcher opens first:
 
-- **Game data**, in tabs:
-  - *Folders*: game folder (or `.iso`; type it, pick it with *Browse...* / *Disc image...*, or drop it on the window); *Files folder*, where the shader cache, logs, UI art and other generated files go (default `~/.cache/asura_wrath_recomp/`; pick one, or drop a folder that isn't the game on the window; files already made can be moved there in one click, and logs follow on the next start).
-  - *Shaders*: the shader cache (build progress, its folder; adding only the shaders seen while playing that it doesn't have yet).
-  - *Logs*: the log files, newest first, with their folder (see [Logs and Debugging](#logs-and-debugging)).
-  - *Traces*: *Trace the next frame* (while the game runs) makes mantra write everything it does for one frame into the game's log (`trace:` lines), for picture bugs. When the frame is done the game shows a short "Frame N traced" toast (mantra writes N to `<trigger>.done`), and the button stays disabled until then. The table lists the traces found in the logs. It works through `MANTRA_TRACE_TRIGGER`, which the game sets to `<Files folder>/trace.now` unless the shell already set it. Buffer and texture dumps also need `MANTRA_CAPTURE_DIR`.
-  - *Info*: last saved, size, profile, achievements unlocked, folder and its files; open the folder or delete the save.
-  - *Progress*: difficulty, battle points and the episodes you have reached, by Part, with their best rank on Easy/Normal/Hard; titles from your game files, in your language; later episodes stay hidden to avoid spoilers.
-- **Controls**: *Test* tab (live view of the buttons as the game sees them, sticks with their deadzones, and triggers), *Controller* tab (button remapping, stick deadzones, 0% by default, vibration strength with a Test button) and *Keyboard* tab (play with the keyboard, mouse camera, key rebinding, and the overlay keys F3/F4/F7/`).
-- **Achievements**: the list (read from your `default.xex`) and your unlocks, newest first, as a list or a grid, filtered by all / unlocked / locked.
-- **Settings**, in tabs:
-  - *System*: language (English, Japanese, German, French, Spanish, Italian) for the game, the achievements and the launcher itself; achievement pop-ups (on/off, corner, duration).
-  - *Display*: GPU (Automatic shows which one it picks), VSync, display mode (windowed, borderless or exclusive fullscreen), monitor, resolution (from the monitor's modes), *Higher resolution* (experimental, off by default: the game renders at its own 1280x720, scaled to the window) and the render resolution it uses (960x540 to 3840x2160; some effects can still show green areas), and how the 16:9 picture fills wide or 4:3 screens (fit / fill / stretch).
-  - *Enhancements*: an FPS counter (off by default, in a corner of your choice); a frame rate limit slider (30, the game's, to 240 in steps of 5, or unlimited, with 30/60/120/144 buttons; above 30 is experimental: `src/game/frame_rate.cpp` replaces the engine's `GetMaxTickRate`, and since the game presents every second display refresh, the launcher also sets `video_mode_refresh_rate` to twice the cap, up to 240; that part applies when the game starts); skipping the intro (the Capcom, CyberConnect2, Unreal Engine, SpeedTree and Bink logos and the autosave notice; `src/game/skip_intro.cpp` mounts a copy of the Movies folder in `~/.cache/asura_wrath_recomp/movies` where those movies are cut to their first, black, frame and the rest are links to the originals); Turbo (hold a ticked controller button A/B/X/Y/LB/RB instead of mashing it; it repeats about 12 times a second); hiding the mouse cursor in game while it isn't moving; muting while the window isn't focused (the SDK's `audio_mute`).
+- **Game data**
+  - *Folders*: the game folder or `.iso`, and the *Files folder* where the cache, logs and traces go (files already made can be moved there in one click).
+  - *Shaders*: build the shader cache, or add only the shaders seen while playing.
+  - *Logs*: the log files, newest first. *Detailed logs* (off by default) adds debug messages for bug reports; the logs get much larger.
+  - *Traces*: *Trace the next frame* (or F3 in game) writes everything mantra does for one frame to `<Files folder>/traces/<date>_<time>_frame<N>.log`, for picture bugs. The newest 30 are kept.
+  - *Info* / *Progress*: your save, achievements and the episodes reached (later ones stay hidden).
+- **Controls**: a live button test, controller remapping, deadzones and vibration, keyboard and mouse, key rebinding.
+- **Achievements**: list or grid, filtered by unlocked / locked.
+- **Settings**
+  - *System*: language (game, achievements and launcher), achievement pop-ups.
+  - *Display*: GPU, VSync, display mode, monitor, resolution, *Higher resolution* (experimental) and how 16:9 fills other screens.
+  - *Enhancements*: FPS counter, frame rate limit (above 30 is experimental), skip the intro logos, Turbo buttons, hide the cursor, mute in the background.
+- **About**: version, this computer's details with a *Copy* button for bug reports.
 
-  A note above Play says when the shader cache is missing, or too old for the chosen render resolution (caches built before render scaling only work at 1280x720); it goes away if you change the setting back, and clicking it opens *Game data > Shaders*. Pressing Play then opens *Shaders* first; a second press starts anyway.
-- **About**: the repository link, the version (git commit, branch, build date), this computer (OS, kernel, desktop, CPU, memory, GPUs with their driver and Vulkan versions) with a *Copy* button for bug reports, and a notice that this is an unofficial fan project, not affiliated with Capcom or CyberConnect2. The version comes from `build_info.h`, which `tools/build_info.cmake` regenerates on each build from git.
+**Play** starts the game as a separate process and becomes **Stop**. Settings changed meanwhile apply on the next start. In game, **Esc** opens the launcher over the running game: *Resume* applies most changes at once; ones that need a fresh start turn it into *Restart* (progress since the last save is lost).
 
-Controls and the Settings tabs each have a *Reset to defaults* button.
+In game: F3 traces a frame, F4 settings, F7 achievements, `` ` `` console, Esc the launcher (all rebindable under *Controls > Keyboard*).
 
-The launcher's fonts (including the accented and Japanese ones from the game's localized packages) and achievement icons are read from your game folder into `~/.cache/asura_wrath_recomp/`. Until then (no game folder yet) the launcher uses its own fonts from `assets/ui`: Noto Serif Regular/Bold and `NotoSerifJP-Launcher.awf`, the Japanese characters of the launcher's text rendered from Noto Serif CJK JP by `tools/make_launcher_font.py` (rerun it after adding Japanese text). They are under the SIL Open Font License (`assets/ui/OFL.txt`).
+The launcher's fonts and achievement icons come from your game files, cached in the *Files folder*. Before a game folder is set it uses Noto Serif from `assets/ui` (SIL Open Font License, `assets/ui/OFL.txt`); `NotoSerifJP-Launcher.awf` holds the Japanese characters of the launcher's text (rerun `tools/make_launcher_font.py` after adding Japanese text).
 
-**Play** starts the game in its own window, as a separate process; the launcher stays open and the button becomes **Stop** (closes the game; progress since the last save is lost). Settings changed in the launcher meanwhile apply the next time the game starts. Building shaders and extracting an ISO wait until the game is closed. When the game exits, the launcher picks up settings changed in game and rescans saves and achievements.
-
-In game, **Esc** opens the launcher over the running game (rebind it under *Controls > Keyboard*). The game keeps running underneath. There the launcher is drawn translucent black with light text instead of its background art, so the game shows through. *Resume* (or Esc again) goes back and applies keys, controller, pop-up, window size and Enhancements changes at once. Changes that need a fresh start (graphics card, VSync, monitor, exclusive fullscreen, Fill, render resolution, game folder, language) turn the button into *Restart*, which restarts the game: progress since the last save is lost. Esc instead keeps them for the next start.
-
-The render resolution is also `MANTRA_RENDER_SCALE` (a factor such as `1.5`, or a height such as `1080`). Above 1x, rebuild the shader cache once (cache v8) so screen-space effects line up.
-
-In game: F3 traces the next frame (*Game data > Traces*), F4 settings, F7 achievements, `` ` `` console, Esc the launcher. All are rebindable under *Controls > Keyboard* (right-click a key to clear it). The SDK's performance overlay has no key by default; give it one there if you want it.
+The render resolution is also `MANTRA_RENDER_SCALE` (a factor such as `1.5`, or a height such as `1080`).
 
 ## 6. Custom Run Flags
 
@@ -289,9 +292,9 @@ asura_wrath --vulkan_device=1
 asura_wrath --log_file=out/run.log
 ```
 
-Without `--log_file`, each start writes `logs/asura_wrath_recomp_NNN.log` in the *Files folder* when one is set, else next to the executable (or under the user data folder if that isn't writable), and the game started by Play writes `asura_wrath_recomp_NNN.game.log` beside it, with the same number. With `--log_file=out/run.log`, the game's log is `out/run-game.log`. **Settings > Logs** lists them, newest first.
+Without `--log_file`, each start writes `logs/asura_wrath_recomp_NNN.log` in the *Files folder* when one is set, else next to the executable (or under the user data folder if that isn't writable), and the game started by Play writes `asura_wrath_recomp_NNN.game.log` beside it, with the same number. With `--log_file=out/run.log`, the game's log is `out/run-game.log`. **Game data > Logs** lists them, newest first.
 
-Performance lines (`frame times`, `cpu:`, `hitch:`) are logged every 5 seconds. `MANTRA_*` environment variables (traces, captures, per-frame stats) are documented where they are read in `src/mantra_renderer/`.
+At the default `info` level the renderer logs a `frame times` line every 5 seconds and a `hitch:` line for slow frames; the other periodic stats (`cpu:`, shaders, pipelines, textures, draw census) need `--log_level=debug` or *Detailed logs*. Frame traces go to `<Files folder>/traces/` (`MANTRA_TRACE_DIR` to override). `MANTRA_*` environment variables (traces, captures, per-frame stats) are documented where they are read in `src/mantra_renderer/`.
 
 ---
 
@@ -318,11 +321,11 @@ Performance lines (`frame times`, `cpu:`, `hitch:`) are logged every 5 seconds. 
 
 ## 10. TODO
 
-- [ ] Port to Windows (builds natively and cross-compiled from Linux; not tested on Windows yet)
 - [ ] Port to Android
 - [ ] Add touch controls for Android (?)
 - [ ] Test all episodes
 - [ ] Improve performance
 - [ ] Make DLCs work
+- [x] Port to Windows (natively or cross-compiled from Linux;)
 - [x] Make consistent builds
 - [x] Make it easier to build & run

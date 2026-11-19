@@ -246,6 +246,12 @@ class AsuraWrathApp : public rex::ReXApp {
         asura::platform::SetEnv("MANTRA_TRACE_TRIGGER", (dir / "trace.now").string().c_str());
       }
     }
+    // Each traced frame's file (Game data > Traces), not the log.
+    if (const auto traces = asura::ui::TraceDirectory(); !traces.empty()) {
+      asura::platform::SetEnv("MANTRA_TRACE_DIR", traces.string().c_str());
+    }
+    // Game data > Logs > Detailed logs (off: the default level stays).
+    if (launcher_settings_.detailed_logs) asura::ui::ApplyDetailedLogs(true);
     if (rex::cvar::GetFlagSource("game_data_root") == rex::cvar::Source::kDefault) {
       if (launcher_settings_.game_data.empty()) {
         // First start: an "extracted" folder in the working directory or

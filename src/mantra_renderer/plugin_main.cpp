@@ -10,6 +10,11 @@ extern "C" REX_GPU_PLUGIN_EXPORT uint64_t mantra_guest_swap_count(void) {
   return rex::graphics::native::g_guest_swaps.load(std::memory_order_relaxed);
 }
 
+// Settings > Frame traces > Save the picture (0 off, 1 on), live.
+extern "C" REX_GPU_PLUGIN_EXPORT void mantra_set_trace_capture(int enabled) {
+  rex::graphics::native::g_trace_capture.store(enabled ? 1 : 0, std::memory_order_relaxed);
+}
+
 extern "C" REX_GPU_PLUGIN_EXPORT uint32_t rex_gpu_abi_version(void) {
   return rex::system::kGpuPluginAbiVersion;
 }

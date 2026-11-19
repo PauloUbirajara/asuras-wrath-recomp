@@ -37,6 +37,10 @@ namespace rex::graphics::native {
 
 // Guest swaps (IssueSwap calls) since start.
 inline std::atomic<uint64_t> g_guest_swaps{0};
+// Whether a traced frame also saves the presented picture next to its log
+// (<trace>.png): -1 = not set yet ($MANTRA_TRACE_CAPTURE, default on), else
+// set by the app (Settings > Frame traces) through mantra_set_trace_capture.
+inline std::atomic<int> g_trace_capture{-1};
 
 
 // A guest shader plus its offline translation (if the cache has one).
@@ -314,11 +318,17 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
   // MANTRA_CAPTURE_DIR=<dir>: every 150th swap presented from a resolved
   // surface is read back and written as <dir>/frame_<swap>.ppm (debug aid).
   void CaptureSurface(mantra::ResolvedSurface& surface, uint32_t width, uint32_t height,
-                      uint32_t swizzle, const std::string& name);
+                      uint32_t swizzle, const std::string& name,
+                      const std::filesystem::path& path = {});
   // Reads back a single-sample color image whose texels are `format` and
   // writes <MANTRA_CAPTURE_DIR>/<name>.ppm, logging per-channel mean / max.
+  // With `path`, writes that file instead (.png or .ppm by its extension).
   void CaptureImage(mantra::TrackedImage& image, VkFormat format, uint32_t width,
-                    uint32_t height, uint32_t swizzle, const std::string& name);
+                    uint32_t height, uint32_t swizzle, const std::string& name,
+                    const std::filesystem::path& path = {});
+  // The traced frame's picture: <trace log>.png (g_trace_capture).
+  std::filesystem::path trace_picture_;
+  static bool TraceCaptureEnabled();
   // MANTRA_CAPTURE_DIR + traced frame: dumps each pass's output.
   bool CapturingPasses();
   bool CapturingDraws();

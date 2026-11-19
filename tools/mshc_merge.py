@@ -32,8 +32,12 @@ def main():
             continue
         u = e[2:]
         spirv = pblobs[u[SPIRV_OFF]:u[SPIRV_OFF] + u[SPIRV_SIZE]]
-        # Vertex elements, then (v6) the interpolator export words.
-        ve = pblobs[u[VE_OFF]:u[VE_OFF] + (u[VE_COUNT] + (u[EXPORTS] if pversion >= 6 else 0)) * 4]
+        # Vertex elements, then (v6) the interpolator export words, and for
+        # vertex shaders (v7) the container swizzles and (v9) export signatures.
+        words = u[VE_COUNT] + (u[EXPORTS] if pversion >= 6 else 0)
+        if not (u[0] & 1):  # flags: kEntryPixelShader
+            words += (u[VE_COUNT] if pversion >= 7 else 0) + (u[EXPORTS] if pversion >= 9 else 0)
+        ve = pblobs[u[VE_OFF]:u[VE_OFF] + words * 4]
         u[SPIRV_OFF] = len(blobs); blobs += spirv
         u[VE_OFF] = len(blobs); blobs += ve
         entries[index[e[0]]] = e[:2] + u

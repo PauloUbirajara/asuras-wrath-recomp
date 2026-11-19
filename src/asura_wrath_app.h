@@ -491,6 +491,8 @@ class AsuraWrathApp : public rex::ReXApp {
         const auto time = std::filesystem::last_write_time(done, ec);
         if (ec || time <= last) continue;
         last = time;
+        // Settings > Frame traces > Show a notice.
+        if (!asura::ui::GetTraceOptions().notice) continue;
         unsigned long long frame = 0;
         if (std::ifstream in(done); in) in >> frame;
         char text[96];

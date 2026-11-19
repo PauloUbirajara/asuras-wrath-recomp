@@ -7,6 +7,7 @@
 //                             SPIR-V, and per vertex shader its VertexElement
 //                             words followed by its interpolator export words
 //                             and (v7) its elements' container swizzles
+//                             and (v9) its export signatures
 
 #include <cstdint>
 
@@ -29,7 +30,12 @@ constexpr char kMagic[4] = {'M', 'S', 'H', 'C'};
 // 8: pixel shaders read SV_Position through SharedConstants::pixel_scale_inv
 //    (render scale); older caches load but screen-space effects misalign
 //    above 1x.
-constexpr uint32_t kVersion = 8;
+// 9: per vertex shader, after the swizzles, one word per export: its
+//    shader_key::InterpolatorExports signature (ALU instruction minus the
+//    destination), so a normalized match takes the game shader whose exports
+//    compute what the runtime code's do. Older caches load (first candidate
+//    that covers the exports, as before).
+constexpr uint32_t kVersion = 9;
 constexpr uint32_t kMinVersion = 5;
 
 struct CacheHeader {

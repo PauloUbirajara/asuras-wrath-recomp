@@ -129,7 +129,16 @@ inline uint64_t NormalizedHash(const void* microcode_be, size_t byte_count) {
 // semantic; mantra's translations put interpolator oN at location N, so a
 // normalized match must have its output locations renumbered by comparing
 // these lists (see RemapVertexOutputLocations).
-inline std::vector<uint32_t> InterpolatorExports(const void* microcode_be, size_t byte_count) {
+//
+// `signatures` (optional) gets one word per export: a hash of its ALU
+// instruction with the destination registers masked out. Game shaders that
+// share a normalized hash can differ in what their exports compute (write
+// masks, swizzles, opcodes), and the driver's renumbering leaves those as
+// they are, so the container whose signatures equal the runtime code's is
+// the one to use (e.g. the UI text shader: one candidate exports the vertex
+// colour as .xyz, the runtime code as .zyxw).
+inline std::vector<uint32_t> InterpolatorExports(const void* microcode_be, size_t byte_count,
+                                                 std::vector<uint32_t>* signatures = nullptr) {
   const size_t dwords = byte_count / sizeof(uint32_t);
   const auto* bytes = static_cast<const uint8_t*>(microcode_be);
   auto word = [&](size_t i) {
@@ -160,11 +169,17 @@ inline std::vector<uint32_t> InterpolatorExports(const void* microcode_be, size_
     const uint32_t w0 = word(i * 3);
     if (!((w0 >> 15) & 1)) continue;  // not an export
     const uint32_t vector_dest = w0 & 0x3F, scalar_dest = (w0 >> 8) & 0x3F;
+    const size_t before = exports.size();
     if (((w0 >> 16) & 0xF) && vector_dest < 16) {
       exports.push_back(uint32_t(i) << 8 | vector_dest);
     }
     if (((w0 >> 20) & 0xF) && scalar_dest < 16) {
       exports.push_back(uint32_t(i) << 8 | 1u << 4 | scalar_dest);
+    }
+    if (signatures && exports.size() != before) {
+      const uint32_t words[3] = {w0 & ~0x3F3Fu, word(i * 3 + 1), word(i * 3 + 2)};
+      const uint32_t signature = uint32_t(XXH3_64bits(words, sizeof(words)));
+      signatures->resize(exports.size(), signature);
     }
   }
   return exports;

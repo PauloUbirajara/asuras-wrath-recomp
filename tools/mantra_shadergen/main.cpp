@@ -427,8 +427,9 @@ bool WriteCache(const fs::path& path, const std::map<uint64_t, Shader>& shaders,
         // The exports of the microcode this was translated from, for
         // renumbering the outputs of normalized matches at runtime.
         const std::vector<uint8_t> microcode = ContainerMicrocode(s.container);
-        const std::vector<uint32_t> exports =
-            mantra::shader_key::InterpolatorExports(microcode.data(), microcode.size());
+        std::vector<uint32_t> export_signatures;
+        const std::vector<uint32_t> exports = mantra::shader_key::InterpolatorExports(
+            microcode.data(), microcode.size(), &export_signatures);
         e.export_count = uint32_t(exports.size());
         const auto* export_words = reinterpret_cast<const uint8_t*>(exports.data());
         blobs.insert(blobs.end(), export_words, export_words + exports.size() * sizeof(uint32_t));
@@ -445,6 +446,10 @@ bool WriteCache(const fs::path& path, const std::map<uint64_t, Shader>& shaders,
         }
         const auto* swizzle_words = reinterpret_cast<const uint8_t*>(swizzles.data());
         blobs.insert(blobs.end(), swizzle_words, swizzle_words + swizzles.size() * sizeof(uint32_t));
+        // v9: what each export computes, to pick among normalized matches.
+        const auto* signature_words = reinterpret_cast<const uint8_t*>(export_signatures.data());
+        blobs.insert(blobs.end(), signature_words,
+                     signature_words + export_signatures.size() * sizeof(uint32_t));
       }
     }
     entries.push_back(e);

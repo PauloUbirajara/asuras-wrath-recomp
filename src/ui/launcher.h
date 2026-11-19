@@ -87,6 +87,10 @@ struct LauncherSettings {
   bool toasts = true;                        // achievement pop-ups
   int toast_corner = 3;                      // 0 top left, 1 top right, 2 bottom left, 3 bottom right
   double toast_seconds = 4.5;                // how long each pop-up stays
+  // Settings > Frame traces.
+  bool trace_picture = true;                 // save the traced frame as <trace>.png
+  bool trace_notice = true;                  // "Frame N traced" over the game
+  int trace_notice_position = 1;             // 0..2 top left/centre/right, 3..5 bottom
 
   static std::filesystem::path PathIn(const std::filesystem::path& user_data_root);
   bool Load(const std::filesystem::path& path);  // false if missing
@@ -218,14 +222,13 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
     // update: keep the shaders `out` already has, translate only new ones.
     void Start(const std::filesystem::path& tool, const std::filesystem::path& game,
                const std::filesystem::path& out, const std::vector<std::filesystem::path>& dumps,
-               bool update = false, bool background = false, bool fresh = false);
+               bool update = false, bool fresh = false);
     // Asks it to stop (it saves its progress, for the next build to continue).
     void RequestStop();
     // Kills it if a requested stop takes too long; every frame.
     void Tick();
     // Stops it and waits (closing the launcher).
     void Stop();
-    bool background = false;  // only the shaders the game used (MaybeTranslateForGame)
     std::string Line();
   };
   // One per process, never destroyed: in the game, the launcher over it
@@ -288,6 +291,7 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
     std::string when;  // from the name: YYYY-MM-DD HH:MM:SS
     uint64_t swap = 0;
     uintmax_t size = 0;
+    std::filesystem::path picture;  // <trace>.png, if saved
   };
   std::vector<TraceEntry> traces_;  // newest first
   double traces_checked_at_ = -10.0;
@@ -418,14 +422,6 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
     bool Running() const { return process.Running(); }
   };
   GameProcess game_;
-  // Translates the shaders the game used that the cache lacks (exact
-  // translations of the ones it patched at runtime): in the launcher over
-  // the game (Esc), and in the one that started it once it has closed.
-  void MaybeTranslateForGame();
-  double game_shaders_checked_at_ = -10.0;
-  // Tried by MaybeTranslateForGame, in this process (over the game, across Esc).
-  static std::unordered_set<uint64_t>& ShadersTried();
-  std::unordered_set<uint64_t>& shaders_tried_ = ShadersTried();
   std::filesystem::file_time_type settings_saved_time_{};  // after our last save
   bool playing_ = false;
   bool play_without_shaders_ = false;  // Play was pressed once without a shader cache

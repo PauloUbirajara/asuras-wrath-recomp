@@ -1,4 +1,6 @@
 #include "native_command_processor.h"
+
+#include <array>
 #include "memexport.h"
 #include "mantra_log.h"
 #include "shader_key.h"
@@ -79,7 +81,10 @@ std::filesystem::path BeginTraceFile(uint64_t frame) {
     }
   }
   std::sort(old.begin(), old.end());  // the names start with the date
-  for (size_t i = 0; i + kTracesKept <= old.size(); ++i) fs::remove(old[i], ec);
+  for (size_t i = 0; i + kTracesKept <= old.size(); ++i) {
+    fs::remove(old[i], ec);
+    fs::remove(fs::path(old[i]).replace_extension(".png"), ec);  // its picture
+  }
   const std::time_t now = std::time(nullptr);
   char when[32] = "trace";
   if (const std::tm* tm = std::localtime(&now)) {
@@ -1327,6 +1332,17 @@ bool NativeCommandProcessor::Resolve() {
 
 // --- Swap --------------------------------------------------------------------
 
+bool NativeCommandProcessor::TraceCaptureEnabled() {
+  int value = g_trace_capture.load(std::memory_order_relaxed);
+  if (value < 0) {
+    const char* env = std::getenv("MANTRA_TRACE_CAPTURE");
+    value = !env || !*env || *env != '0';
+    int unset = -1;
+    g_trace_capture.compare_exchange_strong(unset, value);
+  }
+  return value != 0;
+}
+
 bool NativeCommandProcessor::CapturingPasses() {
   static const bool enabled = [] {
     const char* dir = std::getenv("MANTRA_CAPTURE_DIR");
@@ -1626,6 +1642,10 @@ void NativeCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
   }
   if (trace_swap_ && swap_stats_.swaps + 1 == trace_swap_ && trace_file_.empty()) {
     trace_file_ = mantra::BeginTraceFile(trace_swap_);
+    trace_picture_.clear();
+    if (!trace_file_.empty() && TraceCaptureEnabled()) {
+      trace_picture_ = std::filesystem::path(trace_file_).replace_extension(".png");
+    }
   }
   buffer_cache_.FrameEnded();
   ReloadShaderCacheIfChanged();
@@ -1772,6 +1792,12 @@ void NativeCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
         }
       });
     }
+    // Settings > Frame traces > Save the picture: the traced frame as shown,
+    // next to its log.
+    if (presented && !trace_picture_.empty() && swap_stats_.swaps == trace_swap_) {
+      CaptureSurface(*surface, width, height, fetch.swizzle, {}, trace_picture_);
+      trace_picture_.clear();
+    }
   } else {
     // Reject frontbuffers that would read past the end of physical memory.
     const uint32_t last_offset =
@@ -1876,11 +1902,80 @@ bool NativeCommandProcessor::PresentResolvedSurface(mantra::ResolvedSurface& sur
 
 void NativeCommandProcessor::CaptureSurface(mantra::ResolvedSurface& surface, uint32_t width,
                                             uint32_t height, uint32_t swizzle,
-                                            const std::string& name) {
-  CaptureImage(surface.image, surface.image.format, width, height, swizzle, name);
+                                            const std::string& name,
+                                            const std::filesystem::path& path) {
+  CaptureImage(surface.image, surface.image.format, width, height, swizzle, name, path);
 }
 
 namespace {
+
+// 8-bit RGB PNG with stored (uncompressed) deflate blocks: no zlib here, and
+// a 1280x720 frame is 2.7 MB either way.
+bool WritePng(const std::filesystem::path& path, uint32_t width, uint32_t height,
+              const std::vector<uint8_t>& rgb) {
+  static const auto crc_table = [] {
+    std::array<uint32_t, 256> table{};
+    for (uint32_t n = 0; n < 256; ++n) {
+      uint32_t c = n;
+      for (int k = 0; k < 8; ++k) c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+      table[n] = c;
+    }
+    return table;
+  }();
+  auto crc = [&](const uint8_t* data, size_t size, uint32_t c = 0xFFFFFFFFu) {
+    for (size_t i = 0; i < size; ++i) c = crc_table[(c ^ data[i]) & 0xFF] ^ (c >> 8);
+    return c;
+  };
+  auto be32 = [](std::vector<uint8_t>& out, uint32_t v) {
+    for (int s = 24; s >= 0; s -= 8) out.push_back(uint8_t(v >> s));
+  };
+  // Raw scanlines, each with filter type 0.
+  const size_t stride = size_t(width) * 3;
+  std::vector<uint8_t> raw;
+  raw.reserve((stride + 1) * height);
+  for (uint32_t y = 0; y < height; ++y) {
+    raw.push_back(0);
+    raw.insert(raw.end(), rgb.begin() + y * stride, rgb.begin() + (y + 1) * stride);
+  }
+  std::vector<uint8_t> z = {0x78, 0x01};
+  for (size_t at = 0; at < raw.size() || raw.empty();) {
+    const size_t n = std::min<size_t>(65535, raw.size() - at);
+    const bool last = at + n == raw.size();
+    z.push_back(last ? 1 : 0);
+    z.push_back(uint8_t(n));
+    z.push_back(uint8_t(n >> 8));
+    z.push_back(uint8_t(~n));
+    z.push_back(uint8_t(~n >> 8));
+    z.insert(z.end(), raw.begin() + at, raw.begin() + at + n);
+    at += n;
+    if (last) break;
+  }
+  uint32_t a = 1, b = 0;
+  for (uint8_t v : raw) {
+    a = (a + v) % 65521;
+    b = (b + a) % 65521;
+  }
+  be32(z, b << 16 | a);
+  std::vector<uint8_t> png = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
+  auto chunk = [&](const char* type, const std::vector<uint8_t>& data) {
+    be32(png, uint32_t(data.size()));
+    const size_t start = png.size();
+    png.insert(png.end(), type, type + 4);
+    png.insert(png.end(), data.begin(), data.end());
+    be32(png, crc(png.data() + start, png.size() - start) ^ 0xFFFFFFFFu);
+  };
+  std::vector<uint8_t> header;
+  be32(header, width);
+  be32(header, height);
+  header.insert(header.end(), {8, 2, 0, 0, 0});  // 8-bit RGB
+  chunk("IHDR", header);
+  chunk("IDAT", z);
+  chunk("IEND", {});
+  std::FILE* file = std::fopen(path.string().c_str(), "wb");
+  if (!file) return false;
+  const bool ok = std::fwrite(png.data(), 1, png.size(), file) == png.size();
+  return std::fclose(file) == 0 && ok;
+}
 
 float HalfToFloat(uint16_t h) {
   const uint32_t sign = uint32_t(h >> 15) << 31;
@@ -1900,7 +1995,8 @@ float HalfToFloat(uint16_t h) {
 
 void NativeCommandProcessor::CaptureImage(mantra::TrackedImage& image, VkFormat format,
                                           uint32_t width, uint32_t height, uint32_t swizzle,
-                                          const std::string& name) {
+                                          const std::string& name,
+                                          const std::filesystem::path& out_path) {
   // Captures hold the image's real pixels (the render scale included).
   width = mantra::HostSize(width, image.scale8);
   height = mantra::HostSize(height, image.scale8);
@@ -1966,13 +2062,19 @@ void NativeCommandProcessor::CaptureImage(mantra::TrackedImage& image, VkFormat 
       range.size = VK_WHOLE_SIZE;
       dfn.vkInvalidateMappedMemoryRanges(device, 1, &range);
       const uint8_t* bytes = static_cast<const uint8_t*>(mapping);
-      const std::filesystem::path path = std::filesystem::path(std::getenv("MANTRA_CAPTURE_DIR")) /
-                                         (name + ".ppm");
+      const char* capture_dir = std::getenv("MANTRA_CAPTURE_DIR");
+      const std::filesystem::path path =
+          !out_path.empty() ? out_path
+                            : std::filesystem::path(capture_dir ? capture_dir : "") / (name + ".ppm");
+      const bool png = path.extension() == ".png";
       std::error_code ec;
       std::filesystem::create_directories(path.parent_path(), ec);
       double sum[4] = {}, peak[4] = {};
-      if (std::FILE* file = std::fopen(path.string().c_str(), "wb")) {
-        std::fprintf(file, "P6\n%u %u\n255\n", width, height);
+      std::FILE* file = png ? nullptr : std::fopen(path.string().c_str(), "wb");
+      if (png || file) {
+        if (file) std::fprintf(file, "P6\n%u %u\n255\n", width, height);
+        std::vector<uint8_t> pixels;  // PNG: the whole picture
+        if (png) pixels.reserve(size_t(width) * height * 3);
         std::vector<uint8_t> row(size_t(width) * 3);
         for (uint32_t y = 0; y < height; ++y) {
           for (uint32_t x = 0; x < width; ++x) {
@@ -2039,16 +2141,25 @@ void NativeCommandProcessor::CaptureImage(mantra::TrackedImage& image, VkFormat 
               row[x * 3 + i] = uint8_t(Swizzled(comps, (swizzle >> (3 * i)) & 7) >> 8);
             }
           }
-          std::fwrite(row.data(), 1, row.size(), file);
+          if (file) {
+            std::fwrite(row.data(), 1, row.size(), file);
+          } else {
+            pixels.insert(pixels.end(), row.begin(), row.end());
+          }
         }
-        std::fclose(file);
+        if (file) std::fclose(file);
+        if (png && !WritePng(path, width, height, pixels)) {
+          MANTRA_WARN("could not write {}", path.string());
+        }
         const double n = double(width) * height;
         MANTRA_INFO("captured {} ({}x{} fmt {}) mean ({:.4g} {:.4g} {:.4g} {:.4g}) max ({:.4g} "
                     "{:.4g} {:.4g} {:.4g})",
                     path.filename().string(), width, height, uint32_t(format), sum[0] / n,
                     sum[1] / n, sum[2] / n, sum[3] / n, peak[0], peak[1], peak[2], peak[3]);
       }
-      if (format == VK_FORMAT_R32_SFLOAT) {
+      if (png) {
+        // The trace's picture: no raw extras.
+      } else if (format == VK_FORMAT_R32_SFLOAT) {
         std::filesystem::path raw = path;
         raw.replace_extension(".f32");
         if (std::FILE* f32 = std::fopen(raw.string().c_str(), "wb")) {

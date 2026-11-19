@@ -39,6 +39,7 @@
 #include "game_assets.h"
 #include "game_font.h"
 #include "game_toast.h"
+#include "notice_toast.h"
 #include "launcher_text.h"
 
 extern "C" unsigned char* stbi_load_from_memory(const unsigned char* buffer, int len, int* x,
@@ -331,6 +332,10 @@ bool LauncherSettings::Load(const std::filesystem::path& path) {
     else if (key == "toast_corner") toast_corner = std::clamp(std::atoi(value.c_str()), 0, 3);
     else if (key == "toast_seconds")
       toast_seconds = std::clamp(std::strtod(value.c_str(), nullptr), 1.0, 15.0);
+    else if (key == "trace_picture") trace_picture = on;
+    else if (key == "trace_notice") trace_notice = on;
+    else if (key == "trace_notice_position")
+      trace_notice_position = std::clamp(std::atoi(value.c_str()), 0, 5);
     else if (key.rfind("pad.", 0) == 0) pad[key.substr(4)] = value;
     else if (key.rfind("flag.", 0) == 0) binds[key.substr(5)] = value;
   }
@@ -350,7 +355,9 @@ bool LauncherSettings::Save(const std::filesystem::path& path) const {
       << "\ngame_data=" << game_data << "\ndata_folder=" << data_folder << "\ndeadzone_left=" << deadzone_left
       << "\ndeadzone_right=" << deadzone_right << "\nvibration=" << vibration
       << "\nshow_fps=" << show_fps << "\nfps_corner=" << fps_corner << "\nfps_cap=" << fps_cap << "\nrender_height=" << render_height << "\nnative_render=" << native_render << "\ntoasts=" << toasts << "\ntoast_corner=" << toast_corner
-      << "\ntoast_seconds=" << toast_seconds << "\nhide_cursor=" << hide_cursor
+      << "\ntoast_seconds=" << toast_seconds << "\ntrace_picture=" << trace_picture
+      << "\ntrace_notice=" << trace_notice << "\ntrace_notice_position=" << trace_notice_position
+      << "\nhide_cursor=" << hide_cursor
       << "\nmute_background=" << mute_background << "\nskip_intro=" << skip_intro
       << "\ndetailed_logs=" << detailed_logs << "\nturbo=";
   for (int c = 0, n = 0; c < input::kPadControlCount; ++c) {
@@ -428,6 +435,9 @@ void ApplyLauncherDefaults(const LauncherSettings& s) {
   }
   SetToastOptions({s.toasts, s.toast_corner, float(s.toast_seconds)});
   SetFpsCorner(s.fps_corner);
+  // The game started by Play inherits it (its own settings set it live too).
+  platform::SetEnv("MANTRA_TRACE_CAPTURE", s.trace_picture ? "1" : "0");
+  SetTraceOptions({s.trace_notice, s.trace_notice_position, s.trace_picture});
 }
 
 input::PadMap PadMapFrom(const LauncherSettings& s) {
@@ -462,6 +472,7 @@ void ApplyLiveSettings(const LauncherSettings& s) {
   game::SetFrameRateCap(s.fps_cap);
   SetToastOptions({s.toasts, s.toast_corner, float(s.toast_seconds)});
   SetFpsCorner(s.fps_corner);
+  SetTraceOptions({s.trace_notice, s.trace_notice_position, s.trace_picture});
 }
 
 bool NeedsRestart(const LauncherSettings& before, const LauncherSettings& after) {
@@ -515,36 +526,6 @@ std::filesystem::path ShadergenPath() {
 #else
   return rex::filesystem::GetExecutableFolder() / "mantra_shadergen";
 #endif
-}
-
-// The exact hashes in the shader cache (read again when the file changes).
-const std::unordered_set<uint64_t>& CachedShaderHashes() {
-  namespace sc = mantra::shader_cache;
-  static std::filesystem::file_time_type time{};
-  static std::unordered_set<uint64_t> hashes;
-  std::error_code ec;
-  const auto cache = ShaderCachePath();
-  const auto written = std::filesystem::last_write_time(cache, ec);
-  if (ec) {
-    hashes.clear();
-    time = {};
-    return hashes;
-  }
-  if (written == time) return hashes;
-  time = written;
-  hashes.clear();
-  std::ifstream in(cache, std::ios::binary);
-  sc::CacheHeader header{};
-  if (!in.read(reinterpret_cast<char*>(&header), sizeof(header)) ||
-      std::memcmp(header.magic, sc::kMagic, 4) != 0) {
-    return hashes;
-  }
-  std::vector<sc::CacheEntry> entries(header.entry_count);
-  if (in.read(reinterpret_cast<char*>(entries.data()),
-              std::streamsize(entries.size() * sizeof(sc::CacheEntry)))) {
-    for (const sc::CacheEntry& e : entries) hashes.insert(e.exact_hash);
-  }
-  return hashes;
 }
 
 size_t ShadersNotInCache() {
@@ -652,9 +633,8 @@ void LauncherDialog::ShaderBuild::Start(const std::filesystem::path& tool,
                                         const std::filesystem::path& game,
                                         const std::filesystem::path& out,
                                         const std::vector<std::filesystem::path>& dumps,
-                                        bool update, bool in_background, bool fresh) {
+                                        bool update, bool fresh) {
   Stop();
-  background = in_background;
   stopping = false;
   this->out = out;
   std::error_code ec;
@@ -668,11 +648,6 @@ void LauncherDialog::ShaderBuild::Start(const std::filesystem::path& tool,
     args.push_back(dir.string());
   }
   if (update) args.push_back("--update");
-  if (in_background) {
-    // Only what the game used, at low priority, next to the running game.
-    args.push_back("--requested-only");
-    args.push_back("--background");
-  }
   if (std::string error; !process.Start(tool, args, /*capture_output=*/true, &error)) {
     std::lock_guard<std::mutex> lock(mutex);
     last_line = T("Could not start ") + tool.string() + ": " + error;
@@ -756,11 +731,6 @@ void LauncherDialog::ShaderBuild::Stop() {
 LauncherDialog::ShaderBuild& LauncherDialog::SharedShaderBuild() {
   static ShaderBuild* build = new ShaderBuild;  // its thread may outlive any launcher
   return *build;
-}
-
-std::unordered_set<uint64_t>& LauncherDialog::ShadersTried() {
-  static auto* tried = new std::unordered_set<uint64_t>;
-  return *tried;
 }
 
 std::string LauncherDialog::ShaderBuild::Line() {
@@ -1403,46 +1373,6 @@ void LauncherDialog::LimitFrameRate(ImGuiIO& io) {
   last_frame_ = std::max(clock::now(), last_frame_ + period);
 }
 
-void LauncherDialog::MaybeTranslateForGame() {
-  const double now = ImGui::GetTime();
-  // Not during play: each new cache made the game reload it and swap
-  // shaders mid-game. Over the game (Esc) the picture behind the menu takes
-  // the swap; the launcher that started the game waits for it to close.
-  if (game_.Running() || now - game_shaders_checked_at_ < 2.0) return;
-  game_shaders_checked_at_ = now;
-  if (shader_build_.state == ShaderBuild::kRunning || !GameDataValid()) return;
-  // A cache of another version would be rebuilt whole: leave that to Build.
-  const std::filesystem::path cache = ShaderCachePath();
-  std::error_code ec;
-  const uint32_t version = ShaderCacheVersion();
-  if (std::filesystem::exists(cache, ec) && version != mantra::shader_cache::kVersion) return;
-  // The programs the game kept for the cache build ({vs|ps}_<hash>_<dwords>.mc)
-  // that the cache lacks and no build here tried yet (some have no
-  // counterpart in the game files: they would be tried again and again).
-  const auto& cached = CachedShaderHashes();
-  size_t pending = 0;
-  std::vector<uint64_t> seen;
-  for (const auto& dir : ShaderDumpDirs()) {
-    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
-      const std::string name = entry.path().filename().string();
-      unsigned long long hash = 0;
-      if (entry.path().extension() != ".mc" || name.size() < 20 ||
-          std::sscanf(name.c_str() + 3, "%16llx", &hash) != 1) {
-        continue;
-      }
-      seen.push_back(hash);
-      pending += !cached.count(hash) && !shaders_tried_.count(hash);
-    }
-  }
-  if (!pending) return;
-  const std::filesystem::path tool = ShadergenPath();
-  if (!std::filesystem::is_regular_file(tool, ec)) return;
-  shaders_tried_.insert(seen.begin(), seen.end());
-  REXLOG_INFO("launcher: translating {} shaders the game used that the cache lacks", pending);
-  shader_build_.Start(tool, settings_.game_data, cache, ShaderDumpDirs(), /*update=*/true,
-                      /*background=*/true);
-}
-
 void LauncherDialog::OnDraw(ImGuiIO& io) {
   if (playing_) return;
   LimitFrameRate(io);
@@ -1463,7 +1393,6 @@ void LauncherDialog::OnDraw(ImGuiIO& io) {
     if (failed) message_ = T("The game closed with an error (see the log).");
   }
   shader_build_.Tick();
-  MaybeTranslateForGame();
   if (iso_extract_.state == IsoExtract::kDone) {
     if (iso_extract_.worker.joinable()) iso_extract_.worker.join();
     iso_extract_.state = IsoExtract::kIdle;
@@ -2964,6 +2893,23 @@ void LauncherDialog::DrawSystem(float scale) {
   }
   ImGui::EndDisabled();
 
+  SubHeading(HeadingFont(), T("Frame traces"), scale);
+  label(T("Save the picture"));
+  changed |= ImGui::Checkbox("##trace_picture", &settings_.trace_picture);
+  ImGui::SameLine();
+  ImGui::TextDisabled("%s", T("The traced frame as a .png next to its trace."));
+  label(T("Show a notice"));
+  changed |= ImGui::Checkbox("##trace_notice", &settings_.trace_notice);
+  ImGui::BeginDisabled(!settings_.trace_notice);
+  label(T("Position"));
+  {
+    const char* positions[] = {T("Top left"),    T("Top"),    T("Top right"),
+                               T("Bottom left"), T("Bottom"), T("Bottom right")};
+    ImGui::SetNextItemWidth(260 * scale);
+    changed |= ImGui::Combo("##trace_position", &settings_.trace_notice_position, positions, 6);
+  }
+  ImGui::EndDisabled();
+
   // Only while the game's fonts aren't in use yet: there is nothing to do
   // once they are.
   if (!fonts_at_start_) {
@@ -2992,12 +2938,17 @@ void LauncherDialog::DrawSystem(float scale) {
     settings_.toasts = defaults.toasts;
     settings_.toast_corner = defaults.toast_corner;
     settings_.toast_seconds = defaults.toast_seconds;
+    settings_.trace_picture = defaults.trace_picture;
+    settings_.trace_notice = defaults.trace_notice;
+    settings_.trace_notice_position = defaults.trace_notice_position;
     changed = true;
     if (!SetElsewhere("user_language")) set_language(1);
   }
 
   if (changed) {
     SetToastOptions({settings_.toasts, settings_.toast_corner, float(settings_.toast_seconds)});
+    SetTraceOptions(
+        {settings_.trace_notice, settings_.trace_notice_position, settings_.trace_picture});
     SaveSettings();
     // The achievement names follow the language.
     if (CachedAchievementLanguage() != settings_.language) StartAssetJob();
@@ -3665,7 +3616,7 @@ void LauncherDialog::DrawShaders(float scale) {
                     : have_cache  ? T("Rebuild all")
                                   : T("Build (about 10 minutes)"))) {
     shader_build_.Start(tool, settings_.game_data, cache, ShaderDumpDirs(), /*update=*/false,
-                        /*background=*/false, /*fresh=*/true);
+                        /*fresh=*/true);
     message_.clear();
     play_without_shaders_ = false;
   }
@@ -3923,8 +3874,11 @@ void LauncherDialog::DrawTraces(float scale) {
         when[10] = ' ';
         when[13] = when[16] = ':';
       }
-      traces_.push_back({entry.path(), when,
-                         std::strtoull(name.c_str() + at + 6, nullptr, 10), entry.file_size(ec)});
+      std::filesystem::path picture = entry.path();
+      picture.replace_extension(".png");
+      if (!std::filesystem::is_regular_file(picture, ec)) picture.clear();
+      traces_.push_back({entry.path(), when, std::strtoull(name.c_str() + at + 6, nullptr, 10),
+                         entry.file_size(ec), picture});
     }
     std::sort(traces_.begin(), traces_.end(),
               [](const TraceEntry& a, const TraceEntry& b) { return a.when > b.when; });
@@ -3954,7 +3908,7 @@ void LauncherDialog::DrawTraces(float scale) {
     ImGui::TableSetupColumn(T("Frame"), ImGuiTableColumnFlags_WidthFixed, 100 * scale);
     ImGui::TableSetupColumn(T("Size"), ImGuiTableColumnFlags_WidthFixed, 90 * scale);
     ImGui::TableSetupColumn(T("When"), ImGuiTableColumnFlags_WidthFixed, 190 * scale);
-    ImGui::TableSetupColumn("##open", ImGuiTableColumnFlags_WidthFixed, 80 * scale);
+    ImGui::TableSetupColumn("##open", ImGuiTableColumnFlags_WidthFixed, 170 * scale);
     HeadersRow();
     for (size_t i = 0; i < traces_.size(); ++i) {
       const TraceEntry& trace = traces_[i];
@@ -3975,6 +3929,10 @@ void LauncherDialog::DrawTraces(float scale) {
       ImGui::TextUnformatted(trace.when.c_str());
       ImGui::TableNextColumn();
       if (ImGui::SmallButton(T("Open"))) OpenFolder(trace.file);
+      if (!trace.picture.empty()) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton(T("Picture"))) OpenFolder(trace.picture);
+      }
       ImGui::PopID();
     }
     if (traces_.empty()) {

@@ -14,6 +14,17 @@
 
 namespace asura::ui {
 
+// Settings > Frame traces (from the launcher settings).
+struct TraceOptions {
+  bool notice = true;  // "Frame N traced" when a trace is written
+  int position = 1;    // 0 top left, 1 top, 2 top right, 3 bottom left, 4 bottom, 5 bottom right
+  bool picture = true;  // mantra saves the traced frame as <trace>.png
+};
+// Also passes `picture` on to mantra when it is loaded (this process runs the
+// game); the game started by Play gets it through MANTRA_TRACE_CAPTURE.
+void SetTraceOptions(const TraceOptions& options);
+TraceOptions GetTraceOptions();
+
 class NoticeDialog : public rex::ui::ImGuiDialog {
  public:
   NoticeDialog(rex::ui::ImGuiDrawer* drawer, ImFont* font,

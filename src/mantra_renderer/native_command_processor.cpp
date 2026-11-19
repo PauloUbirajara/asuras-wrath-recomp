@@ -2089,6 +2089,9 @@ void NativeCommandProcessor::EndFrameTiming() {
   const uint64_t pipelines = draw_pipelines_.created() + draw_pipelines_.async_created();
   const uint64_t modules = shader_stats_.modules;
   const uint64_t texture_bytes = texture_cache_.stats().load_bytes;
+  const auto& tcs = texture_cache_.stats();
+  const uint64_t texture_ns[5] = {tcs.load_ns, tcs.watch_ns, tcs.hash_ns, tcs.swap_ns,
+                                  tcs.untile_ns};
   const uint64_t buffer_bytes = buffer_cache_.stats().upload_bytes;
   const uint64_t vertex_bytes = guest_draw_stats_.vertex_bytes;
   const uint64_t thread_cpu_ns = ThreadCpuNs();
@@ -2114,12 +2117,16 @@ void NativeCommandProcessor::EndFrameTiming() {
     if (total > 70.0 && !TracingThisFrame()) {
       MANTRA_INFO("hitch: swap {} took {:.1f} ms (fence waits {:.1f}, draws {:.1f}, resolves "
                   "{:.1f}, swap {:.1f}, other {:.1f}; gpu thread busy {:.1f}); new pipelines {}, "
-                  "shader modules {}, texture loads {:.1f} MB, buffer uploads {:.1f} MB, "
+                  "shader modules {}, texture loads {:.1f} MB in {:.1f} ms (watch {:.1f}, hash "
+                  "{:.1f}, swap {:.1f}, untile {:.1f}), buffer uploads {:.1f} MB, "
                   "expanded vertices {:.1f} MB{}{}",
                   swap_stats_.swaps, total, ms(t.fence_ns), ms(t.draw_ns), ms(t.copy_ns),
                   ms(t.swap_ns), total - ms(t.draw_ns) - ms(t.copy_ns) - ms(t.swap_ns), busy,
                   pipelines - t.pipelines, modules - t.modules,
                   (texture_bytes - t.texture_bytes) / 1048576.0,
+                  ms(texture_ns[0] - t.texture_ns[0]), ms(texture_ns[1] - t.texture_ns[1]),
+                  ms(texture_ns[2] - t.texture_ns[2]), ms(texture_ns[3] - t.texture_ns[3]),
+                  ms(texture_ns[4] - t.texture_ns[4]),
                   (buffer_bytes - t.buffer_bytes) / 1048576.0,
                   (vertex_bytes - t.vertex_bytes) / 1048576.0,
                   ThreadProfileEveryFrame() ? "; busiest threads: " : "",
@@ -2131,6 +2138,7 @@ void NativeCommandProcessor::EndFrameTiming() {
   t.pipelines = pipelines;
   t.modules = modules;
   t.texture_bytes = texture_bytes;
+  std::copy(std::begin(texture_ns), std::end(texture_ns), std::begin(t.texture_ns));
   t.buffer_bytes = buffer_bytes;
   t.vertex_bytes = vertex_bytes;
   t.thread_cpu_ns = thread_cpu_ns;
@@ -2229,11 +2237,14 @@ void NativeCommandProcessor::ReportSwapStats() {
   const auto& tc = texture_cache_.stats();
   MANTRA_INFO("textures: {} cached, {} samplers; {} loads ({} after CPU writes, {:.1f} MB), "
               "{} from resolves ({} sampled directly, {} copies, {} not copyable), {} unsupported, {} failed; {} volatile "
-              "({} hashes); descriptor sets {} ({} reused)",
+              "({} hashes); descriptor sets {} ({} reused); loads took {:.0f} ms (watch {:.0f}, "
+              "hash {:.0f}, swap {:.0f}, untile {:.0f})",
               texture_cache_.size(), texture_cache_.sampler_count(), tc.loads, tc.reloads,
               tc.load_bytes / 1048576.0, tc.resolved_binds, tc.resolved_direct, tc.resolved_copies,
               tc.resolve_mismatches, tc.unsupported, tc.failures,
-              tc.volatile_marks, tc.volatile_hashes, g.texture_sets, g.texture_sets_reused);
+              tc.volatile_marks, tc.volatile_hashes, g.texture_sets, g.texture_sets_reused,
+              tc.load_ns / 1e6, tc.watch_ns / 1e6, tc.hash_ns / 1e6, tc.swap_ns / 1e6,
+              tc.untile_ns / 1e6);
   swap_stats_.last_report_time = now;
   swap_stats_.swaps_at_last_report = swap_stats_.swaps;
   // The draw census every 30 seconds.

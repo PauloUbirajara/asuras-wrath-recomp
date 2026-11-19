@@ -338,6 +338,7 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
     uint64_t fence_ns = 0, draw_ns = 0, copy_ns = 0, swap_ns = 0;
     size_t pipelines = 0;
     uint64_t modules = 0, texture_bytes = 0, buffer_bytes = 0, vertex_bytes = 0;
+    uint64_t texture_ns[5] = {};  // load, watch, hash, swap, untile (TextureCache::Stats)
     uint64_t thread_cpu_ns = 0;  // GPU thread CPU time at the last swap
     // This stats window.
     uint64_t frames = 0, over_50 = 0, over_100 = 0;

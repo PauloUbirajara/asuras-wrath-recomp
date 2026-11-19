@@ -77,6 +77,8 @@ class TextureCache {
     uint64_t failures = 0;        // creation/staging failures (placeholder)
     uint64_t volatile_marks = 0;  // textures switched from page watching to hashing
     uint64_t volatile_hashes = 0; // guest data hashes of volatile textures
+    // Time spent in loads from guest memory (whole load, and its steps).
+    uint64_t load_ns = 0, watch_ns = 0, hash_ns = 0, swap_ns = 0, untile_ns = 0;
   };
 
   bool Initialize(const rex::ui::vulkan::VulkanDevice* device, BufferCache* watcher,
@@ -190,6 +192,9 @@ class TextureCache {
   std::unordered_map<uint64_t, VkSampler> samplers_;
   std::unordered_map<uint32_t, ResolveRecord> resolves_;
   std::vector<uint8_t> swapped_base_, swapped_mips_;
+  // Untiled levels, built in cached memory and copied to staging in one go
+  // (staging is write-combined: small scattered writes to it are slow).
+  std::vector<uint8_t> untiled_;
   uint64_t unsupported_logged_ = 0;  // guest formats already reported
   Stats stats_;
 };

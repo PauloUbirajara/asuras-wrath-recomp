@@ -4,9 +4,11 @@
 #include "render_targets.h"
 
 #include <algorithm>
+#include <chrono>
 #include <unordered_set>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 #include <xxhash.h>
@@ -292,6 +294,42 @@ void DecodeBlock(Decode decode, bool is_signed, const uint8_t* src, uint8_t* dst
   }
 }
 
+// Xenos 2D tiled offset of block (x, y), as texture_util::GetTiledOffset2D,
+// inlined for the untile loops.
+inline uint32_t TiledOffset2D(uint32_t x, uint32_t y, uint32_t pitch, uint32_t bpb_log2) {
+  pitch = (pitch + 31) & ~31u;
+  const int32_t ix = int32_t(x), iy = int32_t(y);
+  const int32_t macro = ((ix >> 5) + (iy >> 5) * int32_t(pitch >> 5)) << (bpb_log2 + 7);
+  const int32_t micro = ((ix & 7) + ((iy & 0xE) << 2)) << bpb_log2;
+  const int32_t offset = macro + ((micro & ~0xF) << 1) + (micro & 0xF) + ((iy & 1) << 4);
+  return uint32_t(((offset & ~0x1FF) << 3) + ((iy & 16) << 7) + ((offset & 0x1C0) << 2) +
+                  (((((iy & 8) >> 2) + (ix >> 3)) & 3) << 6) + (offset & 0x3F));
+}
+
+// Copies one row of `blocks` guest blocks starting at block (x0, y) out of a
+// 2D-tiled level at `slice` in `source` to `out`, packed. In a tiled row the
+// blocks of each aligned 16-byte run (8 for 1-byte blocks) are contiguous, so
+// it copies a run at a time. Blocks past the end of `source` are left alone.
+inline void UntileRow2D(const uint8_t* source, size_t source_size, uint64_t slice, uint8_t* out,
+                        uint32_t blocks, uint32_t x0, uint32_t y, uint32_t pitch_blocks,
+                        uint32_t bpb_log2) {
+  const uint32_t bpb = 1u << bpb_log2;
+  const uint32_t run = bpb_log2 == 0 ? 8u : 16u >> bpb_log2;
+  for (uint32_t x = 0; x < blocks;) {
+    const uint32_t sx = x0 + x;
+    const uint32_t n = std::min(run - (sx & (run - 1)), blocks - x);
+    const uint64_t offset = slice + TiledOffset2D(sx, y, pitch_blocks, bpb_log2);
+    const uint64_t bytes = uint64_t(n) * bpb;
+    if (offset + bytes <= source_size) {
+      std::memcpy(out + uint64_t(x) * bpb, source + offset, bytes);
+    } else if (offset < source_size) {
+      const uint64_t whole = (source_size - offset) / bpb * bpb;
+      std::memcpy(out + uint64_t(x) * bpb, source + offset, whole);
+    }
+    x += n;
+  }
+}
+
 }  // namespace
 
 size_t TextureCache::KeyHash::operator()(const Key& key) const {
@@ -552,6 +590,15 @@ bool TextureCache::CreateImage(Texture& texture) {
 
 bool TextureCache::LoadFromMemory(Texture& texture, const xenos::xe_gpu_texture_fetch_t& fetch,
                                   Host& host) {
+  using Clock = std::chrono::steady_clock;
+  const auto load_start = Clock::now();
+  auto step_start = load_start;
+  // Adds the time since the last step to `ns`.
+  const auto step = [&step_start](uint64_t& ns) {
+    const auto now = Clock::now();
+    ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(now - step_start).count());
+    step_start = now;
+  };
   const FormatInfo* format_info = FormatInfo::Get(fetch.format);
   uint32_t width_minus_1, height_minus_1, depth_minus_1, base_page, mip_page, mip_min, mip_max;
   texture_util::GetSubresourcesFromFetchConstant(fetch, &width_minus_1, &height_minus_1,
@@ -595,6 +642,7 @@ bool TextureCache::LoadFromMemory(Texture& texture, const xenos::xe_gpu_texture_
     }
   }
 
+  step_start = Clock::now();
   // Watch first, then read: a racing CPU write makes the next use reload.
   const uint32_t base_address = base_page << 12;
   const uint32_t mip_address = mip_page << 12;
@@ -611,7 +659,9 @@ bool TextureCache::LoadFromMemory(Texture& texture, const xenos::xe_gpu_texture_
     watcher_->WatchRange(mip_address, mip_length);
   }
   texture.base_checked = texture.mip_checked = texture.epoch;
+  step(stats_.watch_ns);
   texture.content_hash = GuestDataHash(texture);
+  step(stats_.hash_ns);
 
   // The endian swap applies to memory words, so the whole source range is
   // swapped before untiling.
@@ -637,6 +687,7 @@ bool TextureCache::LoadFromMemory(Texture& texture, const xenos::xe_gpu_texture_
                                                      mip_src, mip_length & ~3u);
   }
   stats_.load_bytes += base_length + mip_length;
+  step(stats_.swap_ns);
   // Debug: MANTRA_LOG_TEXTURE_LOADS=<min size> logs every load of a texture
   // at least that wide or tall (e.g. 256), to time how the game streams mips
   // in (each streamed level is a new load, usually at a new address).
@@ -678,7 +729,8 @@ bool TextureCache::LoadFromMemory(Texture& texture, const xenos::xe_gpu_texture_
     ++stats_.failures;
     return false;
   }
-  std::memset(staging, 0, staging_size);
+  untiled_.assign(staging_size, 0);
+  uint8_t* const untiled = untiled_.data();
 
   VkBufferImageCopy regions[xenos::kTextureMaxMips + 1] = {};
   uint8_t decoded[64];
@@ -701,13 +753,35 @@ bool TextureCache::LoadFromMemory(Texture& texture, const xenos::xe_gpu_texture_
     const uint32_t host_blocks_x = (lw + hbw - 1) / hbw, host_blocks_y = (lh + hbh - 1) / hbh;
     const uint32_t pitch_blocks = bpb ? level_layout.row_pitch_bytes / bpb : 0;
     const uint32_t slice_rows = level_layout.z_slice_stride_block_rows;
-    uint8_t* const level_out = staging + level_offsets[h];
+    uint8_t* const level_out = untiled + level_offsets[h];
     for (uint32_t layer = 0; layer < layers; ++layer) {
       for (uint32_t z = 0; z < ld; ++z) {
         const uint64_t slice =
             source_offset + uint64_t(texture.stacked ? z : layer) * level_layout.array_slice_stride_bytes;
         uint8_t* const plane_out =
             level_out + uint64_t(layer * ld + z) * host_blocks_y * host_blocks_x * hbpb;
+        if (decode == kCopy && hbpb == bpb && !is_3d) {
+          // Fast path: whole runs of blocks at a time.
+          const uint32_t sz = texture.stacked ? 0 : z + packed_z;
+          for (uint32_t y = 0; y < blocks_y; ++y) {
+            uint8_t* const row_out = plane_out + uint64_t(y) * host_blocks_x * hbpb;
+            const uint32_t sy = y + packed_y;
+            if (fetch.tiled) {
+              UntileRow2D(source.data(), source.size(), slice, row_out, blocks_x, packed_x, sy,
+                          pitch_blocks, bpb_log2);
+              continue;
+            }
+            const uint64_t offset = slice +
+                                    (uint64_t(sz) * slice_rows + sy) * level_layout.row_pitch_bytes +
+                                    uint64_t(packed_x) * bpb;
+            if (offset < source.size()) {
+              const uint64_t bytes = std::min<uint64_t>(uint64_t(blocks_x) * bpb,
+                                                        (source.size() - offset) / bpb * bpb);
+              std::memcpy(row_out, source.data() + offset, bytes);
+            }
+          }
+          continue;
+        }
         for (uint32_t y = 0; y < blocks_y; ++y) {
           for (uint32_t x = 0; x < blocks_x; ++x) {
             const int32_t sx = int32_t(x + packed_x), sy = int32_t(y + packed_y);
@@ -747,6 +821,8 @@ bool TextureCache::LoadFromMemory(Texture& texture, const xenos::xe_gpu_texture_
     r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, h, 0, layers};
     r.imageExtent = {lw, lh, ld};
   }
+  std::memcpy(staging, untiled, staging_size);
+  step(stats_.untile_ns);
 
   // Debug: MANTRA_TEXTURE_DUMP_DIR gets level 0 of 8-bit textures (PGM)
   // every 60th load of each address.
@@ -759,7 +835,7 @@ bool TextureCache::LoadFromMemory(Texture& texture, const xenos::xe_gpu_texture_
                                            texture.dump_counter - 1, mip_min + h);
       if (std::FILE* file = std::fopen(path.c_str(), "wb")) {
         std::fprintf(file, "P5\n%u %u\n255\n", lw, lh);
-        std::fwrite(staging + level_offsets[h], 1, size_t(lw) * lh, file);
+        std::fwrite(untiled + level_offsets[h], 1, size_t(lw) * lh, file);
         std::fclose(file);
       }
     }
@@ -774,7 +850,7 @@ bool TextureCache::LoadFromMemory(Texture& texture, const xenos::xe_gpu_texture_
         fmt::format("{}/tex_{:08X}_{}x{}_{}.bc1", dump_dir, base_address, host_width, host_height,
                     texture.format == VK_FORMAT_BC1_RGBA_SRGB_BLOCK ? "srgb" : "unorm");
     if (std::FILE* file = std::fopen(path.c_str(), "wb")) {
-      std::fwrite(staging + level_offsets[0], 1,
+      std::fwrite(untiled + level_offsets[0], 1,
                   size_t((host_width + 3) / 4) * ((host_height + 3) / 4) * 8, file);
       std::fclose(file);
     }
@@ -810,6 +886,8 @@ bool TextureCache::LoadFromMemory(Texture& texture, const xenos::xe_gpu_texture_
   texture.initialized = true;
   texture.resolved_image = VK_NULL_HANDLE;
   ++stats_.loads;
+  stats_.load_ns += uint64_t(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - load_start).count());
   return true;
 }
 

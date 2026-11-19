@@ -31,8 +31,22 @@ std::atomic<bool> g_stop{false};
 // whenever the original asks for a wait at all.
 void GetMaxTickRateHook(PPCContext& ctx, uint8_t* base) {
   if (PPCFunc* original = g_original.load()) original(ctx, base);
+  const double asked = ctx.f1.f64;
   const int cap = g_cap.load(std::memory_order_relaxed);
-  if (cap != 30 && ctx.f1.f64 > 0.0) ctx.f1.f64 = cap > 0 ? double(cap) : 0.0;
+  if (cap != 30 && asked > 0.0) ctx.f1.f64 = cap > 0 ? double(cap) : 0.0;
+  // What the game asks for and what it gets, on a change (at most every 2 s).
+  using Clock = std::chrono::steady_clock;
+  static Clock::time_point last_log;
+  static int last_asked = -1, last_used = -1;
+  const int asked_fps = int(asked + 0.5), used_fps = int(ctx.f1.f64 + 0.5);
+  if (asked_fps == last_asked && used_fps == last_used) return;
+  const Clock::time_point now = Clock::now();
+  if (now - last_log < std::chrono::seconds(2)) return;
+  REXLOG_INFO("Frame rate limit: the game asks for {} fps (0 = no wait), using {}", asked_fps,
+              used_fps);
+  last_log = now;
+  last_asked = asked_fps;
+  last_used = used_fps;
 }
 
 uint32_t LoadGuest32(rex::memory::Memory* memory, uint32_t address) {

@@ -1,7 +1,9 @@
 #include "fps_counter.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <cfloat>
 #include <cstdio>
 #include <mutex>
 
@@ -22,7 +24,11 @@ SwapCount SwapCounter() {
   return counter;
 }
 
+std::atomic<int> g_corner{0};
+
 }  // namespace
+
+void SetFpsCorner(int corner) { g_corner = std::clamp(corner, 0, 3); }
 
 rex::ui::FrameStats GuestFrameStats() {
   using Clock = std::chrono::steady_clock;
@@ -58,7 +64,10 @@ void FpsCounterDialog::OnDraw(ImGuiIO& io) {
   const float size = std::max(14.0f, io.DisplaySize.y / 720.0f * 18.0f);
   const float margin = size * 0.6f;
   ImDrawList* draw = ImGui::GetForegroundDrawList();
-  const ImVec2 at(margin, margin);
+  const ImVec2 text_size = font->CalcTextSizeA(size, FLT_MAX, 0, text);
+  const int corner = g_corner.load(std::memory_order_relaxed);
+  const ImVec2 at(corner & 1 ? io.DisplaySize.x - margin - text_size.x : margin,
+                  corner & 2 ? io.DisplaySize.y - margin - text_size.y : margin);
   draw->AddText(font, size, ImVec2(at.x + 1, at.y + 1), IM_COL32(0, 0, 0, 200), text);
   draw->AddText(font, size, at, IM_COL32(255, 236, 200, 255), text);
 }

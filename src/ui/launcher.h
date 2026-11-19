@@ -1,6 +1,6 @@
 #pragma once
 // Launcher shown before the game starts (AsuraWrathApp::OnFinalizePaths), in
-// a window: a sidebar (Controls, Achievements, Saves, Graphics, Settings,
+// a window: a sidebar (Controls, Achievements, Saves, Settings, About,
 // Play) and a content panel, in the language chosen in Settings
 // (launcher_text.h). Settings are kept in <user data>/launcher.cfg and applied at startup
 // as defaults, so command-line flags and the config TOML still win.
@@ -69,8 +69,10 @@ struct LauncherSettings {
   std::map<std::string, std::string> pad;    // controller remap: target -> source (pad_remap.h)
   double deadzone_left = 0, deadzone_right = 0;  // stick deadzones, fraction of the range
   int vibration = 100;                       // controller vibration strength, percent
-  bool show_fps = false;                     // frame rate in the top-left corner
+  bool show_fps = false;                     // frame rate counter on screen
+  int fps_corner = 0;                        // 0 top left, 1 top right, 2 bottom left, 3 bottom right
   int fps_cap = 30;                          // frame rate limit, 30 = the game's, 0 = unlimited
+  bool skip_intro = false;                   // skip the logos and the autosave notice at start
   uint32_t turbo = 0;                        // Turbo: held controls repeat (bit = PadControl)
   bool hide_cursor = true;                   // mouse cursor hides while it isn't moving, in game
   bool mute_background = false;              // no sound while the window isn't focused
@@ -121,6 +123,12 @@ std::filesystem::path ShaderCachePath();
 std::vector<std::filesystem::path> ShaderDumpDirs();
 // How many of those are newer than the cache (a rebuild adds them).
 size_t ShadersNotInCache();
+
+// The log folder and this process's log file (the app sets them once logging
+// is up). The game started by Play logs next to it: <name>.game.log.
+void SetLogLocation(const std::filesystem::path& dir, const std::filesystem::path& file);
+const std::filesystem::path& LogDirectory();
+const std::filesystem::path& LogFile();
 // Whether the game's UI fonts were found (else ImGui's font is used).
 bool HaveGameFonts();
 
@@ -156,7 +164,7 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   void OnDraw(ImGuiIO& io) override;
 
  private:
-  enum class Page { kControls, kAchievements, kSaves, kGraphics, kSettings };
+  enum class Page { kControls, kAchievements, kSaves, kSettings, kAbout };
   struct Image {
     std::unique_ptr<rex::ui::ImmediateTexture> texture;
     float width = 0, height = 0;
@@ -165,6 +173,8 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   };
   struct GpuInfo {
     std::string name;
+    std::string driver;  // e.g. "NVIDIA 580.95.05", "Intel open-source Mesa driver Mesa 25.2.3"
+    std::string vulkan;  // the device's Vulkan version
   };
   struct Achievement {
     uint32_t id = 0, gamerscore = 0;
@@ -182,8 +192,10 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
     std::mutex mutex;
     std::string last_line;  // under mutex
     std::atomic<int> done{0}, total{0};  // shaders translated ("translated N/M" lines)
+    // update: keep the shaders `out` already has, translate only new ones.
     void Start(const std::filesystem::path& tool, const std::filesystem::path& game,
-               const std::filesystem::path& out, const std::vector<std::filesystem::path>& dumps);
+               const std::filesystem::path& out, const std::vector<std::filesystem::path>& dumps,
+               bool update = false);
     void Stop();
     std::string Line();
   };
@@ -235,20 +247,22 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   void ScanSaves();
   void DrawSaves(float scale);
   void DrawStory(const SaveSummary& progress, float label_w, float scale);
-  void DrawGraphics(float scale);
+  void DrawSettings(float scale);
   void LoadAchievements();
   void UseDroppedPath(const std::filesystem::path& path);
   void DrawSidebar(const ImVec2& pos, const ImVec2& size, float scale);
   void DrawPanel(const ImVec2& pos, const ImVec2& size, float scale);
   void DrawControls(float scale);
-  void DrawController(float scale);
+  // test: the live view (Controls > Test); else the bindings and sliders.
+  void DrawController(float scale, bool test);
   void DrawKeyboard(float scale);
   // The first connected controller's raw state (SDL), false if none.
   bool ReadPad(rex::input::X_INPUT_GAMEPAD* out);
   void ClosePad();
   void SetPadSource(int target, int source);
   void DrawAchievements(float scale);
-  void DrawSettings(float scale);
+  void DrawSystem(float scale);  // Settings > System
+  void DrawAbout(float scale);
   void DrawGameFolder(float label_w, float scale);
   bool SidebarButton(const char* label, bool selected, float width, float height);
   ImFont* HeadingFont() const;
@@ -289,9 +303,11 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   std::string message_;             // shown above Play (validation errors)
   std::string capture_flag_;        // keybind being rebound
   int capture_slot_ = 0;            // 0 = primary key, 1 = alternate
-  int controls_tab_ = 0;            // 0 controller, 1 keyboard
-  enum { kGraphicsDisplay, kGraphicsShaders, kGraphicsEnhancements };
-  int graphics_tab_request_ = -1;   // Graphics tab to open on the next frame
+  int controls_tab_ = 0;            // 0 test, 1 controller, 2 keyboard
+  enum { kSettingsSystem, kSettingsDisplay, kSettingsShaders, kSettingsLogs, kSettingsEnhancements };
+  int settings_tab_request_ = -1;   // Settings tab to open on the next frame
+  bool link_hovered_ = false;       // About's repository link, last frame
+  double copied_at_ = -10.0;        // About > Copy (ImGui time; -2 = failed)
   SDL_Gamepad* pad_ = nullptr;      // opened while Controls is shown
   bool pad_subsystem_ = false;      // SDL_INIT_GAMEPAD held by the launcher
   std::string pad_name_;
@@ -300,6 +316,14 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   ShaderBuild shader_build_;
   size_t shaders_not_in_cache_ = 0;
   double shaders_checked_at_ = -10.0;
+  // Settings > Logs, newest first (read every 2 s while shown).
+  struct LogEntry {
+    std::filesystem::path path;
+    uintmax_t size = 0;
+    std::filesystem::file_time_type time;
+  };
+  std::vector<LogEntry> logs_;
+  double logs_checked_at_ = -10.0;
   IsoExtract iso_extract_;
   // The game started by Play.
   struct GameProcess {

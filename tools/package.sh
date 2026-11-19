@@ -10,6 +10,12 @@
 #                                    runtime; otherwise appimagetool fetches it)
 #   tools/package.sh --build-dir D   package another build directory
 #   tools/package.sh --no-strip      keep symbols (for profiling)
+#   tools/package.sh --version V     name the files with V (default: the git tag
+#                                    on HEAD without its "v", else the commit)
+#   tools/package.sh --clean         delete earlier packages in out/package first
+#
+# Writes out/package/asuras-wrath-recomp-<version>-linux-x86_64.tar.gz (and
+# .AppImage) plus SHA256SUMS; the staging folders are removed afterwards.
 #
 # The default build is tuned for your CPU (-march=native) and may crash on
 # other CPUs: build with ./build.sh --portable first for a package to share.
@@ -19,21 +25,37 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="$REPO_ROOT/out/build/linux-amd64-release"
 APPIMAGE=false
 STRIP=true
+CLEAN=false
+VERSION=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --appimage) APPIMAGE=true ;;
     --no-strip) STRIP=false ;;
     --build-dir) BUILD_DIR="$(cd "$2" && pwd)"; shift ;;
-    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+    --version) VERSION="$2"; shift ;;
+    --clean) CLEAN=true ;;
+    -h|--help) sed -n '2,23p' "$0"; exit 0 ;;
     *) echo "[!] Unknown argument: $1" >&2; exit 1 ;;
   esac
   shift
 done
 
 NAME=asuras-wrath-recomp
-VERSION="$(git -C "$REPO_ROOT" describe --always --dirty 2>/dev/null || echo dev)"
+if [ -z "$VERSION" ]; then
+  VERSION="$(git -C "$REPO_ROOT" describe --tags --exact-match 2>/dev/null || true)"
+  VERSION="${VERSION#v}"
+  [ -n "$VERSION" ] || VERSION="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo dev)"
+fi
+if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no --ignore-submodules 2>/dev/null)" ]; then
+  echo "[!] The checkout has uncommitted changes: the package is not exactly $VERSION."
+fi
 OUT="$REPO_ROOT/out/package"
-STAGE="$OUT/$NAME"
+WORK="$OUT/.work"  # staging, removed at the end
+STAGE="$WORK/$NAME"
+BASE="$NAME-$VERSION-linux-x86_64"
+$CLEAN && rm -rf "$OUT"
+mkdir -p "$OUT"
+trap 'rm -rf "$WORK"' EXIT
 
 [ -x "$BUILD_DIR/asura_wrath" ] || { echo "[!] No build in $BUILD_DIR (run ./build.sh)" >&2; exit 1; }
 if grep -q -- "-march=native" "$BUILD_DIR/CMakeCache.txt" 2>/dev/null; then
@@ -59,8 +81,9 @@ You need your own copy of the game, extracted:
     extract-xiso -x asura_wrath.iso -d extracted
 
 Start ./asura_wrath (or the .AppImage). In the launcher:
-  Settings > Game folder      the extracted folder (contains default.xex)
-  Settings > Shader cache     Build, once (about 10 minutes)
+  Settings > System    the game folder (the extracted folder, with default.xex),
+                       or drop the .iso on the window to extract it
+  Settings > Shaders   Build, once (about 10 minutes)
   Play
 
 Needs glibc 2.38+ (Ubuntu 24.04, Fedora 39, Arch or newer) and a Vulkan 1.3
@@ -81,8 +104,8 @@ if $STRIP; then
 fi
 
 # --- tar.gz --------------------------------------------------------------------
-TARBALL="$OUT/$NAME-$VERSION-linux-x86_64.tar.gz"
-tar -C "$OUT" -czf "$TARBALL" "$NAME"
+TARBALL="$OUT/$BASE.tar.gz"
+tar -C "$WORK" -czf "$TARBALL" "$NAME"
 echo "[+] $TARBALL ($(du -h "$TARBALL" | cut -f1))"
 
 # --- AppImage ------------------------------------------------------------------
@@ -105,7 +128,7 @@ if $APPIMAGE; then
   export APPIMAGE_EXTRACT_AND_RUN=1
   RUNTIME_ARGS=()
   [ -n "${APPIMAGE_RUNTIME:-}" ] && RUNTIME_ARGS=(--runtime-file "$APPIMAGE_RUNTIME")
-  APPDIR="$OUT/AppDir"
+  APPDIR="$WORK/AppDir"
   rm -rf "$APPDIR"
   mkdir -p "$APPDIR/usr/bin"
   cp -r "$STAGE"/. "$APPDIR/usr/bin/"
@@ -137,7 +160,11 @@ TXT
 </svg>
 SVG
   fi
-  APPIMAGE_FILE="$OUT/$NAME-$VERSION-x86_64.AppImage"
+  APPIMAGE_FILE="$OUT/$BASE.AppImage"
   ARCH=x86_64 "$TOOL" --no-appstream "${RUNTIME_ARGS[@]}" "$APPDIR" "$APPIMAGE_FILE"
   echo "[+] $APPIMAGE_FILE ($(du -h "$APPIMAGE_FILE" | cut -f1))"
 fi
+
+# --- Checksums -----------------------------------------------------------------
+(cd "$OUT" && sha256sum "$BASE".tar.gz $([ -f "$BASE.AppImage" ] && echo "$BASE.AppImage") > SHA256SUMS)
+echo "[+] $OUT/SHA256SUMS"

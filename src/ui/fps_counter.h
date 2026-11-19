@@ -12,6 +12,9 @@ namespace asura::ui {
 // Frames per second over the last half second; zero with another GPU plugin.
 rex::ui::FrameStats GuestFrameStats();
 
+// Where the counter is drawn: 0 top left, 1 top right, 2 bottom left, 3 bottom right.
+void SetFpsCorner(int corner);
+
 class FpsCounterDialog : public rex::ui::ImGuiDialog {
  public:
   FpsCounterDialog(rex::ui::ImGuiDrawer* drawer, ImFont* font);

@@ -33,6 +33,7 @@
 
 #include "debug/script_input.h"
 #include "game/frame_rate.h"
+#include "game/skip_intro.h"
 #include "input/pad_remap.h"
 #include "ui/game_assets.h"
 #include "ui/game_font.h"
@@ -60,8 +61,34 @@ class AsuraWrathApp : public rex::ReXApp {
         access(config.log_dir.parent_path().c_str(), W_OK) != 0) {
       config.log_dir = user_data_root_path_ / "logs";
     }
+    log_dir_ = config.log_dir;
+    log_name_prefix_ = config.app_name + "_";
   }
-  // void OnPostInitLogging() override {}
+  // This process's log: the given --log_file, else the numbered file the SDK
+  // just created (the newest <app>_NNN.log). For Graphics > Logs and the name
+  // of the game's log when Play starts it.
+  void OnPostInitLogging() override {
+    std::filesystem::path file;
+    if (rex::cvar::HasNonDefaultValue("log_file")) {
+      file = std::filesystem::absolute(std::string(REXCVAR_GET(log_file)));
+    } else {
+      std::error_code ec;
+      std::filesystem::file_time_type newest;
+      for (const auto& entry : std::filesystem::directory_iterator(log_dir_, ec)) {
+        const std::string name = entry.path().filename().string();
+        if (name.rfind(log_name_prefix_, 0) != 0 || entry.path().extension() != ".log" ||
+            name.find(".game.") != std::string::npos) {
+          continue;
+        }
+        const auto time = entry.last_write_time(ec);
+        if (file.empty() || time > newest) {
+          file = entry.path();
+          newest = time;
+        }
+      }
+    }
+    asura::ui::SetLogLocation(log_dir_, file);
+  }
   void OnPreSetup(rex::RuntimeConfig& config) override {
     // Default to the in-repo mantra renderer; --gpu_plugin=xenos overrides.
     if (config.gpu_plugin.empty()) {
@@ -155,6 +182,7 @@ class AsuraWrathApp : public rex::ReXApp {
   void OnPostLaunchModule(rex::system::XThread* thread) override {
     (void)thread;
     asura::game::StartFrameRateHook(runtime());
+    if (launcher_settings_.skip_intro) asura::game::SkipIntroMovies(runtime());
     DumpAchievementIcons();
     const char* env = std::getenv("ASURA_TEST_TOAST");
     if (!env || !toast_) return;
@@ -412,6 +440,8 @@ class AsuraWrathApp : public rex::ReXApp {
   bool game_running_ = false;
   bool muted_in_background_ = false;  // audio_mute set by OnWindowFocusChanged  // past the launcher (bind_launcher works from then on)
   std::filesystem::path launcher_settings_path_;
+  std::filesystem::path log_dir_;
+  std::string log_name_prefix_;
   std::unique_ptr<asura::ui::LauncherDialog> launcher_;
   std::unique_ptr<asura::ui::FpsCounterDialog> fps_counter_;
 };

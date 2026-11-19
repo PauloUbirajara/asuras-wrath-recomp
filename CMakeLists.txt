@@ -20,7 +20,9 @@ include(generated/rexglue.cmake)
 set(ASURAWRATH_SOURCES
     src/main.cpp
     src/game/frame_rate.cpp
+    src/game/skip_intro.cpp
     src/input/pad_remap.cpp
+    src/ui/about_info.cpp
     src/ui/game_assets.cpp
     src/ui/game_font.cpp
     src/ui/fps_counter.cpp
@@ -35,6 +37,20 @@ if(WIN32)
 else()
     add_executable(asura_wrath ${ASURAWRATH_SOURCES})
 endif()
+
+# Settings > About shows the git commit it was built from: build_info.h is
+# regenerated on every build (rewritten only when the commit or the
+# modified state changes, which recompiles about_info.cpp alone).
+set(ASURA_BUILD_INFO_DIR "${CMAKE_BINARY_DIR}/generated_build_info")
+add_custom_target(asura_build_info
+  COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${CMAKE_SOURCE_DIR}"
+          "-DOUT=${ASURA_BUILD_INFO_DIR}/build_info.h"
+          -P "${CMAKE_SOURCE_DIR}/tools/build_info.cmake"
+  BYPRODUCTS "${ASURA_BUILD_INFO_DIR}/build_info.h"
+  VERBATIM)
+add_dependencies(asura_wrath asura_build_info)
+set_source_files_properties(src/ui/about_info.cpp PROPERTIES
+  INCLUDE_DIRECTORIES "${ASURA_BUILD_INFO_DIR}")
 
 # The launcher lists GPUs through the SDK's VulkanInstance, whose header
 # includes renderdoc_app.h.

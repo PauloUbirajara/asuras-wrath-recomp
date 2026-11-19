@@ -64,28 +64,25 @@ cmake --build out/build/linux-amd64-release --parallel
 ### Package
 
 ```bash
-# Release archive with just the binaries
-tools/package.sh
+# A release: portable build, then the archive + AppImage named after the version
+./build.sh --portable
+tools/package.sh --appimage --clean --version 0.1.0
 
-# Also an AppImage (needs appimagetool)
-tools/package.sh --appimage
-
-# out/
-# ├── build
-# │   └── linux-amd64-release
-# └── package
-#     ├── asuras-wrath-recomp/
-#     ├── asuras-wrath-recomp-<version>-linux-x86_64.tar.gz
-#     └── asuras-wrath-recomp-<version>-x86_64.AppImage
+# out/package/
+# ├── asuras-wrath-recomp-0.1.0-linux-x86_64.tar.gz
+# ├── asuras-wrath-recomp-0.1.0-linux-x86_64.AppImage
+# └── SHA256SUMS
 ```
 
-The default build is tuned for your CPU and may not run on others: build with `./build.sh --portable` first for a package to share. Players supply their own game.
+Without `--version`, the files are named after the git tag on HEAD (`v0.1.0` → `0.1.0`), else the short commit; uncommitted changes only print a warning. `--clean` deletes earlier packages in `out/package`; the staging folders are always removed. The AppImage needs appimagetool (`APPIMAGETOOL=<path>`, PATH, or `../appimagetool/appimagetool`), which downloads its runtime unless `APPIMAGE_RUNTIME=<file>` is set.
+
+For a GitHub release, attach the three files in `out/package`. The default build is tuned for your CPU and may not run on others, so share only `--portable` builds. Players supply their own game: never attach game files or a shader cache built from them.
 
 ---
 
 ## 4. Game Setup
 
-The launcher (first window when starting the game) finds `extracted/` in the current directory or next to the executable. Otherwise, in **System**, drop the extracted folder or the `.iso` on the window (an `.iso` is extracted to a folder of your choice), or type the path.
+The launcher (first window when starting the game) finds `extracted/` in the current directory or next to the executable. Otherwise, in **Settings > System**, drop the extracted folder or the `.iso` on the window (an `.iso` is extracted to a folder of your choice), or type the path.
 
 ```bash
 # Or extract the game ISO yourself
@@ -110,13 +107,13 @@ Available ReXGlue Path Configuration Flags:
 | `--update_data_root` | Directory containing game update / DLC patches. | `(empty)` |
 | `--user_data_root` | Directory for user save games and profile data. | `~/.local/share/asura_wrath_recomp` |
 
-The mantra shader cache lives in `~/.cache/asura_wrath_recomp/mantra_shaders.mshc` (`MANTRA_SHADER_CACHE` to override). Build it once from the launcher (**Graphics > Shaders**, about 10 minutes on all cores) or from the command line:
+The mantra shader cache lives in `~/.cache/asura_wrath_recomp/mantra_shaders.mshc` (`MANTRA_SHADER_CACHE` to override). Build it once from the launcher (**Settings > Shaders**, about 10 minutes on all cores) or from the command line:
 
 ```bash
 mantra_shadergen --game extracted --out ~/.cache/asura_wrath_recomp/mantra_shaders.mshc
 ```
 
-Some shaders only exist once the game patches them at runtime (e.g. the menu text). mantra keeps those in `~/.cache/asura_wrath_recomp/shader_dumps/` while you play; **Graphics > Shaders** then says how many are missing, and **Rebuild** adds them (from the command line: `--dumps ~/.cache/asura_wrath_recomp/shader_dumps`, repeatable).
+Some shaders only exist once the game patches them at runtime (e.g. the menu text). mantra keeps those in `~/.cache/asura_wrath_recomp/shader_dumps/` while you play; **Settings > Shaders** then says how many are missing, and **Add the N new shaders** translates only those, keeping the rest of the cache (**Rebuild all** starts over). From the command line: `--dumps ~/.cache/asura_wrath_recomp/shader_dumps` (repeatable), plus `--update` to keep what the `--out` cache already has (only for a cache of the same format version; otherwise it translates everything).
 
 ---
 
@@ -149,18 +146,20 @@ asura_wrath
 
 The launcher opens first, in a window:
 
-- **Controls**: *Controller* tab (live test of buttons, sticks and triggers, button remapping, stick deadzones, 0% by default, vibration strength) and *Keyboard* tab (play with the keyboard, mouse camera, key rebinding, and the overlay keys F3/F4/F7/`).
+- **Controls**: *Test* tab (live view of the buttons as the game sees them, sticks with their deadzones, and triggers), *Controller* tab (button remapping, stick deadzones, 0% by default, vibration strength with a Test button) and *Keyboard* tab (play with the keyboard, mouse camera, key rebinding, and the overlay keys F3/F4/F7/`).
 - **Achievements**: the list (read from your `default.xex`) and your unlocks, newest first, as a list or a grid, filtered by all / unlocked / locked.
-- **Saves**: your save (last saved, size, folder and its files, difficulty, battle points) and its story progress: the episodes you have reached, by Part, with their best rank on Easy/Normal/Hard (titles from your game files, in your language; later episodes stay hidden to avoid spoilers). Open its folder or delete it.
-- **Graphics**, in three tabs:
+- **Saves**: *Info* tab (last saved, size, profile, achievements unlocked, folder and its files; open the folder or delete the save) and *Progress* tab (difficulty, battle points and the episodes you have reached, by Part, with their best rank on Easy/Normal/Hard; titles from your game files, in your language; later episodes stay hidden to avoid spoilers).
+- **Settings**, in tabs:
+  - *System*: game folder (or `.iso`), language (English, Japanese, German, French, Spanish, Italian) for the game, the achievements and the launcher itself; achievement pop-ups (on/off, corner, duration).
   - *Display*: GPU (Automatic shows which one it picks), VSync, display mode (windowed, borderless or exclusive fullscreen), monitor, resolution (from the monitor's modes), *Higher resolution* (experimental, off by default: the game renders at its own 1280x720, scaled to the window) and the render resolution it uses (960x540 to 3840x2160; some effects can still show green areas), and how the 16:9 picture fills wide or 4:3 screens (fit / fill / stretch).
-  - *Shaders*: the shader cache (build progress, its folder).
-  - *Enhancements*: an FPS counter; a frame rate limit slider (30, the game's, to 240 in steps of 5, or unlimited, with 30/60/120/144 buttons; above 30 is experimental: `src/game/frame_rate.cpp` replaces the engine's `GetMaxTickRate`); Turbo (hold a ticked controller button A/B/X/Y/LB/RB instead of mashing it; it repeats about 12 times a second); hiding the mouse cursor in game while it isn't moving; muting while the window isn't focused (the SDK's `audio_mute`).
+  - *Shaders*: the shader cache (build progress, its folder; adding only the shaders seen while playing that it doesn't have yet).
+  - *Logs*: the log files, newest first, with their folder (see [Logs and Debugging](#logs-and-debugging)).
+  - *Enhancements*: an FPS counter (off by default, in a corner of your choice); a frame rate limit slider (30, the game's, to 240 in steps of 5, or unlimited, with 30/60/120/144 buttons; above 30 is experimental: `src/game/frame_rate.cpp` replaces the engine's `GetMaxTickRate`, and since the game presents every second display refresh, the launcher also sets `video_mode_refresh_rate` to twice the cap, up to 240; that part applies when the game starts); skipping the intro (the Capcom, CyberConnect2, Unreal Engine, SpeedTree and Bink logos and the autosave notice; `src/game/skip_intro.cpp` mounts a copy of the Movies folder in `~/.cache/asura_wrath_recomp/movies` where those movies are cut to their first, black, frame and the rest are links to the originals); Turbo (hold a ticked controller button A/B/X/Y/LB/RB instead of mashing it; it repeats about 12 times a second); hiding the mouse cursor in game while it isn't moving; muting while the window isn't focused (the SDK's `audio_mute`).
 
   A note above Play says when the shader cache is missing, or too old for the chosen render resolution (caches built before render scaling only work at 1280x720); it goes away if you change the setting back, and clicking it opens *Shaders*. Pressing Play then opens *Shaders* first; a second press starts anyway.
-- **System**: game folder (or `.iso`), language (English, Japanese, German, French, Spanish, Italian) for the game, the achievements and the launcher itself; achievement pop-ups (on/off, corner, duration).
+- **About**: the repository link, the version (git commit, branch, build date), this computer (OS, kernel, desktop, CPU, memory, GPUs with their driver and Vulkan versions) with a *Copy* button for bug reports, and a notice that this is an unofficial fan project, not affiliated with Capcom or CyberConnect2. The version comes from `build_info.h`, which `tools/build_info.cmake` regenerates on each build from git.
 
-Controls, the Graphics tabs and System each have a *Reset to defaults* button.
+Controls and the Settings tabs each have a *Reset to defaults* button.
 
 The launcher's fonts (including the accented and Japanese ones from the game's localized packages) and achievement icons are read from your game folder into `~/.cache/asura_wrath_recomp/`. Until then (no game folder yet) the launcher uses its own fonts from `assets/ui`: Noto Serif Regular/Bold and `NotoSerifJP-Launcher.awf`, the Japanese characters of the launcher's text rendered from Noto Serif CJK JP by `tools/make_launcher_font.py` (rerun it after adding Japanese text). They are under the SIL Open Font License (`assets/ui/OFL.txt`).
 
@@ -221,7 +220,7 @@ asura_wrath --vulkan_device=1
 asura_wrath --log_file=out/run.log
 ```
 
-With the launcher, the game started by Play logs to `out/run-game.log` (the launcher keeps `out/run.log`).
+Without `--log_file`, each start writes `logs/asura_wrath_recomp_NNN.log` next to the executable (or under the user data folder if that isn't writable), and the game started by Play writes `asura_wrath_recomp_NNN.game.log` beside it, with the same number. With `--log_file=out/run.log`, the game's log is `out/run-game.log`. **Settings > Logs** lists them, newest first.
 
 Performance lines (`frame times`, `cpu:`, `hitch:`) are logged every 5 seconds. `MANTRA_*` environment variables (traces, captures, per-frame stats) are documented where they are read in `src/mantra_renderer/`.
 

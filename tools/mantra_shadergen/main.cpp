@@ -67,6 +67,7 @@ struct Shader {
   std::string source;
   // Translation results.
   bool translated = false;
+  bool from_cache = false;  // --update: results taken from the existing cache
   uint32_t spec_constants_mask = 0;
   uint32_t texture_slot_mask = 0;
   uint32_t bool_mask = 0;
@@ -361,6 +362,55 @@ bool WriteCache(const fs::path& path, const std::map<uint64_t, Shader>& shaders)
   return true;
 }
 
+// --update: takes the results of every shader already in `path` (same cache
+// version only), so only the new ones are translated. Returns how many were
+// taken, or -1 when the file can't be used (missing or another version).
+int ReadExistingCache(const fs::path& path, std::map<uint64_t, Shader>& shaders) {
+  using namespace mantra::shader_cache;
+  std::error_code ec;
+  if (!fs::is_regular_file(path, ec)) return -1;
+  const std::vector<uint8_t> data = ReadFile(path);
+  if (data.size() < sizeof(CacheHeader)) return -1;
+  CacheHeader header;
+  std::memcpy(&header, data.data(), sizeof(header));
+  if (std::memcmp(header.magic, kMagic, 4) != 0 || header.version != kVersion) return -1;
+  const size_t entries_at = sizeof(CacheHeader);
+  const size_t blobs_at = entries_at + size_t(header.entry_count) * sizeof(CacheEntry);
+  if (blobs_at > data.size()) return -1;
+  const size_t blob_size = data.size() - blobs_at;
+  int taken = 0;
+  for (uint32_t i = 0; i < header.entry_count; ++i) {
+    CacheEntry e;
+    std::memcpy(&e, data.data() + entries_at + size_t(i) * sizeof(CacheEntry), sizeof(e));
+    auto it = shaders.find(e.exact_hash);
+    if (it == shaders.end()) continue;  // no longer in the game files or the dumps
+    Shader& sh = it->second;
+    if (sh.is_pixel != ((e.flags & kEntryPixelShader) != 0)) continue;
+    const bool failed = (e.flags & kEntryFailed) != 0;
+    if (!failed) {
+      const size_t elements_size = size_t(e.vertex_element_count) * sizeof(uint32_t);
+      if (size_t(e.spirv_offset) + e.spirv_size > blob_size ||
+          size_t(e.vertex_elements_offset) + elements_size > blob_size) {
+        continue;
+      }
+      const uint8_t* blobs = data.data() + blobs_at;
+      sh.spirv.assign(blobs + e.spirv_offset, blobs + e.spirv_offset + e.spirv_size);
+      sh.vertex_elements.resize(e.vertex_element_count);
+      if (elements_size) std::memcpy(sh.vertex_elements.data(), blobs + e.vertex_elements_offset, elements_size);
+    }
+    // Failed ones stay failed: the same translator would fail again.
+    sh.translated = !failed;
+    sh.from_cache = true;
+    sh.spec_constants_mask = e.spec_constants_mask;
+    sh.texture_slot_mask = e.texture_slot_mask;
+    sh.bool_mask = e.bool_mask;
+    sh.ps_outputs = e.ps_outputs;
+    sh.vertex_index_divisor = e.vertex_index_divisor;
+    ++taken;
+  }
+  return taken;
+}
+
 // `known_only`: count shaders found in the game files as if translated (for
 // --scan-only).
 void ReportDumpCoverage(const fs::path& dumps, const std::map<uint64_t, Shader>& shaders,
@@ -409,12 +459,13 @@ int main(int argc, char** argv) {
   unsigned jobs = 0;  // 0: pick from cores and available memory
   bool scan_only = false;
   bool keep_work = false;
+  bool update = false;  // --update: keep what the --out cache already has
   std::unordered_set<uint64_t> only;  // --only  // --keep-work: keep the per-shader logs (<work>/<index>.log)
   ChildLimits limits;
   for (int i = 1; i < argc;) {
     const std::string flag = argv[i];
-    if (flag == "--scan-only" || flag == "--keep-work") {
-      (flag == "--scan-only" ? scan_only : keep_work) = true;
+    if (flag == "--scan-only" || flag == "--keep-work" || flag == "--update") {
+      (flag == "--scan-only" ? scan_only : flag == "--keep-work" ? keep_work : update) = true;
       for (int j = i; j + 1 < argc; ++j) argv[j] = argv[j + 1];
       --argc;
     } else {
@@ -447,7 +498,7 @@ int main(int argc, char** argv) {
   if (game.empty() || out.empty()) {
     std::fprintf(stderr,
                  "usage: %s --game <extracted dir> --out <cache file> [--dumps <dir>]... "
-                 "[--hlsl <dir>] [--jobs N] [--child-mem-mb N] [--child-timeout S]\n",
+                 "[--update] [--hlsl <dir>] [--jobs N] [--child-mem-mb N] [--child-timeout S]\n",
                  argv[0]);
     return 1;
   }
@@ -565,13 +616,24 @@ int main(int argc, char** argv) {
     std::printf("runtime-patched variants: %zu\n", variants);
   }
 
+  if (update) {
+    const int taken = ReadExistingCache(out, shaders);
+    if (taken < 0) {
+      std::printf("update: %s can't be reused (missing or another version), translating all\n",
+                  out.c_str());
+    } else {
+      std::printf("update: %d shaders from the existing cache, %zu new\n", taken,
+                  shaders.size() - size_t(taken));
+    }
+  }
+
   std::vector<Shader*> list;
   for (auto it = shaders.begin(); it != shaders.end();) {
     if (!only.empty() && !only.count(it->first)) {
       it = shaders.erase(it);
       continue;
     }
-    list.push_back(&it->second);
+    if (!it->second.from_cache) list.push_back(&it->second);
     ++it;
   }
   const fs::path work = fs::temp_directory_path() / ("mantra_shadergen_" + std::to_string(getpid()));

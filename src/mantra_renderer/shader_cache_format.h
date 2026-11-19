@@ -35,7 +35,13 @@ constexpr char kMagic[4] = {'M', 'S', 'H', 'C'};
 //    destination), so a normalized match takes the game shader whose exports
 //    compute what the runtime code's do. Older caches load (first candidate
 //    that covers the exports, as before).
-constexpr uint32_t kVersion = 9;
+// 10: the v7 swizzle words also carry bit 16 = the container fetch's format
+//    is packed 10:11:11 / 11:11:10 (the translation decodes that input in the
+//    shader). The driver sets fetch formats per vertex declaration, so a
+//    normalized match can get packed data on another input (mantra then
+//    decodes on the CPU). Older caches: assumed to match the runtime.
+constexpr uint32_t kVersion = 10;
+constexpr uint32_t kSwizzlePackedFormat = 1u << 16;
 constexpr uint32_t kMinVersion = 5;
 
 struct CacheHeader {

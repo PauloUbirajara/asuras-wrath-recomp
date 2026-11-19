@@ -483,18 +483,29 @@ class AsuraWrathApp : public rex::ReXApp {
     if (done.empty() || !imgui_drawer() || trace_watcher_.joinable()) return;
     asura::ui::SetLauncherLanguage(launcher_settings_.language);
     trace_watcher_ = std::jthread([this, done](std::stop_token stop) {
+      // By the frame number in the file, not its time: on filesystems with
+      // coarse timestamps two traces within a second kept the same time and
+      // the second showed nothing.
+      auto read_frame = [&done] {
+        unsigned long long frame = 0;
+        if (std::ifstream in(done); in) in >> frame;
+        return frame;
+      };
+      // (The time still counts: the same frame number can come again in a
+      // later session.)
       std::error_code ec;
-      auto last = std::filesystem::last_write_time(done, ec);
-      if (ec) last = {};
+      unsigned long long last = read_frame();
+      auto last_time = std::filesystem::last_write_time(done, ec);
       while (!stop.stop_requested()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
         const auto time = std::filesystem::last_write_time(done, ec);
-        if (ec || time <= last) continue;
-        last = time;
+        if (ec) continue;
+        const unsigned long long frame = read_frame();
+        if (!frame || (frame == last && time == last_time)) continue;
+        last = frame;
+        last_time = time;
         // Settings > Frame traces > Show a notice.
         if (!asura::ui::GetTraceOptions().notice) continue;
-        unsigned long long frame = 0;
-        if (std::ifstream in(done); in) in >> frame;
         char text[96];
         std::snprintf(text, sizeof(text), asura::ui::T("Frame %llu traced"), frame);
         app_context().CallInUIThread([this, line = std::string(text)] {

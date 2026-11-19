@@ -29,6 +29,8 @@ class ShaderCache {
     // Per vertex element, the destination swizzle of its fetch in the
     // translated (container) microcode (vertex shaders, cache v7).
     std::vector<uint32_t> vertex_swizzles;
+    // v10: vertex_swizzles carry shader_cache::kSwizzlePackedFormat.
+    bool container_formats = false;
     // Normalized matches: how many game shaders shared the hash, and whether
     // none of them exports everything the runtime code does.
     uint32_t candidates = 0;

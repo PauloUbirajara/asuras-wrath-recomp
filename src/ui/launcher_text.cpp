@@ -24,7 +24,7 @@ constexpr Entry kEntries[] = {
     {"Saves", "セーブデータ", "Spielstände", "Sauvegardes", "Partidas", "Salvataggi"},
     {"Game data", "ゲームデータ", "Spieldaten", "Données du jeu", "Datos del juego", "Dati di gioco"},
     {"Settings", "設定", "Einstellungen", "Paramètres", "Ajustes", "Impostazioni"},
-    {"About", "このソフトについて", "Über", "À propos", "Acerca de", "Informazioni"},
+    {"About", "PC情報", "Über", "À propos", "Información", "Informazioni"},
     {"Play", "はじめる", "Spielen", "Jouer", "Jugar", "Gioca"},
     {"Wait for the current task to finish", "実行中の処理が終わるまでお待ちください",
      "Warte, bis die laufende Aufgabe fertig ist", "Attendez la fin de la tâche en cours",

@@ -440,7 +440,13 @@ bool WriteCache(const fs::path& path, const std::map<uint64_t, Shader>& shaders,
           uint32_t swizzle = 0x688;  // xyzw
           if (at + 4 <= microcode.size()) {
             const uint8_t* w = microcode.data() + at;
-            swizzle = (uint32_t(w[2]) << 8 | w[3]) & 0xFFF;  // big-endian word 1, bits 0..11
+            const uint32_t word1 = uint32_t(w[0]) << 24 | uint32_t(w[1]) << 16 |
+                                   uint32_t(w[2]) << 8 | w[3];
+            swizzle = word1 & 0xFFF;  // bits 0..11
+            // v10: bits 16..21 = data format; 10:11:11 (16) or 11:11:10 (17)
+            // means XenosRecomp decodes this input in the shader.
+            const uint32_t format = (word1 >> 16) & 0x3F;
+            if (format == 16 || format == 17) swizzle |= mantra::shader_cache::kSwizzlePackedFormat;
           }
           swizzles.push_back(swizzle);
         }

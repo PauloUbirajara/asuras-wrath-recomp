@@ -113,6 +113,7 @@ ShaderCache::Lookup ShaderCache::Find(const void* microcode_be, size_t byte_coun
                   blobs_ + e.vertex_elements_offset + e.vertex_element_count * sizeof(uint32_t),
                   e.export_count * sizeof(uint32_t));
       if (version_ >= 7 && !(e.flags & kEntryPixelShader)) {
+        result.container_formats = version_ >= 10;
         result.vertex_swizzles.resize(e.vertex_element_count);
         std::memcpy(result.vertex_swizzles.data(),
                     blobs_ + e.vertex_elements_offset +

@@ -72,6 +72,10 @@ class MantraShader : public Shader {
     // container's the translation reads the input with: the input is rebuilt
     // as SharedConstants::input_remap describes (12 bits; 0 = as fetched).
     uint32_t remap = 0;
+    // Whether the translation decodes this input as packed 10:11:11 (its
+    // container fetch's format; cache v10), or -1 if unknown (then taken to
+    // be the runtime format's).
+    int8_t container_packed = -1;
   };
   std::vector<VertexInput> vertex_inputs;
   std::string vfetch_debug;  // all vfetches + cache elements (trace)
@@ -81,9 +85,11 @@ class MantraShader : public Shader {
   uint32_t vertex_index_divisor = 0;
 
   // `container_swizzles`: per element, its fetch's destination swizzle in the
-  // translated microcode (empty for caches before v7).
+  // translated microcode (empty for caches before v7), with (v10,
+  // `container_formats`) shader_cache::kSwizzlePackedFormat.
   void DecodeVertexInputs(std::span<const uint32_t> packed_elements,
-                          std::span<const uint32_t> container_swizzles);
+                          std::span<const uint32_t> container_swizzles,
+                          bool container_formats = false);
 };
 
 class NativeCommandProcessor : public CommandProcessor, private mantra::TextureCache::Host {

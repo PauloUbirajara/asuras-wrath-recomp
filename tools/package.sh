@@ -81,9 +81,9 @@ You need your own copy of the game, extracted:
     extract-xiso -x asura_wrath.iso -d extracted
 
 Start ./asura_wrath (or the .AppImage). In the launcher:
-  Settings > System    the game folder (the extracted folder, with default.xex),
+  Game data > Folders  the game folder (the extracted folder, with default.xex),
                        or drop the .iso on the window to extract it
-  Settings > Shaders   Build, once (about 10 minutes)
+  Game data > Shaders  Build, once (about 10 minutes)
   Play
 
 Needs glibc 2.38+ (Ubuntu 24.04, Fedora 39, Arch or newer) and a Vulkan 1.3

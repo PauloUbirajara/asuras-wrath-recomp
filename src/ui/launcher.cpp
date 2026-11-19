@@ -1,10 +1,5 @@
 #include "launcher.h"
 
-#include <signal.h>
-#include <spawn.h>
-#include <sys/wait.h>
-#include <unistd.h>
-
 #include <algorithm>
 #include <bit>
 #include <chrono>
@@ -38,6 +33,7 @@
 #include "fps_counter.h"
 #include "../input/pad_remap.h"
 #include "../mantra_renderer/shader_cache_format.h"
+#include "../platform/platform.h"
 #include "about_info.h"
 #include "game_assets.h"
 #include "game_font.h"
@@ -48,8 +44,6 @@ extern "C" unsigned char* stbi_load_from_memory(const unsigned char* buffer, int
                                                  int* y, int* channels_in_file,
                                                  int desired_channels);
 extern "C" void stbi_image_free(void* retval_from_stbi_load);
-
-extern char** environ;
 
 REXCVAR_DEFINE_BOOL(launcher, true, "Asura", "Show the launcher before the game starts");
 
@@ -99,6 +93,7 @@ constexpr BindRow kOverlayRows[] = {
     {"Achievements overlay", "bind_achievements"},
     {"Console", "bind_console"},
     {"Launcher (in game)", "bind_launcher"},
+    {"Trace a frame", "bind_trace"},
 };
 
 bool IsOverlayBind(std::string_view flag) { return flag.rfind("bind_", 0) == 0; }
@@ -211,6 +206,13 @@ std::string FlagDefault(std::string_view name) {
   return info ? info->default_value : std::string();
 }
 
+// The launcher's default key for a bind: the SDK's, except the performance
+// overlay, which has none (its F3 traces a frame instead).
+std::string BindDefault(std::string_view name) {
+  if (name == "bind_debug_overlay") return {};
+  return FlagDefault(name);
+}
+
 
 std::vector<std::string> SplitKeys(const std::string& keys) {
   std::vector<std::string> out;
@@ -302,6 +304,7 @@ bool LauncherSettings::Load(const std::filesystem::path& path) {
                                     : AspectMode::kFit;
     else if (key == "window") std::sscanf(value.c_str(), "%dx%d", &window_width, &window_height);
     else if (key == "game_data") game_data = value;
+    else if (key == "data_folder") data_folder = value;
     else if (key == "language") language = uint32_t(std::strtoul(value.c_str(), nullptr, 10));
     else if (key == "achievements_view") achievements_grid = value == "grid";
     else if (key == "deadzone_left") deadzone_left = std::strtod(value.c_str(), nullptr);
@@ -343,7 +346,7 @@ bool LauncherSettings::Save(const std::filesystem::path& path) const {
       << "\nmonitor=" << monitor
       << "\nkeyboard=" << keyboard << "\naspect=" << AspectName(aspect) << "\nwindow="
       << window_width << "x" << window_height << "\nlanguage=" << language
-      << "\ngame_data=" << game_data << "\ndeadzone_left=" << deadzone_left
+      << "\ngame_data=" << game_data << "\ndata_folder=" << data_folder << "\ndeadzone_left=" << deadzone_left
       << "\ndeadzone_right=" << deadzone_right << "\nvibration=" << vibration
       << "\nshow_fps=" << show_fps << "\nfps_corner=" << fps_corner << "\nfps_cap=" << fps_cap << "\nrender_height=" << render_height << "\nnative_render=" << native_render << "\ntoasts=" << toasts << "\ntoast_corner=" << toast_corner
       << "\ntoast_seconds=" << toast_seconds << "\nhide_cursor=" << hide_cursor
@@ -393,6 +396,8 @@ void ApplyLauncherDefaults(const LauncherSettings& s) {
     SetIfUnset("present_safe_area_x", "1");
     SetIfUnset("present_safe_area_y", "1");
   }
+  // The SDK's performance overlay has no key unless one was chosen (F3 traces).
+  if (!s.binds.count("bind_debug_overlay")) SetIfUnset("bind_debug_overlay", BindDefault("bind_debug_overlay"));
   for (const auto& [flag, value] : s.binds) SetIfUnset(flag, value);
   SetIfUnset("left_stick_deadzone_percentage", std::to_string(s.deadzone_left));
   SetIfUnset("right_stick_deadzone_percentage", std::to_string(s.deadzone_right));
@@ -411,11 +416,9 @@ void ApplyLauncherDefaults(const LauncherSettings& s) {
   // process applies its start-up settings, and the game process (started by
   // Play) inherits the environment, so a stale value must not stay.
   if (!RenderScaleFromEnvironment()) {
-    if (RenderHeight(s) != 720) {
-      setenv("MANTRA_RENDER_SCALE", std::to_string(RenderHeight(s)).c_str(), 1);
-    } else {
-      unsetenv("MANTRA_RENDER_SCALE");
-    }
+    platform::SetEnv("MANTRA_RENDER_SCALE", RenderHeight(s) != 720
+                                                ? std::to_string(RenderHeight(s)).c_str()
+                                                : nullptr);
   }
   SetToastOptions({s.toasts, s.toast_corner, float(s.toast_seconds)});
   SetFpsCorner(s.fps_corner);
@@ -574,39 +577,18 @@ void LauncherDialog::ShaderBuild::Start(const std::filesystem::path& tool,
   Stop();
   std::error_code ec;
   std::filesystem::create_directories(out.parent_path(), ec);
-  int fds[2];
-  if (pipe(fds) != 0) {
-    state = kFailed;
-    return;
+  std::vector<std::string> args = {tool.string(), "--game", game.string(), "--out", out.string()};
+  for (const auto& dir : dumps) {
+    args.push_back("--dumps");
+    args.push_back(dir.string());
   }
-  posix_spawn_file_actions_t actions;
-  posix_spawn_file_actions_init(&actions);
-  posix_spawn_file_actions_adddup2(&actions, fds[1], STDOUT_FILENO);
-  posix_spawn_file_actions_adddup2(&actions, fds[1], STDERR_FILENO);
-  posix_spawn_file_actions_addclose(&actions, fds[0]);
-  const std::string tool_s = tool.string(), game_s = game.string(), out_s = out.string();
-  std::vector<std::string> dump_s;
-  for (const auto& dir : dumps) dump_s.push_back(dir.string());
-  std::vector<const char*> argv = {tool_s.c_str(), "--game", game_s.c_str(), "--out", out_s.c_str()};
-  for (const auto& dir : dump_s) {
-    argv.push_back("--dumps");
-    argv.push_back(dir.c_str());
-  }
-  if (update) argv.push_back("--update");
-  argv.push_back(nullptr);
-  pid_t child = -1;
-  const int rc = posix_spawn(&child, tool_s.c_str(), &actions, nullptr,
-                             const_cast<char* const*>(argv.data()), environ);
-  posix_spawn_file_actions_destroy(&actions);
-  close(fds[1]);
-  if (rc != 0) {
-    close(fds[0]);
+  if (update) args.push_back("--update");
+  if (std::string error; !process.Start(tool, args, /*capture_output=*/true, &error)) {
     std::lock_guard<std::mutex> lock(mutex);
-    last_line = T("Could not start ") + tool_s + ": " + std::strerror(rc);
+    last_line = T("Could not start ") + tool.string() + ": " + error;
     state = kFailed;
     return;
   }
-  pid = child;
   state = kRunning;
   {
     std::lock_guard<std::mutex> lock(mutex);
@@ -614,13 +596,13 @@ void LauncherDialog::ShaderBuild::Start(const std::filesystem::path& tool,
   }
   done = 0;
   total = 0;
-  reader = std::thread([this, fd = fds[0], child] {
+  reader = std::thread([this] {
     std::string line;
     char buffer[4096];
     for (;;) {
-      const ssize_t n = read(fd, buffer, sizeof(buffer));
+      const long n = process.Read(buffer, sizeof(buffer));
       if (n <= 0) break;
-      for (ssize_t i = 0; i < n; ++i) {
+      for (long i = 0; i < n; ++i) {
         const char c = buffer[i];
         if (c == '\n' || c == '\r') {
           if (!line.empty()) {
@@ -638,17 +620,13 @@ void LauncherDialog::ShaderBuild::Start(const std::filesystem::path& tool,
         }
       }
     }
-    close(fd);
-    int status = 0;
-    waitpid(child, &status, 0);
-    state = WIFEXITED(status) && WEXITSTATUS(status) == 0 ? kDone : kFailed;
+    state = process.Wait().Ok() ? kDone : kFailed;
   });
 }
 
 void LauncherDialog::ShaderBuild::Stop() {
-  if (state == kRunning && pid > 0) kill(pid, SIGTERM);
+  if (state == kRunning) process.Terminate();
   if (reader.joinable()) reader.join();
-  pid = -1;
 }
 
 std::string LauncherDialog::ShaderBuild::Line() {
@@ -754,26 +732,112 @@ std::string LauncherDialog::IsoExtract::Message() {
   return message;
 }
 
+// --- Moving the Files folder ---------------------------------------------------
+
+void LauncherDialog::MoveFiles::Start(const std::filesystem::path& from,
+                                      const std::filesystem::path& to) {
+  Join();
+  state = kRunning;
+  worker = std::thread([this, from, to] {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::create_directories(to, ec);
+    int moved = 0, skipped = 0;
+    std::string error;
+    std::vector<fs::path> entries;
+    for (const auto& entry : fs::directory_iterator(from, ec)) entries.push_back(entry.path());
+    for (const fs::path& source : entries) {
+      const fs::path target = to / source.filename();
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        message = source.filename().string();
+      }
+      if (fs::exists(fs::symlink_status(target, ec))) {
+        ++skipped;  // the new folder has its own
+        continue;
+      }
+      fs::rename(source, target, ec);
+      if (ec) {
+        // Another drive: copy, then remove the original.
+        ec.clear();
+        fs::copy(source, target, fs::copy_options::recursive | fs::copy_options::copy_symlinks,
+                 ec);
+        if (!ec) fs::remove_all(source, ec);
+      }
+      if (ec) {
+        error = source.filename().string() + ": " + ec.message();
+        break;
+      }
+      ++moved;
+    }
+    if (error.empty()) fs::remove(from, ec);  // only if it is empty now
+    std::lock_guard<std::mutex> lock(mutex);
+    if (!error.empty()) {
+      message = error;
+      state = kFailed;
+      return;
+    }
+    char text[160];
+    std::snprintf(text, sizeof(text), T("Moved %d items; %d were already there."), moved, skipped);
+    message = text;
+    state = kDone;
+  });
+}
+
+void LauncherDialog::MoveFiles::Join() {
+  if (worker.joinable()) worker.join();
+}
+
+std::string LauncherDialog::MoveFiles::Message() {
+  std::lock_guard<std::mutex> lock(mutex);
+  return message;
+}
+
 // --- Dialog ----------------------------------------------------------------------
 
 namespace {
-constexpr ImVec4 kBackground(0.118f, 0.118f, 0.122f, 1.0f);
-constexpr ImVec4 kSidebar(0.098f, 0.098f, 0.106f, 1.0f);
-constexpr ImVec4 kPanel(0.60f, 0.56f, 0.50f, 1.0f);
-constexpr ImVec4 kPanelBand(0.47f, 0.42f, 0.36f, 1.0f);
-constexpr ImVec4 kPanelText(0.13f, 0.10f, 0.08f, 1.0f);
-constexpr ImVec4 kPanelTextDim(0.27f, 0.23f, 0.19f, 1.0f);
-constexpr ImVec4 kField(0.76f, 0.72f, 0.65f, 1.0f);
-constexpr ImVec4 kFieldHover(0.82f, 0.78f, 0.71f, 1.0f);
+// The launcher's colors. Before the game: opaque, dark sidebar and parchment
+// panel. Over the game (Esc in game): translucent black with light text, so
+// the game shows through (UsePalette).
+ImVec4 kBackground, kSidebar, kPanel, kPanelBand, kPanelText, kPanelTextDim, kField,
+    kFieldHover, kPopup, kRestartMark, kLink, kUnlockedRow;
 constexpr ImVec4 kButton(0.20f, 0.20f, 0.21f, 1.0f);
 constexpr ImVec4 kButtonHover(0.28f, 0.28f, 0.30f, 1.0f);
 constexpr ImVec4 kButtonSelected(0.36f, 0.30f, 0.24f, 1.0f);
 constexpr ImVec4 kAccent(0.80f, 0.33f, 0.18f, 1.0f);
-// On the parchment panel: the restart mark and links (darker than kAccent,
-// which is meant for the dark sidebar).
-constexpr ImVec4 kRestartMark(0.62f, 0.16f, 0.06f, 1.0f);
-constexpr ImVec4 kLink(0.55f, 0.12f, 0.04f, 1.0f);
-constexpr ImVec4 kUnlockedRow(1.0f, 0.97f, 0.88f, 0.22f);
+
+void UsePalette(bool over_game) {
+  if (!over_game) {
+    kBackground = ImVec4(0.118f, 0.118f, 0.122f, 1.0f);
+    kSidebar = ImVec4(0.098f, 0.098f, 0.106f, 1.0f);
+    kPanel = ImVec4(0.60f, 0.56f, 0.50f, 1.0f);
+    kPanelBand = ImVec4(0.47f, 0.42f, 0.36f, 1.0f);
+    kPanelText = ImVec4(0.13f, 0.10f, 0.08f, 1.0f);
+    kPanelTextDim = ImVec4(0.27f, 0.23f, 0.19f, 1.0f);
+    kField = ImVec4(0.76f, 0.72f, 0.65f, 1.0f);
+    kFieldHover = ImVec4(0.82f, 0.78f, 0.71f, 1.0f);
+    kPopup = kField;
+    // On the parchment: the restart mark and links, darker than kAccent
+    // (which is meant for the dark sidebar).
+    kRestartMark = ImVec4(0.62f, 0.16f, 0.06f, 1.0f);
+    kLink = ImVec4(0.55f, 0.12f, 0.04f, 1.0f);
+    kUnlockedRow = ImVec4(1.0f, 0.97f, 0.88f, 0.22f);
+  } else {
+    kBackground = ImVec4(0.0f, 0.0f, 0.0f, 0.55f);
+    kSidebar = ImVec4(0.0f, 0.0f, 0.0f, 0.35f);
+    kPanel = ImVec4(0.0f, 0.0f, 0.0f, 0.30f);
+    kPanelBand = ImVec4(0.0f, 0.0f, 0.0f, 0.45f);
+    kPanelText = ImVec4(0.93f, 0.91f, 0.87f, 1.0f);
+    kPanelTextDim = ImVec4(0.72f, 0.69f, 0.64f, 1.0f);
+    kField = ImVec4(1.0f, 1.0f, 1.0f, 0.13f);
+    kFieldHover = ImVec4(1.0f, 1.0f, 1.0f, 0.22f);
+    kPopup = ImVec4(0.10f, 0.10f, 0.11f, 0.96f);  // lists drawn over fields stay readable
+    kRestartMark = ImVec4(1.0f, 0.48f, 0.32f, 1.0f);
+    kLink = ImVec4(1.0f, 0.58f, 0.40f, 1.0f);
+    kUnlockedRow = ImVec4(1.0f, 0.97f, 0.88f, 0.12f);
+  }
+}
+const bool kPaletteSet = (UsePalette(false), true);
 
 ImU32 U32(const ImVec4& c) { return ImGui::ColorConvertFloat4ToU32(c); }
 }  // namespace
@@ -803,6 +867,9 @@ LauncherDialog::LauncherDialog(rex::ui::ImGuiDrawer* drawer,
   button_ = LoadImage(GameUiFile("menu_button.png"), true);
   title_ = LoadImage(GameUiFile("launcher_title.png"));
   std::snprintf(game_data_buffer_, sizeof(game_data_buffer_), "%s", settings_.game_data.c_str());
+  files_at_start_ = platform::CacheDir();
+  std::snprintf(files_folder_buffer_, sizeof(files_folder_buffer_), "%s",
+                files_at_start_.string().c_str());
   // GPUs in the order the SDK numbers them (vulkan_device), and the one it
   // picks on its own: the first with the most of the preferred features
   // (VulkanProvider::Create).
@@ -852,8 +919,8 @@ LauncherDialog::LauncherDialog(rex::ui::ImGuiDrawer* drawer,
     window_->AddInputListener(this, 1000);
   }
   if (!GameDataValid()) {
-    page_ = Page::kSettings;
-    settings_tab_request_ = kSettingsSystem;
+    page_ = Page::kSaves;
+    saves_tab_request_ = kSavesFolders;
   }
   StartAssetJob();
 }
@@ -871,6 +938,7 @@ LauncherDialog::~LauncherDialog() {
   }
   shader_build_.Stop();
   iso_extract_.Stop();
+  move_files_.Join();
   asset_job_.Join();
   ClosePad();
   if (pad_subsystem_) SDL_QuitSubSystem(SDL_INIT_GAMEPAD);
@@ -990,7 +1058,7 @@ void LauncherDialog::SetGameData(const std::string& path) {
 }
 
 void LauncherDialog::SetBind(const std::string& flag, const std::string& keys) {
-  if (keys == FlagDefault(flag)) {
+  if (keys == BindDefault(flag)) {
     settings_.binds.erase(flag);
   } else {
     settings_.binds[flag] = keys;
@@ -1011,11 +1079,7 @@ void LauncherDialog::SaveSettings() {
 // --launcher flag, and its own log file when one was given (both processes
 // would write the same file otherwise): run.log -> run-game.log.
 bool LauncherDialog::GameProcess::Start(std::string* error) {
-  std::vector<std::string> args;
-  if (std::ifstream in("/proc/self/cmdline", std::ios::binary); in) {
-    std::string arg;
-    while (std::getline(in, arg, '\0')) args.push_back(arg);
-  }
+  std::vector<std::string> args = platform::ExeArgs();
   if (args.empty()) args.push_back("asura_wrath");
   auto game_log = [](std::string path) {
     std::filesystem::path p(path);
@@ -1051,55 +1115,44 @@ bool LauncherDialog::GameProcess::Start(std::string* error) {
   game_args.push_back("--launcher=false");
   // The game applies Render resolution itself; only a value from the shell
   // is passed on.
-  if (!RenderScaleFromEnvironment()) unsetenv("MANTRA_RENDER_SCALE");
-  std::vector<char*> argv;
-  for (auto& a : game_args) argv.push_back(a.data());
-  argv.push_back(nullptr);
-  pid_t child = -1;
-  const int rc = posix_spawn(&child, "/proc/self/exe", nullptr, nullptr, argv.data(), environ);
-  if (rc != 0) {
-    *error = std::string(T("Could not start the game: ")) + std::strerror(rc);
+  if (!RenderScaleFromEnvironment()) platform::SetEnv("MANTRA_RENDER_SCALE", nullptr);
+  if (std::string why; !process.Start(platform::ExePath(), game_args, false, &why)) {
+    *error = std::string(T("Could not start the game: ")) + why;
     return false;
   }
-  REXLOG_INFO("launcher: started the game (pid {})", child);
-  pid = child;
+  REXLOG_INFO("launcher: started the game (pid {})", process.Id());
   stopping = false;
   return true;
 }
 
 void LauncherDialog::GameProcess::Stop() {
-  if (pid <= 0 || stopping) return;
-  kill(pid, SIGTERM);
+  if (!process.Running() || stopping) return;
+  process.Terminate();
   stopping = true;
   stop_time = std::chrono::steady_clock::now();
 }
 
 bool LauncherDialog::GameProcess::Poll(bool* failed) {
   *failed = false;
-  if (pid <= 0) return false;
-  int status = 0;
-  const pid_t r = waitpid(pid, &status, WNOHANG);
-  if (r == 0) {
+  if (!process.Running()) return false;
+  const std::optional<platform::ExitStatus> status = process.TryWait();
+  if (!status) {
     if (stopping && std::chrono::steady_clock::now() - stop_time > std::chrono::seconds(5)) {
-      kill(pid, SIGKILL);
+      process.Kill();
     }
     return true;
   }
-  if (r == pid) {
-    *failed = !stopping && !(WIFEXITED(status) && WEXITSTATUS(status) == 0);
-    REXLOG_INFO("launcher: the game exited ({} {})",
-                WIFEXITED(status) ? "status" : "signal",
-                WIFEXITED(status) ? WEXITSTATUS(status) : WTERMSIG(status));
-  }
-  pid = -1;
+  *failed = !stopping && !status->Ok();
+  REXLOG_INFO("launcher: the game exited ({} {})", status->normal ? "status" : "signal",
+              status->code);
   stopping = false;
   return false;
 }
 
 void LauncherDialog::UseDroppedPath(const std::filesystem::path& path) {
   std::error_code ec;
-  page_ = Page::kSettings;
-  settings_tab_request_ = kSettingsSystem;
+  page_ = Page::kSaves;
+  saves_tab_request_ = kSavesFolders;
   if (path.filename() == "default.xex") {
     UseDroppedPath(path.parent_path());
     return;
@@ -1109,17 +1162,24 @@ void LauncherDialog::UseDroppedPath(const std::filesystem::path& path) {
       iso_path_.clear();
       SetGameData(path.string());
     } else {
-      message_ = T("That folder has no default.xex.");
+      // Not the game: the folder for the game's files.
+      SetFilesFolder(path);
+      message_ = T("That folder has no default.xex, so it is now the folder for the game's "
+                   "files (Game data > Folders).");
     }
     return;
   }
   if (IsDiscImage(path) || std::filesystem::is_regular_file(path, ec)) {
     if (iso_extract_.state == IsoExtract::kRunning) return;
     iso_path_ = path;
-    // Default: a folder next to the image, or the user data folder if that
-    // one is read-only.
+    // Default: in the Files folder when one was chosen, else a folder next
+    // to the image, or the user data folder if that one is read-only.
     std::filesystem::path target = path.parent_path() / path.stem();
-    if (access(path.parent_path().c_str(), W_OK) != 0) target = user_data_root_ / "game";
+    if (!settings_.data_folder.empty()) {
+      target = std::filesystem::path(settings_.data_folder) / path.stem();
+    } else if (access(path.parent_path().c_str(), W_OK) != 0) {
+      target = user_data_root_ / "game";
+    }
     std::snprintf(iso_target_buffer_, sizeof(iso_target_buffer_), "%s", target.string().c_str());
     iso_extract_.state = IsoExtract::kIdle;
     message_.clear();
@@ -1194,6 +1254,7 @@ void LauncherDialog::LimitFrameRate(ImGuiIO& io) {
 void LauncherDialog::OnDraw(ImGuiIO& io) {
   if (playing_) return;
   LimitFrameRate(io);
+  ApplyPicked();
   if (bool failed; game_.Running() && !game_.Poll(&failed)) {
     // The game may have changed settings (Esc in game), saves and
     // achievements.
@@ -1227,6 +1288,7 @@ void LauncherDialog::OnDraw(ImGuiIO& io) {
   }
   const ImVec2 display = io.DisplaySize;
   const float scale = std::clamp(std::min(display.y / 720.0f, display.x / 1280.0f), 0.6f, 3.0f);
+  UsePalette(OverGame());
 
   ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
   ImGui::SetNextWindowSize(display, ImGuiCond_Always);
@@ -1354,9 +1416,9 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
     const char* label;
     Page page;
   };
-  for (const Item& item : {Item{"Controls", Page::kControls},
+  for (const Item& item : {Item{"Game data", Page::kSaves},
+                           Item{"Controls", Page::kControls},
                            Item{"Achievements", Page::kAchievements},
-                           Item{"Saves", Page::kSaves},
                            Item{"Settings", Page::kSettings},
                            Item{"About", Page::kAbout}}) {
     ImGui::SetCursorScreenPos(ImVec2(pos.x, y));
@@ -1391,7 +1453,7 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
         break;
       case ShaderCacheFit::kReady: break;
     }
-    if (!notice.empty()) notice += std::string(" ") + T("Settings > Shaders");
+    if (!notice.empty()) notice += std::string(" ") + T("Game data > Shaders");
   }
   if (!notice.empty()) {
     // In the launcher's font (ImGui's own has no Japanese).
@@ -1409,8 +1471,8 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
       // Click to open the Shaders tab.
       ImGui::SetCursorScreenPos(at);
       if (ImGui::InvisibleButton("##notice", ImVec2(wrap, text_size.y))) {
-        page_ = Page::kSettings;
-        settings_tab_request_ = kSettingsShaders;
+        page_ = Page::kSaves;
+        saves_tab_request_ = kSavesShaders;
       }
       if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
     }
@@ -1503,9 +1565,9 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
   if (play) {
     settings_.game_data = game_data_buffer_;
     if (!GameDataValid()) {
-      message_ = T("Set the game folder in Settings > System (it must contain default.xex).");
-      page_ = Page::kSettings;
-      settings_tab_request_ = kSettingsSystem;
+      message_ = T("Set the game folder in Game data > Folders (it must contain default.xex).");
+      page_ = Page::kSaves;
+      saves_tab_request_ = kSavesFolders;
       return;
     }
     // Without the shader cache the game stutters on every new shader: build
@@ -1516,8 +1578,8 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
                      ? T("Build the shader cache first (or press Play again to start without it).")
                      : T("Rebuild the shaders for the new render resolution (or press Play again "
                          "to start anyway).");
-      page_ = Page::kSettings;
-      settings_tab_request_ = kSettingsShaders;
+      page_ = Page::kSaves;
+      saves_tab_request_ = kSavesShaders;
       play_without_shaders_ = true;
       return;
     }
@@ -1547,7 +1609,7 @@ void LauncherDialog::DrawPanel(const ImVec2& pos, const ImVec2& size, float scal
   // inner panel.
   ImVec2 content_min(pos.x, pos.y + band), content_max(end.x, end.y - band);
   float title_x = pos.x + 36 * scale;
-  if (panel_.texture) {
+  if (panel_.texture && !OverGame()) {
     // Nine-slice: the frame (outside the slice lines, in image pixels) is
     // scaled uniformly, so it keeps its look at any window size; only the
     // edges' middles and the center stretch.
@@ -1591,7 +1653,7 @@ void LauncherDialog::DrawPanel(const ImVec2& pos, const ImVec2& size, float scal
     switch (page_) {
       case Page::kControls: title = T("Controls"); break;
       case Page::kAchievements: title = T("Achievements"); break;
-      case Page::kSaves: title = T("Saves"); break;
+      case Page::kSaves: title = T("Game data"); break;
       case Page::kSettings: title = T("Settings"); break;
       case Page::kAbout: title = T("About"); break;
     }
@@ -1604,7 +1666,7 @@ void LauncherDialog::DrawPanel(const ImVec2& pos, const ImVec2& size, float scal
 
   // The page, between the bands.
   const float inner = 22 * scale;
-  const float side = panel_.texture ? inner : pad;
+  const float side = panel_.texture && !OverGame() ? inner : pad;
   ImGui::SetCursorScreenPos(ImVec2(content_min.x + side, content_min.y + inner));
   ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
   ImGui::PushStyleColor(ImGuiCol_Text, kPanelText);
@@ -1616,7 +1678,7 @@ void LauncherDialog::DrawPanel(const ImVec2& pos, const ImVec2& size, float scal
   ImGui::PushStyleColor(ImGuiCol_Button, kField);
   ImGui::PushStyleColor(ImGuiCol_ButtonHovered, kFieldHover);
   ImGui::PushStyleColor(ImGuiCol_ButtonActive, kFieldHover);
-  ImGui::PushStyleColor(ImGuiCol_PopupBg, kField);
+  ImGui::PushStyleColor(ImGuiCol_PopupBg, kPopup);
   ImGui::PushStyleColor(ImGuiCol_Header, kFieldHover);
   ImGui::PushStyleColor(ImGuiCol_HeaderHovered, kFieldHover);
   ImGui::PushStyleColor(ImGuiCol_Separator, kPanelBand);
@@ -1691,16 +1753,14 @@ const char* PadShort(int control) {
   return control >= input::kPadUp ? T(kPadShort[control]) : kPadShort[control];
 }
 
+// The width of a button with this text.
+float ButtonWidth(const char* text) {
+  return ImGui::CalcTextSize(text).x + 2 * ImGui::GetStyle().FramePadding.x;
+}
+
 // Opens `folder` in the file manager.
 bool OpenFolder(const std::filesystem::path& folder) {
-  const std::string dir = folder.string();
-  const char* argv[] = {"xdg-open", dir.c_str(), nullptr};
-  pid_t pid = -1;
-  if (posix_spawnp(&pid, "xdg-open", nullptr, nullptr, const_cast<char* const*>(argv), environ) != 0) {
-    return false;
-  }
-  std::thread([pid] { waitpid(pid, nullptr, 0); }).detach();
-  return true;
+  return platform::OpenPath(folder.string());
 }
 
 // ImGui's table header in light text on a dark band (readable on the panel).
@@ -2117,8 +2177,8 @@ void LauncherDialog::DrawKeyboard(float scale) {
     }
   }
   if (ResetButton("keys")) {
-    for (const BindRow& row : kBindRows) SetBind(row.flag, FlagDefault(row.flag));
-    for (const BindRow& row : kOverlayRows) SetBind(row.flag, FlagDefault(row.flag));
+    for (const BindRow& row : kBindRows) SetBind(row.flag, BindDefault(row.flag));
+    for (const BindRow& row : kOverlayRows) SetBind(row.flag, BindDefault(row.flag));
     SetBind("mnk_mouse", FlagDefault("mnk_mouse"));
     settings_.keyboard = false;
     capture_flag_.clear();
@@ -2136,7 +2196,7 @@ void LauncherDialog::DrawAchievements(float scale) {
     if (asset_job_.running) {
       ImGui::TextUnformatted(T("Reading the achievement list from the game..."));
     } else if (!GameDataValid()) {
-      ImGui::TextWrapped("%s", T("Set the game folder in Settings > System to see the achievement list."));
+      ImGui::TextWrapped("%s", T("Set the game folder in Game data > Folders to see the achievement list."));
     } else {
       std::lock_guard<std::mutex> lock(asset_job_.mutex);
       ImGui::TextWrapped(T("Could not read the achievement list%s%s."),
@@ -2346,10 +2406,18 @@ void LauncherDialog::DrawGameFolder(float label_w, float scale) {
   };
   const bool extracting = iso_extract_.state == IsoExtract::kRunning;
   label(T("Game folder"));
-  ImGui::SetNextItemWidth(-1);
+  const char* browse = T("Browse...");
+  const char* disc = T("Disc image...");
+  ImGui::SetNextItemWidth(-(ButtonWidth(browse) + ButtonWidth(disc) +
+                            2 * ImGui::GetStyle().ItemSpacing.x));
   ImGui::BeginDisabled(extracting || SetElsewhere("game_data_root"));
-  if (ImGui::InputTextWithHint("##game", T("extracted game folder, or an .iso"),
-                               game_data_buffer_, sizeof(game_data_buffer_))) {
+  const bool typed_game = ImGui::InputTextWithHint("##game", T("extracted game folder, or an .iso"),
+                                                   game_data_buffer_, sizeof(game_data_buffer_));
+  ImGui::SameLine();
+  if (ImGui::Button(browse)) Pick(PickFor::kGame);
+  ImGui::SameLine();
+  if (ImGui::Button(disc)) Pick(PickFor::kDiscImage);
+  if (typed_game) {
     const std::filesystem::path typed = game_data_buffer_;
     if (IsDiscImage(typed)) {
       UseDroppedPath(typed);
@@ -2377,9 +2445,16 @@ void LauncherDialog::DrawGameFolder(float label_w, float scale) {
   const auto size = std::filesystem::file_size(iso_path_, ec);
   ImGui::Text("%s (%s)", iso_path_.filename().string().c_str(), ec ? "?" : FormatBytes(size).c_str());
   label(T("Extract to"));
-  ImGui::SetNextItemWidth(-1);
   ImGui::BeginDisabled(extracting);
-  ImGui::InputText("##iso_target", iso_target_buffer_, sizeof(iso_target_buffer_));
+  {
+    const char* browse_to = T("Browse...");
+    ImGui::SetNextItemWidth(-(ButtonWidth(browse_to) + ImGui::GetStyle().ItemSpacing.x));
+    ImGui::InputText("##iso_target", iso_target_buffer_, sizeof(iso_target_buffer_));
+    ImGui::SameLine();
+    ImGui::PushID("extract_to");
+    if (ImGui::Button(browse_to)) Pick(PickFor::kExtractTo);
+    ImGui::PopID();
+  }
   ImGui::EndDisabled();
   ImGui::SetCursorPosX(label_w);
   const int state = iso_extract_.state;
@@ -2409,6 +2484,167 @@ void LauncherDialog::DrawGameFolder(float label_w, float scale) {
   }
 }
 
+// --- Folder and file dialogs ----------------------------------------------------
+
+void LauncherDialog::Pick(PickFor what) {
+  struct Request {
+    LauncherDialog* self;
+    PickFor what;
+    std::string start;  // the folder the dialog opens in
+  };
+  auto* request = new Request{this, what, {}};
+  switch (what) {
+    case PickFor::kGame: request->start = settings_.game_data; break;
+    case PickFor::kDiscImage: request->start = settings_.game_data; break;
+    case PickFor::kFiles: request->start = files_folder_buffer_; break;
+    case PickFor::kExtractTo:
+      request->start = std::filesystem::path(iso_target_buffer_).parent_path().string();
+      break;
+  }
+  std::error_code ec;
+  if (!request->start.empty() && !std::filesystem::is_directory(request->start, ec)) {
+    request->start = std::filesystem::path(request->start).parent_path().string();
+  }
+  const char* start = request->start.empty() ? nullptr : request->start.c_str();
+  auto done = [](void* userdata, const char* const* files, int) {
+    std::unique_ptr<Request> r(static_cast<Request*>(userdata));
+    std::lock_guard<std::mutex> lock(r->self->picked_mutex_);
+    r->self->picked_ready_ = true;
+    r->self->picked_for_ = r->what;
+    // nullptr: the dialog failed; an empty list: it was cancelled.
+    r->self->picked_path_ = files && files[0] ? std::filesystem::path(files[0]) : std::filesystem::path();
+    r->self->picked_error_ = files ? std::string() : std::string(SDL_GetError());
+  };
+  if (what == PickFor::kDiscImage) {
+    static const SDL_DialogFileFilter kFilters[] = {{"Disc image (.iso)", "iso"}};
+    SDL_ShowOpenFileDialog(done, request, nullptr, kFilters, 1, start, false);
+  } else {
+    SDL_ShowOpenFolderDialog(done, request, nullptr, start, false);
+  }
+}
+
+void LauncherDialog::ApplyPicked() {
+  PickFor what;
+  std::filesystem::path path;
+  std::string error;
+  {
+    std::lock_guard<std::mutex> lock(picked_mutex_);
+    if (!picked_ready_) return;
+    picked_ready_ = false;
+    what = picked_for_;
+    path = picked_path_;
+    error = picked_error_;
+  }
+  if (path.empty()) {
+    if (!error.empty()) message_ = T("Could not open the dialog: ") + error;
+    return;
+  }
+  std::error_code ec;
+  switch (what) {
+    case PickFor::kGame:
+      if (!std::filesystem::is_regular_file(path / "default.xex", ec)) {
+        message_ = T("That folder has no default.xex.");
+      } else {
+        UseDroppedPath(path);
+      }
+      break;
+    case PickFor::kDiscImage: UseDroppedPath(path); break;
+    case PickFor::kFiles: SetFilesFolder(path); break;
+    case PickFor::kExtractTo:
+      std::snprintf(iso_target_buffer_, sizeof(iso_target_buffer_), "%s",
+                    (path / iso_path_.stem()).string().c_str());
+      break;
+  }
+}
+
+// --- Files folder ----------------------------------------------------------------
+
+void LauncherDialog::SetFilesFolder(const std::filesystem::path& folder) {
+  const std::filesystem::path chosen =
+      folder.empty() ? platform::DefaultCacheDir() : folder.lexically_normal();
+  settings_.data_folder = chosen == platform::DefaultCacheDir() ? "" : chosen.string();
+  std::snprintf(files_folder_buffer_, sizeof(files_folder_buffer_), "%s", chosen.string().c_str());
+  // At once for this launcher (the shader cache it shows, the game Play
+  // starts); the logs follow on the next start.
+  platform::SetEnv(platform::kDataDirVariable,
+                   settings_.data_folder.empty() ? nullptr : settings_.data_folder.c_str());
+  shaders_checked_at_ = -10.0;
+  SaveSettings();
+}
+
+void LauncherDialog::DrawFilesFolder(float label_w, float scale) {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const bool moving = move_files_.state == MoveFiles::kRunning;
+  const bool busy = moving || game_.Running() || shader_build_.state == ShaderBuild::kRunning ||
+                    iso_extract_.state == IsoExtract::kRunning;
+  ImGui::Spacing();
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted(T("Files folder"));
+  ImGui::SameLine(label_w);
+  ImGui::BeginDisabled(busy);
+  const char* browse = T("Browse...");
+  const char* reset = T("Default");
+  const float spacing = ImGui::GetStyle().ItemSpacing.x;
+  ImGui::SetNextItemWidth(-(ButtonWidth(browse) + ButtonWidth(reset) + 2 * spacing));
+  ImGui::InputText("##files", files_folder_buffer_, sizeof(files_folder_buffer_));
+  if (ImGui::IsItemDeactivatedAfterEdit()) SetFilesFolder(fs::path(files_folder_buffer_));
+  ImGui::SameLine();
+  ImGui::PushID("files");  // the game folder has a Browse... button too
+  if (ImGui::Button(browse)) Pick(PickFor::kFiles);
+  ImGui::SameLine();
+  ImGui::BeginDisabled(settings_.data_folder.empty());
+  if (ImGui::Button(reset)) SetFilesFolder({});
+  ImGui::EndDisabled();
+  ImGui::PopID();
+  ImGui::EndDisabled();
+  ImGui::SetCursorPosX(label_w);
+  ImGui::PushTextWrapPos(0);
+  ImGui::TextDisabled("%s", T("The shader cache, the logs and the other files the game makes. "
+                              "Drop a folder on this window to use it. The logs move there the "
+                              "next time the game starts."));
+  ImGui::PopTextWrapPos();
+
+  // The files made before the change stay in the previous folder until moved.
+  const fs::path now = platform::CacheDir();
+  if (move_files_.state == MoveFiles::kDone) {
+    message_ = move_files_.Message();
+    move_files_.state = MoveFiles::kIdle;
+    files_at_start_ = now;
+    shaders_checked_at_ = -10.0;
+  }
+  if (now == files_at_start_ || !fs::is_directory(files_at_start_, ec) ||
+      fs::is_empty(files_at_start_, ec)) {
+    return;
+  }
+  ImGui::SetCursorPosX(label_w);
+  if (moving) {
+    ImGui::TextDisabled(T("Moving %s..."), move_files_.Message().c_str());
+    return;
+  }
+  // One inside the other: moving would put the folder into itself.
+  auto inside = [](const fs::path& outer, const fs::path& inner) {
+    std::error_code e;
+    const fs::path rel = fs::weakly_canonical(inner, e).lexically_relative(fs::weakly_canonical(outer, e));
+    return !rel.empty() && *rel.begin() != "..";
+  };
+  ImGui::PushTextWrapPos(0);
+  ImGui::TextDisabled(T("The previous folder still has files: %s"), files_at_start_.string().c_str());
+  ImGui::PopTextWrapPos();
+  ImGui::SetCursorPosX(label_w);
+  if (inside(files_at_start_, now) || inside(now, files_at_start_)) {
+    ImGui::TextDisabled("%s", T("One folder is inside the other; move the files yourself."));
+    return;
+  }
+  ImGui::BeginDisabled(busy);
+  if (ImGui::Button(T("Move them to the new folder"))) move_files_.Start(files_at_start_, now);
+  ImGui::EndDisabled();
+  if (move_files_.state == MoveFiles::kFailed) {
+    ImGui::SetCursorPosX(label_w);
+    ImGui::TextDisabled("%s%s", T("Failed: "), move_files_.Message().c_str());
+  }
+}
+
 void LauncherDialog::DrawSystem(float scale) {
   bool changed = false;
   const float label_w = 200 * scale;
@@ -2417,8 +2653,6 @@ void LauncherDialog::DrawSystem(float scale) {
     ImGui::TextUnformatted(text);
     ImGui::SameLine(label_w);
   };
-
-  DrawGameFolder(label_w, scale);
 
   SubHeading(HeadingFont(), T("Game"), scale);
   label(T("Language"));
@@ -2827,171 +3061,7 @@ void LauncherDialog::DrawSettings(float scale) {
   ImGui::EndTabItem();
   }
 
-  if (tab(T("Shaders"), kSettingsShaders)) {
-  label(T("Shader cache"));
-  const std::filesystem::path cache = ShaderCachePath();
-  std::error_code ec;
-  const bool have_cache = std::filesystem::is_regular_file(cache, ec);
-  const int state = shader_build_.state;
-  if (state == ShaderBuild::kRunning) {
-    const int done = shader_build_.done, total = shader_build_.total;
-    char text[128];
-    if (total) {
-      std::snprintf(text, sizeof(text), T("%d of %d shaders"), done, total);
-    } else {
-      std::snprintf(text, sizeof(text), "%s", T("Reading the game files..."));
-    }
-    ProgressBarText(total ? float(done) / float(total) : 0.0f, ImGui::GetFrameHeight(), text);
-  } else if (have_cache) {
-    ImGui::Text(T("Ready (%.0f MB)"), double(std::filesystem::file_size(cache, ec)) / 1048576.0);
-    // Shaders the game patched while playing (checked once a second).
-    const double now = ImGui::GetTime();
-    if (now - shaders_checked_at_ > 1.0) {
-      shaders_checked_at_ = now;
-      shaders_not_in_cache_ = ShadersNotInCache();
-    }
-    if (shaders_not_in_cache_) {
-      ImGui::SetCursorPosX(label_w);
-      ImGui::TextDisabled(T("%d shaders seen while playing are missing from the cache."),
-                          int(shaders_not_in_cache_));
-    }
-  } else {
-    ImGui::TextUnformatted(T("Missing: the game will stutter heavily without it"));
-  }
-  ImGui::SetCursorPosX(label_w);
-  const std::filesystem::path tool = rex::filesystem::GetExecutableFolder() / "mantra_shadergen";
-  const bool have_tool = std::filesystem::is_regular_file(tool, ec);
-  // Not while the game runs: it reads the cache at start and adds to it.
-  ImGui::BeginDisabled(state == ShaderBuild::kRunning || !have_tool || !GameDataValid() ||
-                       iso_extract_.state == IsoExtract::kRunning || game_.Running());
-  // New shaders seen while playing, with a cache of the current version: only
-  // those are translated (the rest is kept), so it takes seconds.
-  const bool can_update = have_cache && shaders_not_in_cache_ > 0 &&
-                          ShaderCacheVersion() == mantra::shader_cache::kVersion;
-  if (can_update) {
-    char text[96];
-    std::snprintf(text, sizeof(text), T("Add the %d new shaders"), int(shaders_not_in_cache_));
-    if (ImGui::Button(text)) {
-      shader_build_.Start(tool, settings_.game_data, cache, ShaderDumpDirs(), /*update=*/true);
-      message_.clear();
-      play_without_shaders_ = false;
-    }
-    ImGui::SameLine();
-  }
-  if (ImGui::Button(have_cache ? T("Rebuild all") : T("Build (about 10 minutes)"))) {
-    shader_build_.Start(tool, settings_.game_data, cache, ShaderDumpDirs());
-    message_.clear();
-    play_without_shaders_ = false;
-  }
-  ImGui::EndDisabled();
-  if (state == ShaderBuild::kFailed) {
-    ImGui::SetCursorPosX(label_w);
-    const std::string line = shader_build_.Line();
-    ImGui::TextDisabled("%s%s", T("Failed: "), line.c_str());
-  }
-  label(T("Location"));
-  ImGui::PushTextWrapPos(0);
-  ImGui::TextUnformatted(cache.parent_path().string().c_str());
-  ImGui::PopTextWrapPos();
-  ImGui::SetCursorPosX(label_w);
-  if (ImGui::Button(T("Open the folder"))) {
-    std::filesystem::create_directories(cache.parent_path(), ec);
-    OpenFolder(cache.parent_path());
-  }
-  if (!have_tool) {
-    ImGui::SetCursorPosX(label_w);
-    ImGui::TextDisabled("%s", T("mantra_shadergen not found next to the game"));
-  }
-  ImGui::EndChild();  // ##tab_body
-  ImGui::EndTabItem();
-  }
 
-  if (tab(T("Logs"), kSettingsLogs)) {
-  const std::filesystem::path& dir = LogDirectory();
-  std::error_code ec;
-  const double now = ImGui::GetTime();
-  if (now - logs_checked_at_ > 2.0) {
-    logs_checked_at_ = now;
-    logs_.clear();
-    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
-      if (!entry.is_regular_file(ec) || entry.path().extension() != ".log") continue;
-      logs_.push_back({entry.path(), entry.file_size(ec), entry.last_write_time(ec)});
-    }
-    std::sort(logs_.begin(), logs_.end(),
-              [](const LogEntry& a, const LogEntry& b) { return a.time > b.time; });
-  }
-  label(T("Location"));
-  ImGui::PushTextWrapPos(0);
-  ImGui::TextUnformatted(dir.empty() ? "?" : dir.string().c_str());
-  ImGui::PopTextWrapPos();
-  ImGui::SetCursorPosX(label_w);
-  ImGui::BeginDisabled(dir.empty());
-  ImGui::PushID("logs");
-  if (ImGui::Button(T("Open the folder"))) {
-    std::filesystem::create_directories(dir, ec);
-    OpenFolder(dir);
-  }
-  ImGui::PopID();
-  ImGui::EndDisabled();
-  hint(T("Each start writes a launcher log; the game started by Play writes the .game.log with the same number."));
-  ImGui::Spacing();
-  const ImGuiTableFlags flags =
-      ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY;
-  const float table_h = std::max(ImGui::GetContentRegionAvail().y - 8 * scale, 120 * scale);
-  if (ImGui::BeginTable("##logs", 5, flags, ImVec2(0, table_h))) {
-    ImGui::TableSetupScrollFreeze(0, 1);
-    ImGui::TableSetupColumn(T("File"));
-    ImGui::TableSetupColumn(T("Process"), ImGuiTableColumnFlags_WidthFixed, 110 * scale);
-    ImGui::TableSetupColumn(T("Size"), ImGuiTableColumnFlags_WidthFixed, 90 * scale);
-    ImGui::TableSetupColumn(T("Modified"), ImGuiTableColumnFlags_WidthFixed, 170 * scale);
-    ImGui::TableSetupColumn("##open", ImGuiTableColumnFlags_WidthFixed, 80 * scale);
-    HeadersRow();
-    const auto clock_now = std::filesystem::file_time_type::clock::now();
-    const auto system_now = std::chrono::system_clock::now();
-    for (size_t i = 0; i < logs_.size(); ++i) {
-      const LogEntry& log = logs_[i];
-      ImGui::PushID(int(i));
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
-      ImGui::AlignTextToFramePadding();
-      const std::string name = log.path.filename().string();
-      const bool current = log.path == LogFile();
-      if (current) {
-        ImGui::Text("%s (%s)", name.c_str(), T("this one"));
-      } else {
-        ImGui::TextUnformatted(name.c_str());
-      }
-      ImGui::TableNextColumn();
-      const bool game = name.find(".game.") != std::string::npos ||
-                        name.find("-game.") != std::string::npos;
-      ImGui::TextUnformatted(game ? T("Game") : T("Launcher"));
-      ImGui::TableNextColumn();
-      if (log.size >= 1048576) {
-        ImGui::Text("%.1f MB", double(log.size) / 1048576.0);
-      } else {
-        ImGui::Text("%.0f KB", std::ceil(double(log.size) / 1024.0));
-      }
-      ImGui::TableNextColumn();
-      const auto system_time = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
-          log.time - clock_now + system_now);
-      const std::time_t t = std::chrono::system_clock::to_time_t(system_time);
-      char when[32] = "";
-      if (const std::tm* tm = std::localtime(&t)) std::strftime(when, sizeof(when), "%Y-%m-%d %H:%M", tm);
-      ImGui::TextUnformatted(when);
-      ImGui::TableNextColumn();
-      if (ImGui::SmallButton(T("Open"))) OpenFolder(log.path);
-      ImGui::PopID();
-    }
-    if (logs_.empty()) {
-      ImGui::TableNextRow();
-      ImGui::TableNextColumn();
-      ImGui::TextDisabled("%s", T("No logs yet."));
-    }
-    ImGui::EndTable();
-  }
-  ImGui::EndChild();  // ##tab_body
-  ImGui::EndTabItem();
-  }
 
   if (tab(T("Enhancements"), kSettingsEnhancements)) {
   label(T("Frame rate"));
@@ -3241,6 +3311,357 @@ void LauncherDialog::ScanSaves() {
   }
 }
 
+// Game data > Shaders: the shader cache (build, update, where it is).
+void LauncherDialog::DrawShaders(float scale) {
+  const float label_w = 200 * scale;
+  auto label = [&](const char* text) {
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(text);
+    ImGui::SameLine(label_w);
+  };
+  auto hint = [&](const char* text) {
+    ImGui::SetCursorPosX(label_w);
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextDisabled("%s", text);
+    ImGui::PopTextWrapPos();
+  };
+  label(T("Shader cache"));
+  const std::filesystem::path cache = ShaderCachePath();
+  std::error_code ec;
+  const bool have_cache = std::filesystem::is_regular_file(cache, ec);
+  const int state = shader_build_.state;
+  if (state == ShaderBuild::kRunning) {
+    const int done = shader_build_.done, total = shader_build_.total;
+    char text[128];
+    if (total) {
+      std::snprintf(text, sizeof(text), T("%d of %d shaders"), done, total);
+    } else {
+      std::snprintf(text, sizeof(text), "%s", T("Reading the game files..."));
+    }
+    ProgressBarText(total ? float(done) / float(total) : 0.0f, ImGui::GetFrameHeight(), text);
+  } else if (have_cache) {
+    ImGui::Text(T("Ready (%.0f MB)"), double(std::filesystem::file_size(cache, ec)) / 1048576.0);
+    // Shaders the game patched while playing (checked once a second).
+    const double now = ImGui::GetTime();
+    if (now - shaders_checked_at_ > 1.0) {
+      shaders_checked_at_ = now;
+      shaders_not_in_cache_ = ShadersNotInCache();
+    }
+    if (shaders_not_in_cache_) {
+      ImGui::SetCursorPosX(label_w);
+      ImGui::TextDisabled(T("%d shaders seen while playing are missing from the cache."),
+                          int(shaders_not_in_cache_));
+    }
+  } else {
+    ImGui::TextUnformatted(T("Missing: the game will stutter heavily without it"));
+  }
+  ImGui::SetCursorPosX(label_w);
+  const std::filesystem::path tool = rex::filesystem::GetExecutableFolder() / "mantra_shadergen";
+  const bool have_tool = std::filesystem::is_regular_file(tool, ec);
+  // Not while the game runs: it reads the cache at start and adds to it.
+  ImGui::BeginDisabled(state == ShaderBuild::kRunning || !have_tool || !GameDataValid() ||
+                       iso_extract_.state == IsoExtract::kRunning || game_.Running());
+  // New shaders seen while playing, with a cache of the current version: only
+  // those are translated (the rest is kept), so it takes seconds.
+  const bool can_update = have_cache && shaders_not_in_cache_ > 0 &&
+                          ShaderCacheVersion() == mantra::shader_cache::kVersion;
+  if (can_update) {
+    char text[96];
+    std::snprintf(text, sizeof(text), T("Add the %d new shaders"), int(shaders_not_in_cache_));
+    if (ImGui::Button(text)) {
+      shader_build_.Start(tool, settings_.game_data, cache, ShaderDumpDirs(), /*update=*/true);
+      message_.clear();
+      play_without_shaders_ = false;
+    }
+    ImGui::SameLine();
+  }
+  if (ImGui::Button(have_cache ? T("Rebuild all") : T("Build (about 10 minutes)"))) {
+    shader_build_.Start(tool, settings_.game_data, cache, ShaderDumpDirs());
+    message_.clear();
+    play_without_shaders_ = false;
+  }
+  ImGui::EndDisabled();
+  if (state == ShaderBuild::kFailed) {
+    ImGui::SetCursorPosX(label_w);
+    const std::string line = shader_build_.Line();
+    ImGui::TextDisabled("%s%s", T("Failed: "), line.c_str());
+  }
+  label(T("Location"));
+  ImGui::PushTextWrapPos(0);
+  ImGui::TextUnformatted(cache.parent_path().string().c_str());
+  ImGui::PopTextWrapPos();
+  ImGui::SetCursorPosX(label_w);
+  if (ImGui::Button(T("Open the folder"))) {
+    std::filesystem::create_directories(cache.parent_path(), ec);
+    OpenFolder(cache.parent_path());
+  }
+  if (!have_tool) {
+    ImGui::SetCursorPosX(label_w);
+    ImGui::TextDisabled("%s", T("mantra_shadergen not found next to the game"));
+  }
+}
+
+// Game data > Logs: this run's and earlier runs' logs.
+void LauncherDialog::DrawLogs(float scale) {
+  const float label_w = 200 * scale;
+  auto label = [&](const char* text) {
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted(text);
+    ImGui::SameLine(label_w);
+  };
+  auto hint = [&](const char* text) {
+    ImGui::SetCursorPosX(label_w);
+    ImGui::PushTextWrapPos(0);
+    ImGui::TextDisabled("%s", text);
+    ImGui::PopTextWrapPos();
+  };
+  const std::filesystem::path& dir = LogDirectory();
+  std::error_code ec;
+  const double now = ImGui::GetTime();
+  if (now - logs_checked_at_ > 2.0) {
+    logs_checked_at_ = now;
+    logs_.clear();
+    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+      if (!entry.is_regular_file(ec) || entry.path().extension() != ".log") continue;
+      logs_.push_back({entry.path(), entry.file_size(ec), entry.last_write_time(ec)});
+    }
+    std::sort(logs_.begin(), logs_.end(),
+              [](const LogEntry& a, const LogEntry& b) { return a.time > b.time; });
+  }
+  label(T("Location"));
+  ImGui::PushTextWrapPos(0);
+  ImGui::TextUnformatted(dir.empty() ? "?" : dir.string().c_str());
+  ImGui::PopTextWrapPos();
+  ImGui::SetCursorPosX(label_w);
+  ImGui::BeginDisabled(dir.empty());
+  ImGui::PushID("logs");
+  if (ImGui::Button(T("Open the folder"))) {
+    std::filesystem::create_directories(dir, ec);
+    OpenFolder(dir);
+  }
+  ImGui::PopID();
+  ImGui::EndDisabled();
+  hint(T("Each start writes a launcher log; the game started by Play writes the .game.log with the same number."));
+  ImGui::Spacing();
+  const ImGuiTableFlags flags =
+      ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY;
+  const float table_h = std::max(ImGui::GetContentRegionAvail().y - 8 * scale, 120 * scale);
+  if (ImGui::BeginTable("##logs", 5, flags, ImVec2(0, table_h))) {
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn(T("File"));
+    ImGui::TableSetupColumn(T("Process"), ImGuiTableColumnFlags_WidthFixed, 110 * scale);
+    ImGui::TableSetupColumn(T("Size"), ImGuiTableColumnFlags_WidthFixed, 90 * scale);
+    ImGui::TableSetupColumn(T("Modified"), ImGuiTableColumnFlags_WidthFixed, 170 * scale);
+    ImGui::TableSetupColumn("##open", ImGuiTableColumnFlags_WidthFixed, 80 * scale);
+    HeadersRow();
+    const auto clock_now = std::filesystem::file_time_type::clock::now();
+    const auto system_now = std::chrono::system_clock::now();
+    for (size_t i = 0; i < logs_.size(); ++i) {
+      const LogEntry& log = logs_[i];
+      ImGui::PushID(int(i));
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::AlignTextToFramePadding();
+      const std::string name = log.path.filename().string();
+      const bool current = log.path == LogFile();
+      if (current) {
+        ImGui::Text("%s (%s)", name.c_str(), T("this one"));
+      } else {
+        ImGui::TextUnformatted(name.c_str());
+      }
+      ImGui::TableNextColumn();
+      const bool game = name.find(".game.") != std::string::npos ||
+                        name.find("-game.") != std::string::npos;
+      ImGui::TextUnformatted(game ? T("Game") : T("Launcher"));
+      ImGui::TableNextColumn();
+      if (log.size >= 1048576) {
+        ImGui::Text("%.1f MB", double(log.size) / 1048576.0);
+      } else {
+        ImGui::Text("%.0f KB", std::ceil(double(log.size) / 1024.0));
+      }
+      ImGui::TableNextColumn();
+      const auto system_time = std::chrono::time_point_cast<std::chrono::system_clock::duration>(
+          log.time - clock_now + system_now);
+      const std::time_t t = std::chrono::system_clock::to_time_t(system_time);
+      char when[32] = "";
+      if (const std::tm* tm = std::localtime(&t)) std::strftime(when, sizeof(when), "%Y-%m-%d %H:%M", tm);
+      ImGui::TextUnformatted(when);
+      ImGui::TableNextColumn();
+      if (ImGui::SmallButton(T("Open"))) OpenFolder(log.path);
+      ImGui::PopID();
+    }
+    if (logs_.empty()) {
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::TextDisabled("%s", T("No logs yet."));
+    }
+    ImGui::EndTable();
+  }
+}
+
+namespace {
+std::filesystem::path TraceTrigger() {
+  const char* trigger = std::getenv("MANTRA_TRACE_TRIGGER");
+  return trigger && *trigger ? std::filesystem::path(trigger) : std::filesystem::path();
+}
+// This process's last request (TracePending).
+std::mutex g_trace_mutex;
+std::optional<std::chrono::steady_clock::time_point> g_trace_requested;
+std::filesystem::file_time_type g_trace_done_before;  // <trigger>.done's time then
+}  // namespace
+
+std::filesystem::path TraceDoneFile() {
+  const auto trigger = TraceTrigger();
+  return trigger.empty() ? trigger : std::filesystem::path(trigger.string() + ".done");
+}
+
+bool RequestTrace() {
+  const std::filesystem::path trigger = TraceTrigger();
+  if (trigger.empty() || TracePending()) return false;
+  std::error_code ec;
+  std::filesystem::create_directories(trigger.parent_path(), ec);
+  {
+    std::lock_guard<std::mutex> lock(g_trace_mutex);
+    g_trace_requested = std::chrono::steady_clock::now();
+    g_trace_done_before = std::filesystem::last_write_time(TraceDoneFile(), ec);
+    if (ec) g_trace_done_before = {};
+  }
+  std::ofstream out(trigger);
+  out.put('\n');
+  REXLOG_INFO("Trace requested ({})", trigger.string());
+  return bool(out);
+}
+
+bool TracePending() {
+  std::error_code ec;
+  const std::filesystem::path trigger = TraceTrigger();
+  if (trigger.empty()) return false;
+  if (std::filesystem::exists(trigger, ec)) return true;  // not picked up yet (any process's)
+  std::lock_guard<std::mutex> lock(g_trace_mutex);
+  if (!g_trace_requested) return false;
+  // Picked up: until the traced frame ends (<trigger>.done rewritten), or
+  // 10 s if it never does (the game closed meanwhile).
+  const auto done = std::filesystem::last_write_time(TraceDoneFile(), ec);
+  if ((!ec && done > g_trace_done_before) ||
+      std::chrono::steady_clock::now() - *g_trace_requested > std::chrono::seconds(10)) {
+    g_trace_requested.reset();
+    return false;
+  }
+  return true;
+}
+
+// Game data > Traces: mantra writes everything it does for one frame into the
+// game's log ("trace:" lines) when the trigger file appears
+// (MANTRA_TRACE_TRIGGER, set at start: asura_wrath_app.h).
+void LauncherDialog::DrawTraces(float scale) {
+  std::error_code ec;
+  const std::filesystem::path trigger = TraceTrigger();
+  ImGui::PushTextWrapPos(0);
+  ImGui::TextDisabled("%s", T("A trace writes what the renderer does during one frame into the "
+                              "game's log, for bug reports about the picture. Go to the moment "
+                              "that looks wrong, then trace it."));
+  ImGui::PopTextWrapPos();
+  ImGui::Spacing();
+  const bool running = game_.Running() || OverGame();
+  const bool picked_up = !std::filesystem::exists(trigger, ec);
+  const bool waiting = TracePending();
+  if (trace_was_pending_ && !waiting) traces_checked_at_ = -10.0;  // the new one is in the log
+  trace_was_pending_ = waiting;
+  ImGui::BeginDisabled(!running || waiting || trigger.empty());
+  if (ImGui::Button(T("Trace the next frame"))) {
+    RequestTrace();
+    traces_checked_at_ = -10.0;
+  }
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (waiting) {
+    ImGui::TextDisabled("%s", picked_up    ? T("Tracing...")
+                              : OverGame() ? T("The game traces it once you resume.")
+                                           : T("Waiting for the game..."));
+  } else if (!running) {
+    ImGui::TextDisabled("%s", T("Start the game first."));
+  }
+
+  // The traces in the logs, checked every few seconds.
+  const double now = ImGui::GetTime();
+  if (now - traces_checked_at_ > 3.0) {
+    traces_checked_at_ = now;
+    traces_.clear();
+    for (const auto& entry : std::filesystem::directory_iterator(LogDirectory(), ec)) {
+      if (!entry.is_regular_file(ec) || entry.path().extension() != ".log") continue;
+      const uintmax_t size = entry.file_size(ec);
+      auto& [read_size, found] = trace_scan_[entry.path()];
+      if (read_size != size) {
+        read_size = size;
+        found.clear();
+        std::ifstream in(entry.path());
+        // "trace: triggered at swap N, tracing swap M": M is the traced frame.
+        static constexpr std::string_view kMark = ", tracing swap ";
+        for (std::string line; std::getline(in, line);) {
+          const size_t at = line.find(kMark);
+          if (at == std::string::npos || line.find("trace: triggered at swap ") == std::string::npos) continue;
+          TraceEntry trace{entry.path(), line.size() > 20 && line[0] == '[' ? line.substr(1, 19) : "",
+                           std::strtoull(line.c_str() + at + kMark.size(), nullptr, 10)};
+          found.push_back(std::move(trace));
+        }
+      }
+      traces_.insert(traces_.end(), found.begin(), found.end());
+    }
+    std::sort(traces_.begin(), traces_.end(),
+              [](const TraceEntry& a, const TraceEntry& b) { return a.when > b.when; });
+  }
+  // The traces are in the logs: their folder.
+  ImGui::Spacing();
+  const float label_w = 200 * scale;
+  const std::filesystem::path& dir = LogDirectory();
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted(T("Location"));
+  ImGui::SameLine(label_w);
+  ImGui::PushTextWrapPos(0);
+  ImGui::TextUnformatted(dir.empty() ? "?" : dir.string().c_str());
+  ImGui::PopTextWrapPos();
+  ImGui::SetCursorPosX(label_w);
+  ImGui::BeginDisabled(dir.empty());
+  if (ImGui::Button(T("Open the folder"))) {
+    std::filesystem::create_directories(dir, ec);
+    OpenFolder(dir);
+  }
+  ImGui::EndDisabled();
+  ImGui::Spacing();
+  const ImGuiTableFlags flags =
+      ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_ScrollY;
+  const float table_h = std::max(ImGui::GetContentRegionAvail().y - 8 * scale, 120 * scale);
+  if (ImGui::BeginTable("##traces", 4, flags, ImVec2(0, table_h))) {
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableSetupColumn(T("Log"));
+    ImGui::TableSetupColumn(T("Frame"), ImGuiTableColumnFlags_WidthFixed, 100 * scale);
+    ImGui::TableSetupColumn(T("When"), ImGuiTableColumnFlags_WidthFixed, 190 * scale);
+    ImGui::TableSetupColumn("##open", ImGuiTableColumnFlags_WidthFixed, 80 * scale);
+    HeadersRow();
+    for (size_t i = 0; i < traces_.size(); ++i) {
+      const TraceEntry& trace = traces_[i];
+      ImGui::PushID(int(i));
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextUnformatted(trace.log.filename().string().c_str());
+      ImGui::TableNextColumn();
+      ImGui::Text("%llu", static_cast<unsigned long long>(trace.swap));
+      ImGui::TableNextColumn();
+      ImGui::TextUnformatted(trace.when.c_str());
+      ImGui::TableNextColumn();
+      if (ImGui::SmallButton(T("Open"))) OpenFolder(trace.log);
+      ImGui::PopID();
+    }
+    if (traces_.empty()) {
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::TextDisabled("%s", T("No traces yet."));
+    }
+    ImGui::EndTable();
+  }
+}
+
 void LauncherDialog::DrawSaves(float scale) {
   if (!saves_scanned_) ScanSaves();
   if (!achievements_loaded_) LoadAchievements();
@@ -3255,6 +3676,14 @@ void LauncherDialog::DrawSaves(float scale) {
   };
 
   if (!ImGui::BeginTabBar("##saves_tabs")) return;
+  auto tab = [&](const char* name, int index) {
+    const ImGuiTabItemFlags flags =
+        saves_tab_request_ == index ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;
+    if (!ImGui::BeginTabItem(name, nullptr, flags)) return false;
+    if (saves_tab_request_ == index) saves_tab_request_ = -1;
+    ImGui::Spacing();
+    return true;
+  };
   // Info: the save itself (when, size, folder, open/delete).
   auto info = [&] {
   ImGui::PushTextWrapPos(0);
@@ -3330,16 +3759,39 @@ void LauncherDialog::DrawSaves(float scale) {
     }
   }
   };
-  if (ImGui::BeginTabItem(T("Info"))) {
-    ImGui::Spacing();
+  // Where the game is and where its files go.
+  if (tab(T("Folders"), kSavesFolders)) {
+    if (ImGui::BeginChild("##tab_body")) {
+      DrawGameFolder(label_w, scale);
+      DrawFilesFolder(label_w, scale);
+    }
+    ImGui::EndChild();
+    ImGui::EndTabItem();
+  }
+  // The other files the game keeps: the shader cache and the logs.
+  if (tab(T("Shaders"), kSavesShaders)) {
+    if (ImGui::BeginChild("##tab_body")) DrawShaders(scale);
+    ImGui::EndChild();
+    ImGui::EndTabItem();
+  }
+  if (tab(T("Logs"), kSavesLogs)) {
+    if (ImGui::BeginChild("##tab_body")) DrawLogs(scale);
+    ImGui::EndChild();
+    ImGui::EndTabItem();
+  }
+  if (tab(T("Traces"), kSavesTraces)) {
+    if (ImGui::BeginChild("##tab_body")) DrawTraces(scale);
+    ImGui::EndChild();
+    ImGui::EndTabItem();
+  }
+  if (tab(T("Info"), kSavesInfo)) {
     // The contents scroll under the tab bar, which stays put.
     if (ImGui::BeginChild("##tab_body")) info();
     ImGui::EndChild();
     ImGui::EndTabItem();
   }
   // Progress: the story (episodes, ranks) of each save.
-  if (ImGui::BeginTabItem(T("Progress"))) {
-    ImGui::Spacing();
+  if (tab(T("Progress"), kSavesProgress)) {
     ImGui::BeginChild("##tab_body");
     bool any = false;
     for (const auto& profile : profiles_) {
@@ -3402,7 +3854,7 @@ void LauncherDialog::DrawStory(const SaveSummary& progress, float label_w, float
   label(T("Enemies defeated"));
   ImGui::Text("%d", progress.enemies_defeated);
   if (episodes_.empty()) {
-    ImGui::TextDisabled("%s", T("Set the game folder in Settings > System to see the episodes."));
+    ImGui::TextDisabled("%s", T("Set the game folder in Game data > Folders to see the episodes."));
     return;
   }
 

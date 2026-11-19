@@ -5,6 +5,9 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <thread>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -13,7 +16,6 @@
 #include <string_view>
 #include <vector>
 
-#include <unistd.h>
 #include <system_error>
 
 #include <rex/cvar.h>
@@ -29,6 +31,8 @@
 #include <rex/system/kernel_state.h>
 #include <rex/system/util/xdbf_utils.h>
 
+#include "platform/platform.h"
+
 #include <rex/input/input_system.h>
 
 #include "debug/script_input.h"
@@ -40,6 +44,8 @@
 #include "ui/fps_counter.h"
 #include "ui/game_toast.h"
 #include "ui/launcher.h"
+#include "ui/launcher_text.h"
+#include "ui/notice_toast.h"
 
 REXCVAR_DECLARE(bool, launcher);
 
@@ -54,11 +60,14 @@ class AsuraWrathApp : public rex::ReXApp {
   }
 
   // Override virtual hooks for customization:
-  // Logs go to <exe dir>/logs (the SDK default) when that folder is
-  // writable, else to <user data>/logs (the AppImage's folder is read-only).
+  // Logs go to <files folder>/logs when the launcher's Files folder is set,
+  // else to <exe dir>/logs (the SDK default) when that folder is writable,
+  // else to <user data>/logs (the AppImage's folder is read-only).
   void OnConfigureLogging(rex::LogConfig& config) override {
-    if (!user_data_root_path_.empty() &&
-        access(config.log_dir.parent_path().c_str(), W_OK) != 0) {
+    if (!launcher_settings_.data_folder.empty()) {
+      config.log_dir = std::filesystem::path(launcher_settings_.data_folder) / "logs";
+    } else if (!user_data_root_path_.empty() &&
+               access(config.log_dir.parent_path().c_str(), W_OK) != 0) {
       config.log_dir = user_data_root_path_ / "logs";
     }
     log_dir_ = config.log_dir;
@@ -184,6 +193,7 @@ class AsuraWrathApp : public rex::ReXApp {
     asura::game::StartFrameRateHook(runtime());
     if (launcher_settings_.skip_intro) asura::game::SkipIntroMovies(runtime());
     DumpAchievementIcons();
+    StartTraceWatcher();
     const char* env = std::getenv("ASURA_TEST_TOAST");
     if (!env || !toast_) return;
     const auto list = achievements().ListAchievements();
@@ -202,6 +212,8 @@ class AsuraWrathApp : public rex::ReXApp {
   void OnShutdown() override {
     asura::game::StopFrameRateHook();
     fps_counter_.reset();
+    trace_watcher_ = {};  // stops and joins
+    notice_.reset();
   }
   void OnConfigurePaths(rex::PathConfig& paths) override {
     MigrateLegacyFolders(paths);
@@ -215,6 +227,20 @@ class AsuraWrathApp : public rex::ReXApp {
     }
     launcher_settings_path_ = asura::ui::LauncherSettings::PathIn(paths.user_data_root);
     launcher_settings_.Load(launcher_settings_path_);
+    // The Files folder: everything that reads platform::CacheDir() (here,
+    // the mantra plugin, the game Play starts) takes it from the environment.
+    // One set in the shell wins.
+    if (!launcher_settings_.data_folder.empty() && !std::getenv(asura::platform::kDataDirVariable)) {
+      asura::platform::SetEnv(asura::platform::kDataDirVariable,
+                              launcher_settings_.data_folder.c_str());
+    }
+    // Game data > Traces: the file that makes mantra trace the next frame
+    // (one set in the shell wins). The game Play starts inherits it.
+    if (const char* trigger = std::getenv("MANTRA_TRACE_TRIGGER"); !trigger || !*trigger) {
+      if (const auto dir = asura::platform::CacheDir(); !dir.empty()) {
+        asura::platform::SetEnv("MANTRA_TRACE_TRIGGER", (dir / "trace.now").c_str());
+      }
+    }
     if (rex::cvar::GetFlagSource("game_data_root") == rex::cvar::Source::kDefault) {
       if (launcher_settings_.game_data.empty()) {
         // First start: an "extracted" folder in the working directory or
@@ -245,6 +271,11 @@ class AsuraWrathApp : public rex::ReXApp {
     // saved keys are applied, so a rebound key sticks.
     rex::ui::RegisterBind("bind_launcher", "Escape", "Open the launcher (in game)",
                           [this] { ToggleLauncherInGame(); });
+    // F3 in game: trace the next frame (Game data > Traces). The SDK's
+    // performance overlay, F3 by default, gets no key (launcher BindDefault).
+    rex::ui::RegisterBind("bind_trace", "F3", "Trace the next frame (in game)", [this] {
+      if (game_running_ && !launcher_) asura::ui::RequestTrace();
+    });
     // Again now that the overlays registered their bind_* keys.
     asura::ui::ApplyLauncherDefaults(launcher_settings_);
     if (!LauncherWanted() || !imgui_drawer()) {
@@ -346,19 +377,12 @@ class AsuraWrathApp : public rex::ReXApp {
   // Runs this executable again with the same arguments, skipping the
   // launcher unless `show_launcher`. Only returns if exec fails.
   static void Restart(bool show_launcher) {
-    std::vector<std::string> args;
-    if (std::ifstream in("/proc/self/cmdline", std::ios::binary); in) {
-      std::string arg;
-      while (std::getline(in, arg, '\0')) args.push_back(arg);
-    }
+    std::vector<std::string> args = asura::platform::ExeArgs();
     if (args.empty()) return;
     if (!show_launcher) args.push_back("--launcher=false");
-    std::vector<char*> argv;
-    for (auto& a : args) argv.push_back(a.data());
-    argv.push_back(nullptr);
     REXLOG_INFO("Restarting ({})", show_launcher ? "launcher" : "graphics settings");
     rex::FlushLogging();
-    execv("/proc/self/exe", argv.data());
+    asura::platform::ReplaceProcess(asura::platform::ExePath(), args);
     REXLOG_ERROR("Restart failed; graphics settings apply on the next start");
   }
 
@@ -379,11 +403,7 @@ class AsuraWrathApp : public rex::ReXApp {
       }
     };
     move_once(paths.user_data_root);
-    if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg) {
-      move_once(std::filesystem::path(xdg) / "asura_wrath_recomp");
-    } else if (const char* home = std::getenv("HOME"); home && *home) {
-      move_once(std::filesystem::path(home) / ".cache" / "asura_wrath_recomp");
-    }
+    move_once(asura::platform::CacheDir());
   }
 
   // Debug: ASURA_DUMP_ACHIEVEMENTS=<dir> writes the title's achievement icons
@@ -417,6 +437,40 @@ class AsuraWrathApp : public rex::ReXApp {
   ImFont* toast_font_ = nullptr;  // MediumFont, also the launcher's text
   ImFont* title_font_ = nullptr;  // TitleFont, the launcher's titles
   asura::ui::GameToastDialog* toast_ = nullptr;  // owned by the SDK
+
+  // "Frame N traced" at the top of the screen when mantra finishes a trace
+  // (F3 or Game data > Traces): <trigger>.done is rewritten with its number.
+  void StartTraceWatcher() {
+    const std::filesystem::path done = asura::ui::TraceDoneFile();
+    if (done.empty() || !imgui_drawer() || trace_watcher_.joinable()) return;
+    asura::ui::SetLauncherLanguage(launcher_settings_.language);
+    trace_watcher_ = std::jthread([this, done](std::stop_token stop) {
+      std::error_code ec;
+      auto last = std::filesystem::last_write_time(done, ec);
+      if (ec) last = {};
+      while (!stop.stop_requested()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        const auto time = std::filesystem::last_write_time(done, ec);
+        if (ec || time <= last) continue;
+        last = time;
+        unsigned long long frame = 0;
+        if (std::ifstream in(done); in) in >> frame;
+        char text[96];
+        std::snprintf(text, sizeof(text), asura::ui::T("Frame %llu traced"), frame);
+        app_context().CallInUIThread([this, line = std::string(text)] {
+          if (!notice_) {
+            notice_ = std::make_unique<asura::ui::NoticeDialog>(
+                imgui_drawer(), toast_font_, [context = &app_context()](std::function<void()> f) {
+                  context->CallInUIThread(std::move(f));
+                });
+          }
+          notice_->Show(line);
+        });
+      }
+    });
+  }
+  std::unique_ptr<asura::ui::NoticeDialog> notice_;
+  std::jthread trace_watcher_;
 
   // Saves live at <user_data>/<profile xuid>/43430817/00000001/SAVEDATA.DAT
   // (title id 43430817, content type 1 = saved game). Any profile counts.

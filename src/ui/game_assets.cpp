@@ -15,6 +15,7 @@
 
 #include "game_font.h"
 #include "xxx_package.h"  // tools/mantra_shadergen: .xxx (UE3 + LZX) decompression
+#include "../platform/platform.h"
 
 // AES-128-CBC with a zero IV, from the SDK's XEX loader (librexruntime).
 void aes_decrypt_buffer(const uint8_t* session_key, const uint8_t* input_buffer,
@@ -538,15 +539,7 @@ bool UnpackXxx(const fs::path& path, Bytes& body) {
 
 }  // namespace
 
-fs::path GameCacheRoot() {
-  if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg) {
-    return fs::path(xdg) / "asura_wrath_recomp";
-  }
-  if (const char* home = std::getenv("HOME"); home && *home) {
-    return fs::path(home) / ".cache" / "asura_wrath_recomp";
-  }
-  return {};
-}
+fs::path GameCacheRoot() { return platform::CacheDir(); }
 
 fs::path UiCacheDir() {
   const auto root = GameCacheRoot();

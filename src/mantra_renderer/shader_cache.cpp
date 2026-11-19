@@ -8,6 +8,7 @@
 
 #include "mantra_log.h"
 #include "shader_key.h"
+#include "../platform/platform.h"
 
 namespace mantra {
 
@@ -15,15 +16,8 @@ std::filesystem::path ShaderCache::DefaultPath() {
   if (const char* env = std::getenv("MANTRA_SHADER_CACHE"); env && *env) {
     return env;
   }
-  std::filesystem::path base;
-  if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg) {
-    base = xdg;
-  } else if (const char* home = std::getenv("HOME"); home && *home) {
-    base = std::filesystem::path(home) / ".cache";
-  } else {
-    return {};
-  }
-  return base / "asura_wrath_recomp" / "mantra_shaders.mshc";
+  const std::filesystem::path base = asura::platform::CacheDir();
+  return base.empty() ? base : base / "mantra_shaders.mshc";
 }
 
 bool ShaderCache::Load(const std::filesystem::path& path) {

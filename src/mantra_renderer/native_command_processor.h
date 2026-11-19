@@ -153,6 +153,7 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
   bool TracingThisFrame();
   void MaybeTraceOnResolve(uint32_t address, uint32_t width, uint32_t height);
   uint64_t trace_swap_ = 0;
+  bool trace_from_trigger_ = false;  // trace_swap_ came from MANTRA_TRACE_TRIGGER
   // Serial of the last resolve; a resolved surface's write_count is the
   // serial of its last write (unique across recreated surfaces).
   uint64_t resolve_serial_ = 0;

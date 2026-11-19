@@ -2,6 +2,7 @@
 #include "memexport.h"
 #include "mantra_log.h"
 #include "shader_key.h"
+#include "../platform/platform.h"
 
 #include <algorithm>
 #include <atomic>
@@ -162,13 +163,8 @@ bool NativeCommandProcessor::SetupContext() {
 namespace {
 std::filesystem::path PipelineDir() {
   if (const char* dir = std::getenv("MANTRA_PIPELINE_DIR"); dir && *dir) return dir;
-  if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg) {
-    return std::filesystem::path(xdg) / "asura_wrath_recomp" / "pipelines";
-  }
-  if (const char* home = std::getenv("HOME"); home && *home) {
-    return std::filesystem::path(home) / ".cache" / "asura_wrath_recomp" / "pipelines";
-  }
-  return {};
+  const std::filesystem::path base = asura::platform::CacheDir();
+  return base.empty() ? base : base / "pipelines";
 }
 }  // namespace
 
@@ -1567,13 +1563,23 @@ void NativeCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
   g_guest_swaps.fetch_add(1, std::memory_order_relaxed);
   buffer_cache_.FrameEnded();
   // MANTRA_TRACE_TRIGGER=<file>: when the file appears, trace the next frame
-  // (and delete the file, so it can be triggered again).
+  // (and delete the file, so it can be triggered again). Once the traced
+  // frame ends, <file>.done holds its number (the launcher's toast and its
+  // Trace button read it).
   static const char* trace_trigger = std::getenv("MANTRA_TRACE_TRIGGER");
+  if (trace_from_trigger_ && swap_stats_.swaps == trace_swap_) {
+    trace_from_trigger_ = false;
+    if (std::FILE* file = std::fopen((std::string(trace_trigger) + ".done").c_str(), "w")) {
+      std::fprintf(file, "%llu\n", static_cast<unsigned long long>(trace_swap_));
+      std::fclose(file);
+    }
+  }
   if (trace_trigger && *trace_trigger && (swap_stats_.swaps & 15) == 0 &&
       (!trace_swap_ || trace_swap_ <= swap_stats_.swaps)) {
     std::error_code ec;
     if (std::filesystem::remove(trace_trigger, ec)) {
       trace_swap_ = swap_stats_.swaps + 2;
+      trace_from_trigger_ = true;
       MANTRA_INFO("trace: triggered at swap {}, tracing swap {}", swap_stats_.swaps, trace_swap_);
       // Debug: MANTRA_DUMP_PHYSICAL=<file> also writes all 512 MB of guest
       // physical memory, for offline searches.

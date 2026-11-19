@@ -67,6 +67,7 @@ add_library(rexgpu-mantra SHARED
     guest_draw.cpp
     texture_cache.cpp
     memexport.cpp
+    ../platform/platform_posix.cpp  # the cache folder
     ${MANTRA_SHADER_INCS}
     ${MANTRA_BASE_SOURCES}
 )

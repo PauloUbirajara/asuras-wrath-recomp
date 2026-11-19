@@ -1,4 +1,5 @@
 #include "game_font.h"
+#include "../platform/platform.h"
 
 #include <algorithm>
 #include <cmath>
@@ -226,15 +227,8 @@ const ImFontLoader* Loader() {
 std::vector<std::filesystem::path> GameUiDirs() {
   std::vector<std::filesystem::path> dirs;
   if (const char* dir = std::getenv("ASURA_UI_DIR"); dir && *dir) dirs.emplace_back(dir);
-  if (const char* xdg = std::getenv("XDG_CACHE_HOME"); xdg && *xdg) {
-    dirs.push_back(std::filesystem::path(xdg) / "asura_wrath_recomp" / "ui");
-  }
-  if (const char* home = std::getenv("HOME"); home && *home) {
-    dirs.push_back(std::filesystem::path(home) / ".cache" / "asura_wrath_recomp" / "ui");
-  }
-  std::error_code ec;
-  const auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
-  if (!ec) {
+  if (const auto cache = platform::CacheDir(); !cache.empty()) dirs.push_back(cache / "ui");
+  if (const auto exe = platform::ExePath(); !exe.empty()) {
     // The repository's out/assets/ui (extracted game files), from out/build/<preset>/.
     dirs.push_back(exe.parent_path().parent_path().parent_path() / "assets" / "ui");
     // The project's own art (assets/ui), staged next to the executable at build time.

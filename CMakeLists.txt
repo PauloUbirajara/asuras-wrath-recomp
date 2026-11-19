@@ -22,6 +22,7 @@ set(ASURAWRATH_SOURCES
     src/game/frame_rate.cpp
     src/game/skip_intro.cpp
     src/input/pad_remap.cpp
+    src/platform/platform_posix.cpp
     src/ui/about_info.cpp
     src/ui/game_assets.cpp
     src/ui/game_font.cpp
@@ -29,6 +30,7 @@ set(ASURAWRATH_SOURCES
     src/ui/game_toast.cpp
     src/ui/launcher.cpp
     src/ui/launcher_text.cpp
+    src/ui/notice_toast.cpp
     src/ui/save_data.cpp
 )
 

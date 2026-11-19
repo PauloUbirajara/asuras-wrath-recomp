@@ -34,6 +34,7 @@
 #include <rex/ui/style.h>
 #include <rex/ui/window_listener.h>
 
+#include "../platform/platform.h"
 #include "save_data.h"
 
 struct SDL_Gamepad;
@@ -65,6 +66,7 @@ struct LauncherSettings {
   uint32_t language = 1;                    // user_language (XLanguage), 1 = English
   bool achievements_grid = false;           // Achievements page: grid instead of list
   std::string game_data;                    // game_data_root, empty = flag / default
+  std::string data_folder;                  // where the game's files go (platform::CacheDir), empty = default
   std::map<std::string, std::string> binds;  // keybind_* flag -> keys
   std::map<std::string, std::string> pad;    // controller remap: target -> source (pad_remap.h)
   double deadzone_left = 0, deadzone_right = 0;  // stick deadzones, fraction of the range
@@ -129,6 +131,13 @@ size_t ShadersNotInCache();
 void SetLogLocation(const std::filesystem::path& dir, const std::filesystem::path& file);
 const std::filesystem::path& LogDirectory();
 const std::filesystem::path& LogFile();
+// Makes mantra trace the next frame into the game's log: creates the
+// MANTRA_TRACE_TRIGGER file (Game data > Traces, the bind_trace key).
+bool RequestTrace();
+// A trace this process asked for, or any not yet picked up, isn't done yet.
+bool TracePending();
+// Written by mantra when a traced frame ends: its number.
+std::filesystem::path TraceDoneFile();
 // Whether the game's UI fonts were found (else ImGui's font is used).
 bool HaveGameFonts();
 
@@ -164,7 +173,7 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   void OnDraw(ImGuiIO& io) override;
 
  private:
-  enum class Page { kControls, kAchievements, kSaves, kSettings, kAbout };
+  enum class Page { kSaves, kControls, kAchievements, kSettings, kAbout };
   struct Image {
     std::unique_ptr<rex::ui::ImmediateTexture> texture;
     float width = 0, height = 0;
@@ -187,7 +196,7 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   struct ShaderBuild {
     enum State { kIdle, kRunning, kDone, kFailed };
     std::atomic<int> state{kIdle};
-    int pid = -1;
+    platform::Process process;
     std::thread reader;
     std::mutex mutex;
     std::string last_line;  // under mutex
@@ -246,6 +255,20 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   void StartAssetJob();
   void ScanSaves();
   void DrawSaves(float scale);
+  void DrawShaders(float scale);  // Game data > Shaders
+  void DrawLogs(float scale);     // Game data > Logs
+  void DrawTraces(float scale);   // Game data > Traces
+  // One frame traced by mantra (the "trace: triggered" line in a log).
+  struct TraceEntry {
+    std::filesystem::path log;
+    std::string when;  // the log line's time
+    uint64_t swap = 0;
+  };
+  std::vector<TraceEntry> traces_;  // newest first
+  // Each log's traces, with the size it had when read (read again once it grows).
+  std::map<std::filesystem::path, std::pair<uintmax_t, std::vector<TraceEntry>>> trace_scan_;
+  double traces_checked_at_ = -10.0;
+  bool trace_was_pending_ = false;
   void DrawStory(const SaveSummary& progress, float label_w, float scale);
   void DrawSettings(float scale);
   void LoadAchievements();
@@ -264,6 +287,33 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   void DrawSystem(float scale);  // Settings > System
   void DrawAbout(float scale);
   void DrawGameFolder(float label_w, float scale);
+  // Game data > Folders: where the game's files go (shader cache, logs...).
+  void DrawFilesFolder(float label_w, float scale);
+  void SetFilesFolder(const std::filesystem::path& folder);
+  // The system's folder or file dialog. SDL answers on its own thread; the
+  // pick is applied on the next frame.
+  enum class PickFor { kGame, kDiscImage, kFiles, kExtractTo };
+  void Pick(PickFor what);
+  void ApplyPicked();
+  std::mutex picked_mutex_;
+  bool picked_ready_ = false;  // under picked_mutex_
+  PickFor picked_for_ = PickFor::kGame;
+  std::filesystem::path picked_path_;
+  std::string picked_error_;
+  char files_folder_buffer_[1024] = {};
+  std::filesystem::path files_at_start_;  // platform::CacheDir() when the launcher opened
+  // Moves the files from the previous Files folder to the new one.
+  struct MoveFiles {
+    enum State { kIdle, kRunning, kDone, kFailed };
+    std::atomic<int> state{kIdle};
+    std::thread worker;
+    std::mutex mutex;
+    std::string message;  // under mutex
+    void Start(const std::filesystem::path& from, const std::filesystem::path& to);
+    void Join();
+    std::string Message();
+  };
+  MoveFiles move_files_;
   bool SidebarButton(const char* label, bool selected, float width, float height);
   ImFont* HeadingFont() const;
   bool GameDataValid() const;
@@ -280,6 +330,8 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   std::function<void(std::function<void()>)> call_in_ui_thread_deferred_;
   std::function<void()> on_relaunch_;
   std::function<bool(const LauncherSettings&)> in_game_needs_restart_;  // set in game only
+  // Opened over the running game (Esc): drawn translucent, the game shows through.
+  bool OverGame() const { return bool(in_game_needs_restart_); }
   std::function<void(const LauncherSettings&, bool)> on_resume_;
   bool resume_requested_ = false;
   bool fonts_at_start_ = false;  // the game fonts were there when the launcher opened
@@ -291,7 +343,7 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   std::string confirm_;       // the delete button waiting for a second click
   std::string save_message_;  // result of the last save action
   Image logo_, panel_, title_, button_;
-  Page page_ = Page::kSettings;
+  Page page_ = Page::kSaves;
   std::vector<GpuInfo> gpus_;
   int automatic_gpu_ = -1;  // what vulkan_device=-1 picks
   std::vector<Achievement> achievements_;
@@ -304,8 +356,10 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   std::string capture_flag_;        // keybind being rebound
   int capture_slot_ = 0;            // 0 = primary key, 1 = alternate
   int controls_tab_ = 0;            // 0 test, 1 controller, 2 keyboard
-  enum { kSettingsSystem, kSettingsDisplay, kSettingsShaders, kSettingsLogs, kSettingsEnhancements };
+  enum { kSettingsSystem, kSettingsDisplay, kSettingsEnhancements };
+  enum { kSavesInfo, kSavesProgress, kSavesFolders, kSavesShaders, kSavesLogs, kSavesTraces };
   int settings_tab_request_ = -1;   // Settings tab to open on the next frame
+  int saves_tab_request_ = -1;      // Saves tab to open on the next frame
   bool link_hovered_ = false;       // About's repository link, last frame
   double copied_at_ = -10.0;        // About > Copy (ImGui time; -2 = failed)
   SDL_Gamepad* pad_ = nullptr;      // opened while Controls is shown
@@ -327,7 +381,7 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   IsoExtract iso_extract_;
   // The game started by Play.
   struct GameProcess {
-    int pid = -1;
+    platform::Process process;
     bool stopping = false;  // Stop was pressed
     std::chrono::steady_clock::time_point stop_time{};
     bool Start(std::string* error);
@@ -335,7 +389,7 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
     // Reaps it once it exits: false then (`failed` = it exited with an
     // error, not by Stop).
     bool Poll(bool* failed);
-    bool Running() const { return pid > 0; }
+    bool Running() const { return process.Running(); }
   };
   GameProcess game_;
   std::filesystem::file_time_type settings_saved_time_{};  // after our last save

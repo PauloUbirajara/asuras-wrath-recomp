@@ -5,6 +5,7 @@
 #include <cstring>
 
 extern "C" {
+#include <sys/types.h>  // off_t, which lzx.h uses (not pulled in on Windows)
 #include <lzx.h>
 #include <mspack.h>
 }

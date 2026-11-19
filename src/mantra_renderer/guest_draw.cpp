@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <chrono>
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
@@ -174,7 +175,8 @@ void DecodeVertexElement(const MantraShader::VertexInput& in, const uint32_t* w,
     default: break;
   }
   if (in.exp_adjust) {
-    const float scale = std::ldexp(1.0f, in.exp_adjust);
+    // 2^exp_adjust (exp_adjust is -32..31), without ldexp per element.
+    const float scale = std::bit_cast<float>(uint32_t(127 + in.exp_adjust) << 23);
     for (uint32_t c = 0; c < 4; ++c) o[c] *= scale;
   }
 }
@@ -227,6 +229,20 @@ bool IsBlendable(VkFormat format) {
 }  // namespace
 
 // --- Vertex inputs ---------------------------------------------------------------
+
+namespace {
+// Adds the scope's wall time to a nanosecond counter (the hitch line's draw
+// phases).
+struct PhaseNs {
+  uint64_t& acc;
+  std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+  ~PhaseNs() {
+    acc += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - t0)
+                        .count());
+  }
+};
+}  // namespace
 
 namespace {
 // The remap that makes a fetch read with `container` (as the translation
@@ -1019,29 +1035,52 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::UploadGeometry(
     const uint32_t buffer_base = fetch.address;  // in dwords
     const uint32_t* membase = memory_->TranslatePhysical<const uint32_t*>(0);
     const uint32_t element_words = VertexElementWords(in.format);
-    // Decodes `count` vertices starting at vertex index `first` into `out`.
-    auto decode = [&](float* out, uint64_t first, uint32_t count) {
+    // Decodes `count` vertices starting at vertex index `first` into `dest`
+    // (upload memory: write-combined, so scattered or repeated writes to it
+    // are very slow). Decoded in cached memory first, then copied once.
+    const bool raw_packed = in.is_uint && (in.format == xenos::VertexFormat::k_10_11_11 ||
+                                           in.format == xenos::VertexFormat::k_11_11_10);
+    auto decode = [&](float* dest, uint64_t first, uint32_t count) {
+      const auto decode_start = std::chrono::steady_clock::now();
+      expanded_scratch_.resize(size_t(count) * 4);
+      float* const out = expanded_scratch_.data();
+      const bool contiguous = vs.vertex_index_divisor <= 1;
       for (uint32_t v = 0; v < count; ++v) {
-        const uint64_t element = vs.vertex_index_divisor > 1
-                                     ? (first + v) / vs.vertex_index_divisor
-                                     : first + v;
+        const uint64_t element = contiguous ? first + v : (first + v) / vs.vertex_index_divisor;
         const uint64_t word = element * in.stride_words + uint64_t(in.offset_words);
         uint32_t words[4] = {};
-        for (uint32_t i = 0; i < element_words; ++i) {
-          if (word + i < buffer_words) {
-            const uint32_t address =
-                ((buffer_base + uint32_t(word + i)) << 2) & kGuestPhysicalMemoryMask;
-            words[i] = xenos::GpuSwap(membase[address >> 2], fetch.endian);
+        if (word + element_words <= buffer_words) {
+          const uint32_t address = ((buffer_base + uint32_t(word)) << 2) & kGuestPhysicalMemoryMask;
+          if (address + element_words * 4 <= kGuestPhysicalMemoryMask + 1u) {
+            for (uint32_t i = 0; i < element_words; ++i) {
+              words[i] = xenos::GpuSwap(membase[(address >> 2) + i], fetch.endian);
+            }
+          } else {
+            for (uint32_t i = 0; i < element_words; ++i) {
+              const uint32_t a = ((buffer_base + uint32_t(word + i)) << 2) & kGuestPhysicalMemoryMask;
+              words[i] = xenos::GpuSwap(membase[a >> 2], fetch.endian);
+            }
+          }
+        } else {
+          for (uint32_t i = 0; i < element_words; ++i) {
+            if (word + i < buffer_words) {
+              const uint32_t a = ((buffer_base + uint32_t(word + i)) << 2) & kGuestPhysicalMemoryMask;
+              words[i] = xenos::GpuSwap(membase[a >> 2], fetch.endian);
+            }
           }
         }
-        if (in.is_uint && (in.format == xenos::VertexFormat::k_10_11_11 ||
-                           in.format == xenos::VertexFormat::k_11_11_10)) {
+        if (raw_packed) {
           // Packed normal: the shader unpacks the raw word itself.
           std::memcpy(out + v * 4, words, 4);
+          std::memset(out + v * 4 + 1, 0, 12);
         } else {
           DecodeVertexElement(in, words, out + v * 4);
         }
       }
+      std::memcpy(dest, out, size_t(count) * 16);
+      guest_draw_stats_.expand_ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                                  std::chrono::steady_clock::now() - decode_start)
+                                                  .count());
     };
     // Static meshes are drawn many times per frame (and skinned ones once per
     // submesh over the whole vertex range): keep the decoded elements in the
@@ -1304,7 +1343,10 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
   }
   // Textures first: loading them may record transfers and submit.
   TextureBindings textures;
-  PrepareTextures(vs, ps, textures);
+  {
+    PhaseNs phase{frame_timing_.phase_ns[0]};
+    PrepareTextures(vs, ps, textures);
+  }
   VkDescriptorSet texture_set = VK_NULL_HANDLE;
 
   mantra::SharedConstants shared;
@@ -1351,8 +1393,12 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
     }
     const uint64_t submission = submission_current_;
     uint32_t attempt_spec = spec_constants;
-    const DrawResult geometry = UploadGeometry(*vs, prim_type, index_count, index_buffer_info,
-                                               restart_allowed, key, upload, attempt_spec);
+    DrawResult geometry;
+    {
+      PhaseNs phase{frame_timing_.phase_ns[1]};
+      geometry = UploadGeometry(*vs, prim_type, index_count, index_buffer_info, restart_allowed,
+                                key, upload, attempt_spec);
+    }
     if (geometry == DrawResult::kSkipped) {
       ++guest_draw_stats_.skipped_geometry;
       return geometry;
@@ -1363,6 +1409,7 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
       continue;
     }
     shared.vertex_index_base = upload.vertex_index_base;
+    PhaseNs phase{frame_timing_.phase_ns[2]};
     if (!PrepareDrawConstants(offsets, shared)) {
       return DrawResult::kFailed;
     }
@@ -1384,7 +1431,12 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
 
   VkCommandBuffer cmd = BeginCommands();
   VkRect2D render_area;
-  if (!BeginDrawRendering(cmd, color_mask, use_depth, key, render_area)) {
+  bool have_target;
+  {
+    PhaseNs phase{frame_timing_.phase_ns[3]};
+    have_target = BeginDrawRendering(cmd, color_mask, use_depth, key, render_area);
+  }
+  if (!have_target) {
     ++guest_draw_stats_.skipped_no_target;
     return DrawResult::kSkipped;
   }
@@ -1421,9 +1473,13 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
 
   const size_t known_pipelines = draw_pipelines_.size();
   bool pending = false;
-  const VkPipeline pipeline = draw_pipelines_.Get(key, &pending);
-  if (pipeline && draw_pipelines_.size() != known_pipelines) {
-    RecordPipeline(*vs, ps, key);
+  VkPipeline pipeline;
+  {
+    PhaseNs phase{frame_timing_.phase_ns[4]};
+    pipeline = draw_pipelines_.Get(key, &pending);
+    if (pipeline && draw_pipelines_.size() != known_pipelines) {
+      RecordPipeline(*vs, ps, key);
+    }
   }
   if (pending) {
     // Building in the background; the draw is skipped until it's ready.

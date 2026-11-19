@@ -30,6 +30,8 @@ add_executable(mantra_shadergen
     xxx_package.cpp
     "${XENOS_RECOMP_SRC}/shader_recompiler.cpp"
     "${XENOS_RECOMP_SRC}/dxc_compiler.cpp"
+    # Workers are this tool run again (platform::Process).
+    "${CMAKE_SOURCE_DIR}/src/platform/$<IF:$<PLATFORM_ID:Windows>,platform_win.cpp,platform_posix.cpp>"
 )
 
 # XenosRecomp sources expect pch.h to be included first; DXC's WinAdapter.h
@@ -57,11 +59,26 @@ target_link_libraries(mantra_shadergen PRIVATE
     mspack
 )
 
-# Run from the build directory: find libdxcompiler.so next to the tool.
-add_custom_command(TARGET mantra_shadergen POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        $<TARGET_FILE:Microsoft::DirectXShaderCompiler> $<TARGET_FILE_DIR:mantra_shadergen>
-    VERBATIM)
+# Run from the build directory: find the DXC library next to the tool
+# (libdxcompiler.so; on Windows dxcompiler.dll and dxil.dll, which signs the
+# DXIL DXC also builds).
+if(WIN32)
+  # dxcapi.h needs IUnknown and IStream, which WIN32_LEAN_AND_MEAN (from
+  # rexruntime) leaves out of windows.h.
+  target_compile_options(mantra_shadergen PRIVATE
+      "SHELL:-include windows.h" "SHELL:-include objidl.h")
+  target_link_libraries(mantra_shadergen PRIVATE shell32 ole32)
+  add_custom_command(TARGET mantra_shadergen POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          $<TARGET_FILE:Microsoft::DirectXShaderCompiler> $<TARGET_FILE:Microsoft::DXIL>
+          $<TARGET_FILE_DIR:mantra_shadergen>
+      VERBATIM)
+else()
+  add_custom_command(TARGET mantra_shadergen POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          $<TARGET_FILE:Microsoft::DirectXShaderCompiler> $<TARGET_FILE_DIR:mantra_shadergen>
+      VERBATIM)
+endif()
 set_target_properties(mantra_shadergen PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
     BUILD_RPATH "$ORIGIN")

@@ -112,15 +112,13 @@ constexpr Entry kEntries[] = {
     {"Alternate", "サブ", "Alternativ", "Secondaire", "Alternativa", "Alternativo"},
     {"Press a key...", "キーを押してください...", "Taste drücken...", "Appuyez sur une touche...",
      "Pulsa una tecla...", "Premi un tasto..."},
-    {"In game: %s performance, %s settings, %s achievements, %s console.",
-     "ゲーム中: %s パフォーマンス、%s 設定、%s 実績、%s コンソール",
-     "Im Spiel: %s Leistung, %s Einstellungen, %s Erfolge, %s Konsole.",
-     "En jeu : %s performances, %s paramètres, %s succès, %s console.",
-     "En el juego: %s rendimiento, %s ajustes, %s logros, %s consola.",
-     "In gioco: %s prestazioni, %s impostazioni, %s obiettivi, %s console."},
+    {"In game: %s trace a frame, %s settings, %s achievements, %s console.",
+     "ゲーム中: %s トレース、%s 設定、%s 実績、%s コンソール",
+     "Im Spiel: %s Frame tracen, %s Einstellungen, %s Erfolge, %s Konsole.",
+     "En jeu : %s tracer une image, %s paramètres, %s succès, %s console.",
+     "En el juego: %s trazar un fotograma, %s ajustes, %s logros, %s consola.",
+     "In gioco: %s traccia un fotogramma, %s impostazioni, %s obiettivi, %s console."},
     {"Overlays", "オーバーレイ", "Overlays", "Superpositions", "Superposiciones", "Overlay"},
-    {"Performance overlay", "パフォーマンス表示", "Leistungsanzeige", "Affichage des performances",
-     "Indicador de rendimiento", "Indicatore prestazioni"},
     {"Settings overlay", "設定画面", "Einstellungsfenster", "Fenêtre des paramètres",
      "Ventana de ajustes", "Finestra impostazioni"},
     {"Achievements overlay", "実績画面", "Erfolgsfenster", "Fenêtre des succès", "Ventana de logros",
@@ -545,19 +543,18 @@ constexpr Entry kEntries[] = {
     {"Browse...", "参照...", "Durchsuchen...", "Parcourir...", "Examinar...", "Sfoglia..."},
     {"Disc image...", "ディスクイメージ...", "Disc-Image...", "Image disque...", "Imagen de disco...",
      "Immagine disco..."},
-    {"The shader cache, the logs and the other files the game makes. Drop a folder on this "
-     "window to use it. The logs move there the next time the game starts.",
-     "シェーダーキャッシュ、ログなど、ゲームが作るファイルの保存先です。フォルダをこのウィンドウに"
-     "ドロップしても指定できます。ログは次にゲームを起動したときから保存されます。",
-     "Shader-Cache, Logs und die übrigen Dateien, die das Spiel anlegt. Zieh einen Ordner auf "
-     "dieses Fenster, um ihn zu verwenden. Die Logs landen ab dem nächsten Spielstart dort.",
-     "Le cache des shaders, les journaux et les autres fichiers créés par le jeu. Déposez un "
-     "dossier sur cette fenêtre pour l'utiliser. Les journaux y iront au prochain démarrage du jeu.",
-     "La caché de shaders, los registros y los demás archivos que crea el juego. Suelta una "
-     "carpeta en esta ventana para usarla. Los registros irán allí la próxima vez que se inicie el "
-     "juego.",
-     "La cache degli shader, i log e gli altri file creati dal gioco. Trascina una cartella su "
-     "questa finestra per usarla. I log andranno lì dal prossimo avvio del gioco."},
+    {"Everything the game makes: saves, the shader cache, logs and traces. Drop a folder on this "
+     "window to use it.",
+     "セーブデータ、シェーダーキャッシュ、ログ、トレースなど、ゲームが作るファイルの保存先です。"
+     "フォルダをこのウィンドウにドロップしても指定できます。",
+     "Alles, was das Spiel anlegt: Spielstände, Shader-Cache, Logs und Traces. Zieh einen Ordner "
+     "auf dieses Fenster, um ihn zu verwenden.",
+     "Tout ce que crée le jeu : sauvegardes, cache des shaders, journaux et traces. Déposez un "
+     "dossier sur cette fenêtre pour l'utiliser.",
+     "Todo lo que crea el juego: partidas guardadas, caché de shaders, registros y trazas. Suelta "
+     "una carpeta en esta ventana para usarla.",
+     "Tutto ciò che crea il gioco: salvataggi, cache degli shader, log e tracce. Trascina una "
+     "cartella su questa finestra per usarla."},
     {"That folder has no default.xex, so it is now the folder for the game's files (Game data > "
      "Folders).",
      "このフォルダに default.xex がないため、ゲームのファイルの保存先にしました（ゲームデータ > フォルダ）。",
@@ -667,12 +664,12 @@ constexpr Entry kEntries[] = {
      "Crea primero la caché de shaders (o pulsa Jugar otra vez para empezar sin ella).",
      "Crea prima la cache shader (o premi di nuovo Gioca per avviare senza)."},
     // About
-    {"The Xbox 360 game, recompiled to run natively on Linux. It needs your own copy of the game.",
-     "Xbox 360 版のゲームを Linux で直接動くように再コンパイルしたものです。遊ぶにはゲーム本体を用意してください。",
-     "Das Xbox-360-Spiel, neu kompiliert, um nativ unter Linux zu laufen. Du brauchst dein eigenes Exemplar des Spiels.",
-     "Le jeu Xbox 360, recompilé pour tourner nativement sous Linux. Il faut votre propre copie du jeu.",
-     "El juego de Xbox 360, recompilado para funcionar de forma nativa en Linux. Necesitas tu propia copia del juego.",
-     "Il gioco per Xbox 360, ricompilato per girare nativamente su Linux. Serve una tua copia del gioco."},
+    {"The Xbox 360 game, recompiled to run natively on PC. It needs your own copy of the game.",
+     "Xbox 360 版のゲームを PC で直接動くように再コンパイルしたものです。遊ぶにはゲーム本体を用意してください。",
+     "Das Xbox-360-Spiel, neu kompiliert, um nativ auf dem PC zu laufen. Du brauchst dein eigenes Exemplar des Spiels.",
+     "Le jeu Xbox 360, recompilé pour tourner nativement sur PC. Il faut votre propre copie du jeu.",
+     "El juego de Xbox 360, recompilado para funcionar de forma nativa en PC. Necesitas tu propia copia del juego.",
+     "Il gioco per Xbox 360, ricompilato per girare nativamente su PC. Serve una tua copia del gioco."},
     {"Repository", "リポジトリ", "Repository", "Dépôt", "Repositorio", "Repository"},
     {"Built", "ビルド", "Erstellt", "Compilé", "Compilado", "Compilato"},
     {"This computer", "このパソコン", "Dieser Computer", "Cet ordinateur", "Este equipo",

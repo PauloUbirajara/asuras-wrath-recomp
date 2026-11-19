@@ -1,9 +1,7 @@
 #include "draw_pipelines.h"
 #include "mantra_log.h"
+#include "../platform/platform.h"
 
-#include <sys/resource.h>
-#include <sys/syscall.h>
-#include <unistd.h>
 
 #include <algorithm>
 #include <atomic>
@@ -205,7 +203,7 @@ void DrawPipelines::SaveCache() {
   std::error_code ec;
   std::filesystem::create_directories(cache_path_.parent_path(), ec);
   const std::filesystem::path temp = cache_path_.string() + ".tmp";
-  if (std::FILE* file = std::fopen(temp.c_str(), "wb")) {
+  if (std::FILE* file = std::fopen(temp.string().c_str(), "wb")) {
     const bool ok = std::fwrite(data.data(), 1, size, file) == size;
     if (std::fclose(file) == 0 && ok) {
       std::filesystem::rename(temp, cache_path_, ec);
@@ -245,7 +243,7 @@ void DrawPipelines::WarmUp(std::vector<PipelineKey> keys) {
 
 void DrawPipelines::WarmWorker() {
   // Below the game's threads: this only has to finish before it's needed.
-  setpriority(PRIO_PROCESS, pid_t(syscall(SYS_gettid)), 10);
+  asura::platform::LowerThreadPriority();
   for (;;) {
     const size_t i = warm_next_.fetch_add(1);
     if (i >= warm_keys_.size() || warm_stop_.load(std::memory_order_relaxed)) {

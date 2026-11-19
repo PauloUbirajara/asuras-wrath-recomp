@@ -13,6 +13,8 @@
 #   tools/package.sh --version V     name the files with V (default: the git tag
 #                                    on HEAD without its "v", else the commit)
 #   tools/package.sh --clean         delete earlier packages in out/package first
+#   tools/package.sh --windows       package the Windows build made on Linux
+#                                    (./build.sh --windows) as a .zip instead
 #
 # Writes out/package/asuras-wrath-recomp-<version>-linux-x86_64.tar.gz (and
 # .AppImage) plus SHA256SUMS; the staging folders are removed afterwards.
@@ -26,15 +28,18 @@ BUILD_DIR="$REPO_ROOT/out/build/linux-amd64-release"
 APPIMAGE=false
 STRIP=true
 CLEAN=false
+WINDOWS=false
+BUILD_DIR_SET=false
 VERSION=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --appimage) APPIMAGE=true ;;
     --no-strip) STRIP=false ;;
-    --build-dir) BUILD_DIR="$(cd "$2" && pwd)"; shift ;;
+    --build-dir) BUILD_DIR="$(cd "$2" && pwd)"; BUILD_DIR_SET=true; shift ;;
+    --windows) WINDOWS=true ;;
     --version) VERSION="$2"; shift ;;
     --clean) CLEAN=true ;;
-    -h|--help) sed -n '2,23p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
     *) echo "[!] Unknown argument: $1" >&2; exit 1 ;;
   esac
   shift
@@ -56,6 +61,56 @@ BASE="$NAME-$VERSION-linux-x86_64"
 $CLEAN && rm -rf "$OUT"
 mkdir -p "$OUT"
 trap 'rm -rf "$WORK"' EXIT
+
+# --- Windows (.zip) ---------------------------------------------------------------
+if $WINDOWS; then
+  $BUILD_DIR_SET || BUILD_DIR="$REPO_ROOT/out/build/win-amd64-release-cross"
+  BASE="$NAME-$VERSION-windows-x86_64"
+  [ -f "$BUILD_DIR/asura_wrath.exe" ] || { echo "[!] No build in $BUILD_DIR (run ./build.sh --windows)" >&2; exit 1; }
+  if grep -q -- "-march=native" "$BUILD_DIR/CMakeCache.txt" 2>/dev/null; then
+    echo "[!] $BUILD_DIR was built for your CPU (-march=native): the package may not"
+    echo "    run on other CPUs. Use ./build.sh --windows --portable for a package to share."
+  fi
+  rm -rf "$STAGE"
+  mkdir -p "$STAGE"
+  for f in asura_wrath.exe rexruntime.dll rexgpu-mantra.dll mantra_shadergen.exe dxcompiler.dll dxil.dll; do
+    [ -e "$BUILD_DIR/$f" ] || { echo "[!] Missing $BUILD_DIR/$f" >&2; exit 1; }
+    cp -L "$BUILD_DIR/$f" "$STAGE/"
+  done
+  # Any other DLL staged next to the executable (the SDK's xenos renderer, SDL3).
+  for f in "$BUILD_DIR"/*.dll; do
+    [ -e "$STAGE/$(basename "$f")" ] || cp -L "$f" "$STAGE/"
+  done
+  cp -r "$REPO_ROOT/assets" "$STAGE/assets"
+  sed 's/$/\r/' > "$STAGE/README.txt" <<'TXT'
+Asura's Wrath Recompiled (Windows x86-64)
+
+You need your own copy of the game, extracted (or drop the .iso on the
+launcher window to extract it).
+
+Start asura_wrath.exe. In the launcher:
+  Game data > Folders  the game folder (the extracted folder, with default.xex),
+                       or drop the .iso on the window to extract it
+  Game data > Shaders  Build, once (about 10 minutes)
+  Play
+
+Needs Windows 10 or 11 (x64) and a Vulkan 1.3 driver (current AMD, NVIDIA or
+Intel drivers).
+If it says MSVCP140.dll or VCRUNTIME140.dll is missing, install the Microsoft
+Visual C++ Redistributable (x64): https://aka.ms/vs/17/release/vc_redist.x64.exe
+Files: everything the game makes (saves, shader and pipeline caches in cache\,
+logs in logs\) goes in Documents\asura_wrath_recomp, or the folder chosen in
+Game data > Folders > Files folder.
+Skip the launcher with --launcher=false (e.g. --launcher=false --game_data_root=<folder>).
+TXT
+  ZIP="$OUT/$BASE.zip"
+  rm -f "$ZIP"
+  (cd "$WORK" && zip -qr9 "$ZIP" "$NAME")
+  echo "[+] $ZIP ($(du -h "$ZIP" | cut -f1))"
+  (cd "$OUT" && sha256sum "$BASE.zip" > "SHA256SUMS-windows")
+  echo "[+] $OUT/SHA256SUMS-windows"
+  exit 0
+fi
 
 [ -x "$BUILD_DIR/asura_wrath" ] || { echo "[!] No build in $BUILD_DIR (run ./build.sh)" >&2; exit 1; }
 if grep -q -- "-march=native" "$BUILD_DIR/CMakeCache.txt" 2>/dev/null; then
@@ -88,8 +143,9 @@ Start ./asura_wrath (or the .AppImage). In the launcher:
 
 Needs glibc 2.38+ (Ubuntu 24.04, Fedora 39, Arch or newer) and a Vulkan 1.3
 driver (Mesa 23+ or NVIDIA 535+).
-Files: settings, saves and logs in ~/.local/share/asura_wrath_recomp,
-shader and pipeline caches in ~/.cache/asura_wrath_recomp.
+Files: everything the game makes (saves, shader and pipeline caches in
+cache/, logs in logs/) goes in ~/.local/share/asura_wrath_recomp, or the folder
+chosen in Game data > Folders > Files folder.
 Skip the launcher with --launcher=false (e.g. --launcher=false --game_data_root=<folder>).
 TXT
 # Libraries are found through RUNPATH $ORIGIN; drop build-tree entries.

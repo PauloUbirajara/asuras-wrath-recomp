@@ -250,11 +250,15 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
     uint64_t expanded_inputs = 0;    // inputs decoded on the CPU (10:11:11 into float)
     uint64_t render_passes = 0;
     uint64_t vertex_bytes = 0;
+    uint64_t expand_ns = 0;          // decoding those inputs
     uint64_t index_bytes = 0;
     uint64_t texture_sets = 0;
     uint64_t texture_sets_reused = 0;
   };
   GuestDrawStats guest_draw_stats_;
+  // CPU-decoded vertex inputs are built here (cached memory), then copied
+  // into upload memory at once.
+  std::vector<float> expanded_scratch_;
 
   // --- Guest shader constants -------------------------------------------------
   // Uploads this draw's VS/PS float constants and shared constants into the
@@ -337,8 +341,12 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
     // This frame.
     uint64_t fence_ns = 0, draw_ns = 0, copy_ns = 0, swap_ns = 0;
     size_t pipelines = 0;
-    uint64_t modules = 0, texture_bytes = 0, buffer_bytes = 0, vertex_bytes = 0;
+    uint64_t modules = 0, texture_bytes = 0, buffer_bytes = 0, vertex_bytes = 0, expand_ns = 0;
     uint64_t texture_ns[5] = {};  // load, watch, hash, swap, untile (TextureCache::Stats)
+    // Where draw time went: textures (their loads included), geometry,
+    // constants and descriptor sets, render targets, pipelines (DrawGuest);
+    // memexport draws run on the CPU, solid fills.
+    uint64_t phase_ns[7] = {};
     uint64_t thread_cpu_ns = 0;  // GPU thread CPU time at the last swap
     // This stats window.
     uint64_t frames = 0, over_50 = 0, over_100 = 0;

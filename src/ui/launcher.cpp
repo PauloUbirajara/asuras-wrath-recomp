@@ -88,7 +88,6 @@ constexpr BindRow kBindRows[] = {
 // The SDK's overlay keys (rex_app.cpp RegisterBind): one key each, no
 // modifiers, active whether or not the keyboard plays.
 constexpr BindRow kOverlayRows[] = {
-    {"Performance overlay", "bind_debug_overlay"},
     {"Settings overlay", "bind_settings"},
     {"Achievements overlay", "bind_achievements"},
     {"Console", "bind_console"},
@@ -396,9 +395,13 @@ void ApplyLauncherDefaults(const LauncherSettings& s) {
     SetIfUnset("present_safe_area_x", "1");
     SetIfUnset("present_safe_area_y", "1");
   }
-  // The SDK's performance overlay has no key unless one was chosen (F3 traces).
-  if (!s.binds.count("bind_debug_overlay")) SetIfUnset("bind_debug_overlay", BindDefault("bind_debug_overlay"));
   for (const auto& [flag, value] : s.binds) SetIfUnset(flag, value);
+  // The SDK's performance overlay gets no key (its F3 traces a frame), even
+  // from an older launcher.cfg or the config TOML: it would take the key
+  // first (the SDK runs the first bind that matches).
+  for (auto& entry : rex::cvar::GetRegistry()) {
+    if (entry.name == "bind_debug_overlay" && entry.setter) entry.setter("");
+  }
   SetIfUnset("left_stick_deadzone_percentage", std::to_string(s.deadzone_left));
   SetIfUnset("right_stick_deadzone_percentage", std::to_string(s.deadzone_right));
   input::SetPadMap(PadMapFrom(s));
@@ -734,6 +737,20 @@ std::string LauncherDialog::IsoExtract::Message() {
 
 // --- Moving the Files folder ---------------------------------------------------
 
+namespace {
+// What moves with the Files folder: everything but launcher.cfg (it stays in
+// the default folder, as it names the Files folder).
+std::vector<std::filesystem::path> MovableFiles(const std::filesystem::path& folder) {
+  std::vector<std::filesystem::path> out;
+  std::error_code ec;
+  for (const auto& entry : std::filesystem::directory_iterator(folder, ec)) {
+    if (entry.path().filename() == LauncherSettings::PathIn({}).filename()) continue;
+    out.push_back(entry.path());
+  }
+  return out;
+}
+}  // namespace
+
 void LauncherDialog::MoveFiles::Start(const std::filesystem::path& from,
                                       const std::filesystem::path& to) {
   Join();
@@ -744,8 +761,7 @@ void LauncherDialog::MoveFiles::Start(const std::filesystem::path& from,
     fs::create_directories(to, ec);
     int moved = 0, skipped = 0;
     std::string error;
-    std::vector<fs::path> entries;
-    for (const auto& entry : fs::directory_iterator(from, ec)) entries.push_back(entry.path());
+    const std::vector<fs::path> entries = MovableFiles(from);
     for (const fs::path& source : entries) {
       const fs::path target = to / source.filename();
       {
@@ -867,7 +883,7 @@ LauncherDialog::LauncherDialog(rex::ui::ImGuiDrawer* drawer,
   button_ = LoadImage(GameUiFile("menu_button.png"), true);
   title_ = LoadImage(GameUiFile("launcher_title.png"));
   std::snprintf(game_data_buffer_, sizeof(game_data_buffer_), "%s", settings_.game_data.c_str());
-  files_at_start_ = platform::CacheDir();
+  files_at_start_ = platform::FilesDir();
   std::snprintf(files_folder_buffer_, sizeof(files_folder_buffer_), "%s",
                 files_at_start_.string().c_str());
   // GPUs in the order the SDK numbers them (vulkan_device), and the one it
@@ -1020,7 +1036,7 @@ void LauncherDialog::LoadAchievements() {
   // [unlocked.<id>] / filetime = <FILETIME>
   char unlock_name[32];
   std::snprintf(unlock_name, sizeof(unlock_name), "%08X.toml", kTitleId);
-  std::ifstream unlocks(user_data_root_ / "achievements" / unlock_name);
+  std::ifstream unlocks(platform::FilesDir() / "achievements" / unlock_name);
   Achievement* current = nullptr;
   while (unlocks && std::getline(unlocks, line)) {
     uint32_t id = 0;
@@ -1177,8 +1193,8 @@ void LauncherDialog::UseDroppedPath(const std::filesystem::path& path) {
     std::filesystem::path target = path.parent_path() / path.stem();
     if (!settings_.data_folder.empty()) {
       target = std::filesystem::path(settings_.data_folder) / path.stem();
-    } else if (access(path.parent_path().c_str(), W_OK) != 0) {
-      target = user_data_root_ / "game";
+    } else if (!platform::IsWritable(path.parent_path())) {
+      target = platform::FilesDir() / "game";
     }
     std::snprintf(iso_target_buffer_, sizeof(iso_target_buffer_), "%s", target.string().c_str());
     iso_extract_.state = IsoExtract::kIdle;
@@ -2185,8 +2201,8 @@ void LauncherDialog::DrawKeyboard(float scale) {
     SaveSettings();
   }
   ImGui::SameLine();
-  ImGui::TextDisabled(T("In game: %s performance, %s settings, %s achievements, %s console."),
-                      FlagValue("bind_debug_overlay").c_str(), FlagValue("bind_settings").c_str(),
+  ImGui::TextDisabled(T("In game: %s trace a frame, %s settings, %s achievements, %s console."),
+                      FlagValue("bind_trace").c_str(), FlagValue("bind_settings").c_str(),
                       FlagValue("bind_achievements").c_str(), FlagValue("bind_console").c_str());
 }
 
@@ -2258,8 +2274,7 @@ void LauncherDialog::DrawAchievements(float scale) {
       // FILETIME: 100 ns ticks since 1601.
       const std::time_t t = std::time_t(a.unlocked_filetime / 10000000ull - 11644473600ull);
       char date[32];
-      std::tm tm{};
-      localtime_r(&t, &tm);
+      const std::tm tm = platform::LocalTime(t);
       std::strftime(date, sizeof(date), "%Y-%m-%d", &tm);
       text = date;
     }
@@ -2560,14 +2575,14 @@ void LauncherDialog::ApplyPicked() {
 // --- Files folder ----------------------------------------------------------------
 
 void LauncherDialog::SetFilesFolder(const std::filesystem::path& folder) {
-  const std::filesystem::path chosen =
-      folder.empty() ? platform::DefaultCacheDir() : folder.lexically_normal();
-  settings_.data_folder = chosen == platform::DefaultCacheDir() ? "" : chosen.string();
+  // The default: the folder launcher.cfg is in (the SDK's user folder).
+  const std::filesystem::path fallback = settings_path_.parent_path().lexically_normal();
+  const std::filesystem::path chosen = folder.empty() ? fallback : folder.lexically_normal();
+  settings_.data_folder = chosen == fallback ? "" : chosen.string();
   std::snprintf(files_folder_buffer_, sizeof(files_folder_buffer_), "%s", chosen.string().c_str());
-  // At once for this launcher (the shader cache it shows, the game Play
-  // starts); the logs follow on the next start.
-  platform::SetEnv(platform::kDataDirVariable,
-                   settings_.data_folder.empty() ? nullptr : settings_.data_folder.c_str());
+  // At once for this launcher (the saves and shader cache it shows, the game
+  // Play starts); its own log stays where it is until the next start.
+  platform::SetEnv(platform::kDataDirVariable, chosen.string().c_str());
   shaders_checked_at_ = -10.0;
   SaveSettings();
 }
@@ -2576,7 +2591,9 @@ void LauncherDialog::DrawFilesFolder(float label_w, float scale) {
   namespace fs = std::filesystem;
   std::error_code ec;
   const bool moving = move_files_.state == MoveFiles::kRunning;
-  const bool busy = moving || game_.Running() || shader_build_.state == ShaderBuild::kRunning ||
+  // Over the game too: its saves and caches are open.
+  const bool busy = moving || game_.Running() || OverGame() ||
+                    shader_build_.state == ShaderBuild::kRunning ||
                     iso_extract_.state == IsoExtract::kRunning;
   ImGui::Spacing();
   ImGui::AlignTextToFramePadding();
@@ -2600,21 +2617,19 @@ void LauncherDialog::DrawFilesFolder(float label_w, float scale) {
   ImGui::EndDisabled();
   ImGui::SetCursorPosX(label_w);
   ImGui::PushTextWrapPos(0);
-  ImGui::TextDisabled("%s", T("The shader cache, the logs and the other files the game makes. "
-                              "Drop a folder on this window to use it. The logs move there the "
-                              "next time the game starts."));
+  ImGui::TextDisabled("%s", T("Everything the game makes: saves, the shader cache, logs and "
+                              "traces. Drop a folder on this window to use it."));
   ImGui::PopTextWrapPos();
 
   // The files made before the change stay in the previous folder until moved.
-  const fs::path now = platform::CacheDir();
+  const fs::path now = platform::FilesDir();
   if (move_files_.state == MoveFiles::kDone) {
     message_ = move_files_.Message();
     move_files_.state = MoveFiles::kIdle;
     files_at_start_ = now;
     shaders_checked_at_ = -10.0;
   }
-  if (now == files_at_start_ || !fs::is_directory(files_at_start_, ec) ||
-      fs::is_empty(files_at_start_, ec)) {
+  if (now == files_at_start_ || MovableFiles(files_at_start_).empty()) {
     return;
   }
   ImGui::SetCursorPosX(label_w);
@@ -2764,7 +2779,7 @@ void LauncherDialog::DrawAbout(float scale) {
   ImGui::TextUnformatted("Asura's Wrath Recompiled");
   ImGui::PopFont();
   ImGui::PushTextWrapPos(0);
-  ImGui::TextDisabled("%s", T("The Xbox 360 game, recompiled to run natively on Linux. It needs your "
+  ImGui::TextDisabled("%s", T("The Xbox 360 game, recompiled to run natively on PC. It needs your "
                               "own copy of the game."));
   ImGui::PopTextWrapPos();
   ImGui::Spacing();
@@ -3229,11 +3244,10 @@ uint64_t FolderBytes(const std::filesystem::path& dir, std::filesystem::file_tim
 
 std::string FormatTime(std::filesystem::file_time_type t) {
   if (t == std::filesystem::file_time_type::min()) return "-";
-  const auto sys = std::chrono::file_clock::to_sys(t);
+  const auto sys = std::chrono::clock_cast<std::chrono::system_clock>(t);
   const std::time_t tt = std::chrono::system_clock::to_time_t(
       std::chrono::time_point_cast<std::chrono::system_clock::duration>(sys));
-  std::tm tm{};
-  localtime_r(&tt, &tm);
+  const std::tm tm = platform::LocalTime(tt);
   char text[32];
   std::strftime(text, sizeof(text), "%Y-%m-%d %H:%M", &tm);
   return text;
@@ -3277,7 +3291,7 @@ void LauncherDialog::ScanSaves() {
   saves_scanned_ = true;
   profiles_.clear();
   std::error_code ec;
-  for (const auto& entry : std::filesystem::directory_iterator(user_data_root_, ec)) {
+  for (const auto& entry : std::filesystem::directory_iterator(platform::FilesDir(), ec)) {
     if (!IsProfileFolder(entry)) continue;
     ProfileInfo profile;
     profile.xuid = entry.path().filename().string();
@@ -3591,19 +3605,27 @@ void LauncherDialog::DrawTraces(float scale) {
       if (!entry.is_regular_file(ec) || entry.path().extension() != ".log") continue;
       const uintmax_t size = entry.file_size(ec);
       auto& [read_size, found] = trace_scan_[entry.path()];
-      if (read_size != size) {
-        read_size = size;
+      if (size < read_size) {  // a new file under the same name
+        read_size = 0;
         found.clear();
-        std::ifstream in(entry.path());
+      }
+      if (size > read_size) {
+        std::ifstream in(entry.path(), std::ios::binary);
+        in.seekg(std::streamoff(read_size));
         // "trace: triggered at swap N, tracing swap M": M is the traced frame.
         static constexpr std::string_view kMark = ", tracing swap ";
-        for (std::string line; std::getline(in, line);) {
+        std::string line;
+        uintmax_t at_line = read_size;
+        while (std::getline(in, line)) {
+          if (in.eof()) break;  // no newline yet: being written, read it next time
+          at_line += line.size() + 1;
           const size_t at = line.find(kMark);
           if (at == std::string::npos || line.find("trace: triggered at swap ") == std::string::npos) continue;
           TraceEntry trace{entry.path(), line.size() > 20 && line[0] == '[' ? line.substr(1, 19) : "",
                            std::strtoull(line.c_str() + at + kMark.size(), nullptr, 10)};
           found.push_back(std::move(trace));
         }
+        read_size = at_line;
       }
       traces_.insert(traces_.end(), found.begin(), found.end());
     }
@@ -3696,9 +3718,9 @@ void LauncherDialog::DrawSaves(float scale) {
     SubHeading(HeadingFont(), T("Saved games"), scale);
     ImGui::TextWrapped("%s", T("No saves yet. The game makes one when you start a new game."));
     label(T("Folder"));
-    ImGui::TextUnformatted(user_data_root_.string().c_str());
+    ImGui::TextUnformatted(platform::FilesDir().string().c_str());
     ImGui::SetCursorPosX(label_w);
-    if (ImGui::Button(T("Open the folder"))) open_folder(user_data_root_);
+    if (ImGui::Button(T("Open the folder"))) open_folder(platform::FilesDir());
     return;
   }
 

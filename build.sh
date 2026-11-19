@@ -7,6 +7,9 @@
 #   ./build.sh --codegen        force a full rexglue codegen re-run
 #   ./build.sh --clean          wipe the build directory first
 #   ./build.sh --skip-cpu-check skip the check of your CPU (building for another PC)
+#   ./build.sh --windows        build for Windows x64 from Linux (clang + lld-link with
+#                               Microsoft's SDK from tools/setup_windows_cross.sh;
+#                               needs the Linux build first, for its codegen tool)
 #
 # CPU flags: the SDK core uses SSSE3/SSE4.1 intrinsics but only adds -msse4.1
 # to app targets, so the flags are passed here for everything, SDK included.
@@ -20,6 +23,7 @@ PORTABLE=false
 CODEGEN=false
 CLEAN=false
 CPU_CHECK=true
+WINDOWS=false
 for arg in "$@"; do
   case "$arg" in
     --debug) CONFIG=debug ;;
@@ -29,12 +33,24 @@ for arg in "$@"; do
     --codegen) CODEGEN=true ;;
     --clean) CLEAN=true ;;
     --skip-cpu-check) CPU_CHECK=false ;;
-    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    --windows) WINDOWS=true ;;
+    -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
     *) echo "[!] Unknown argument: $arg" >&2; exit 1 ;;
   esac
 done
 
 PRESET="linux-amd64-$CONFIG"
+if $WINDOWS; then
+  PRESET="win-amd64-$CONFIG-cross"
+  if [ ! -d out/toolchain/xwin/sdk ]; then
+    echo "[!] No Windows SDK yet: run tools/setup_windows_cross.sh first" >&2
+    exit 1
+  fi
+  if [ ! -x thirdparty/rexglue/out/linux-amd64/rexglue ]; then
+    echo "[!] The Windows build runs the Linux codegen tool: run ./build.sh first" >&2
+    exit 1
+  fi
+fi
 BUILD_DIR="$REPO_ROOT/out/build/$PRESET"
 CXX="${CXX:-clang++-20}"
 
@@ -79,4 +95,8 @@ cmake --preset "$PRESET" \
   -DCMAKE_CXX_FLAGS="$CPU_FLAGS"
 cmake --build "$BUILD_DIR" --parallel "$(nproc)"
 
-echo "[+] Built: $BUILD_DIR/asura_wrath"
+if $WINDOWS; then
+  echo "[+] Built: $BUILD_DIR/asura_wrath.exe"
+else
+  echo "[+] Built: $BUILD_DIR/asura_wrath"
+fi

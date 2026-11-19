@@ -67,7 +67,7 @@ add_library(rexgpu-mantra SHARED
     guest_draw.cpp
     texture_cache.cpp
     memexport.cpp
-    ../platform/platform_posix.cpp  # the cache folder
+    $<IF:$<PLATFORM_ID:Windows>,../platform/platform_win.cpp,../platform/platform_posix.cpp>  # the cache folder
     ${MANTRA_SHADER_INCS}
     ${MANTRA_BASE_SOURCES}
 )
@@ -79,6 +79,8 @@ set_target_properties(rexgpu-mantra PROPERTIES
 if(UNIX AND NOT APPLE)
   set_target_properties(rexgpu-mantra PROPERTIES
       BUILD_RPATH "$ORIGIN" INSTALL_RPATH "$ORIGIN" BUILD_WITH_INSTALL_RPATH ON)
+elseif(WIN32)
+  target_link_libraries(rexgpu-mantra PRIVATE shell32 ole32)  # platform_win.cpp
 endif()
 
 target_include_directories(rexgpu-mantra PRIVATE

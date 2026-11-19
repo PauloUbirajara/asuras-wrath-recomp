@@ -7,7 +7,7 @@
 #include <cstdio>
 #include <mutex>
 
-#include <dlfcn.h>
+#include "platform/platform.h"
 
 namespace asura::ui {
 
@@ -17,9 +17,9 @@ using SwapCount = uint64_t (*)();
 
 SwapCount SwapCounter() {
   static const SwapCount counter = [] () -> SwapCount {
-    // Already loaded by the SDK (RTLD_LOCAL); RTLD_NOLOAD only finds it.
-    void* lib = dlopen("librexgpu-mantra.so", RTLD_NOW | RTLD_NOLOAD);
-    return lib ? reinterpret_cast<SwapCount>(dlsym(lib, "mantra_guest_swap_count")) : nullptr;
+    // Already loaded by the SDK; only looked up.
+    return reinterpret_cast<SwapCount>(
+        platform::LoadedLibrarySymbol("rexgpu-mantra", "mantra_guest_swap_count"));
   }();
   return counter;
 }

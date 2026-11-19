@@ -10,18 +10,22 @@
 // package (LZX-decompressed), including the LZX-compressed shader code in
 // each package's ShaderCache export (the material shaders). Each unique shader goes through XenosRecomp
 // (HLSL) and DXC (SPIR-V) in a child process, since XenosRecomp asserts
-// instead of reporting unsupported shaders. --dumps reports how many runtime
+// instead of reporting unsupported shaders. A child is this tool run again
+// with --worker (no fork, so it works on Windows too). --dumps reports how many runtime
 // dumps (MANTRA_SHADER_DUMP) the cache covers.
 //
 // Some shaders make XenosRecomp/DXC use tens of GB; each child gets an
 // address-space cap (default 6 GB) and a CPU-time limit (default 120 s) so a
 // runaway translation fails alone instead of taking the machine down.
 
+#ifndef _WIN32
 #include <sys/resource.h>
-#include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -35,6 +39,7 @@
 
 #include "mantra_renderer/shader_cache_format.h"
 #include "mantra_renderer/shader_key.h"
+#include "platform/platform.h"
 #include "translator.h"
 #include "xxx_package.h"
 
@@ -192,7 +197,10 @@ struct ChildLimits {
   unsigned timeout_s = 120;
 };
 
+// In the worker. Windows has no address-space or CPU-time limit per process
+// here: the parent's wall-clock timeout (TranslateAll) is the only backstop.
 void ApplyChildLimits(const ChildLimits& limits) {
+#ifndef _WIN32
   if (limits.mem_mb) {
     const rlim_t bytes = rlim_t(limits.mem_mb) << 20;
     const rlimit as{bytes, bytes};
@@ -203,26 +211,77 @@ void ApplyChildLimits(const ChildLimits& limits) {
     setrlimit(RLIMIT_CPU, &cpu);
     alarm(limits.timeout_s * 2);  // wall-clock backstop
   }
+#else
+  (void)limits;
+#endif
+}
+
+// --worker <work> <index> <hash> [<hlsl dir>]: translates <work>/<index>.container
+// into <work>/<index>.spv and the .ok marker. Exit 0 = translated; 2, 3, 4 =
+// translation failed, vertex inputs not matched, DXC failed.
+int RunWorker(const fs::path& work, const std::string& index, uint64_t exact_hash,
+              const fs::path& hlsl_dir, const ChildLimits& limits) {
+  ApplyChildLimits(limits);
+  // Keep DXC's error text out of the way.
+  std::freopen((work / (index + ".log")).string().c_str(), "w", stderr);
+  const std::vector<uint8_t> container = ReadFile(work / (index + ".container"));
+  if (container.empty()) return 2;
+  TranslateResult r = TranslateContainer(container.data());
+  if (!hlsl_dir.empty()) {
+    char name[64];
+    std::snprintf(name, sizeof(name), "%s_%016llX.hlsl", r.is_pixel ? "ps" : "vs",
+                  static_cast<unsigned long long>(exact_hash));
+    WriteFile(hlsl_dir / name, r.hlsl.data(), r.hlsl.size());
+    // The container too, for comparing with runtime dumps.
+    std::snprintf(name, sizeof(name), "%s_%016llX.container", r.is_pixel ? "ps" : "vs",
+                  static_cast<unsigned long long>(exact_hash));
+    WriteFile(hlsl_dir / name, container.data(), container.size());
+  }
+  std::fflush(stderr);
+  if (!r.ok) {
+    return r.failure == TranslateResult::Failure::kStageInterface ? 3
+           : r.failure == TranslateResult::Failure::kDxc          ? 4
+                                                                  : 2;
+  }
+  WriteFile(work / (index + ".spv"), r.spirv.data(), r.spirv.size());
+  ChildResult cr{r.spec_constants_mask, r.texture_slot_mask, r.bool_mask,
+                 uint32_t(r.bool_overflow), r.ps_outputs, r.vertex_index_divisor,
+                 uint32_t(std::min<size_t>(r.vertex_elements.size(), 32)), {}};
+  std::copy_n(r.vertex_elements.begin(), cr.vertex_element_count, cr.vertex_elements);
+  WriteFile(work / (index + ".ok"), &cr, sizeof(cr));
+  return 0;
 }
 
 void TranslateAll(std::vector<Shader*>& shaders, const fs::path& work, const fs::path& hlsl_dir,
                   unsigned jobs, const ChildLimits& limits) {
-  std::unordered_map<pid_t, size_t> running;
+  using Clock = std::chrono::steady_clock;
+  const fs::path exe = asura::platform::ExePath();
+  struct Running {
+    std::unique_ptr<asura::platform::Process> process;
+    size_t index;
+    Clock::time_point started;
+  };
+  std::vector<Running> running;
   size_t next = 0, done = 0;
-  auto collect = [&](pid_t pid, int status) {
-    const size_t index = running[pid];
-    running.erase(pid);
+  auto collect = [&](size_t index, const asura::platform::ExitStatus& status, bool timed_out) {
     Shader& s = *shaders[index];
     const fs::path ok = work / (std::to_string(index) + ".ok");
-    if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+    if (!status.Ok()) {
+#ifndef _WIN32
+      const char* killed = !status.normal ? strsignal(status.code) : nullptr;
+#else
+      const char* killed = nullptr;
+#endif
       std::printf("  %016llX (%s): %s\n", static_cast<unsigned long long>(s.exact_hash),
                   s.source.c_str(),
-                  WIFSIGNALED(status)              ? strsignal(WTERMSIG(status))
-                  : WEXITSTATUS(status) == 3       ? "vertex inputs not matched"
-                  : WEXITSTATUS(status) == 4       ? "DXC failed"
-                                                   : "translation failed");
+                  timed_out              ? "timed out"
+                  : killed               ? killed
+                  : !status.normal       ? "killed"
+                  : status.code == 3     ? "vertex inputs not matched"
+                  : status.code == 4     ? "DXC failed"
+                                         : "translation failed");
     }
-    if (fs::exists(ok)) {
+    if (status.Ok() && fs::exists(ok)) {
       auto bytes = ReadFile(ok);
       if (bytes.size() == sizeof(ChildResult)) {
         ChildResult cr;
@@ -239,56 +298,56 @@ void TranslateAll(std::vector<Shader*>& shaders, const fs::path& work, const fs:
       s.spirv = ReadFile(work / (std::to_string(index) + ".spv"));
       s.translated = !s.spirv.empty();
     }
+    std::error_code ec;
+    fs::remove(work / (std::to_string(index) + ".container"), ec);
     if (++done % 50 == 0 || done == shaders.size()) {
       std::printf("  translated %zu/%zu\n", done, shaders.size());
       std::fflush(stdout);
     }
   };
+  // Wall clock per worker: twice the CPU limit (as the POSIX alarm).
+  const auto timeout = std::chrono::seconds(limits.timeout_s ? limits.timeout_s * 2 : 0);
   while (next < shaders.size() || !running.empty()) {
     while (next < shaders.size() && running.size() < jobs) {
-      std::fflush(stdout);
-      const pid_t pid = fork();
-      if (pid == 0) {
-        // Child: keep DXC's error text out of the way.
-        ApplyChildLimits(limits);
-        std::freopen((work / (std::to_string(next) + ".log")).c_str(), "w", stderr);
-        TranslateResult r = TranslateContainer(shaders[next]->container.data());
-        if (!hlsl_dir.empty()) {
-          char name[64];
-          std::snprintf(name, sizeof(name), "%s_%016llX.hlsl", r.is_pixel ? "ps" : "vs",
-                        static_cast<unsigned long long>(shaders[next]->exact_hash));
-          WriteFile(hlsl_dir / name, r.hlsl.data(), r.hlsl.size());
-          // The container too, for comparing with runtime dumps.
-          std::snprintf(name, sizeof(name), "%s_%016llX.container", r.is_pixel ? "ps" : "vs",
-                        static_cast<unsigned long long>(shaders[next]->exact_hash));
-          WriteFile(hlsl_dir / name, shaders[next]->container.data(),
-                    shaders[next]->container.size());
-        }
-        std::fflush(stderr);
-        if (!r.ok) {
-          _exit(r.failure == TranslateResult::Failure::kStageInterface ? 3
-                : r.failure == TranslateResult::Failure::kDxc            ? 4
-                                                                         : 2);
-        }
-        WriteFile(work / (std::to_string(next) + ".spv"), r.spirv.data(), r.spirv.size());
-        ChildResult cr{r.spec_constants_mask, r.texture_slot_mask, r.bool_mask,
-                       uint32_t(r.bool_overflow), r.ps_outputs, r.vertex_index_divisor,
-                       uint32_t(std::min<size_t>(r.vertex_elements.size(), 32)), {}};
-        std::copy_n(r.vertex_elements.begin(), cr.vertex_element_count, cr.vertex_elements);
-        WriteFile(work / (std::to_string(next) + ".ok"), &cr, sizeof(cr));
-        _exit(0);
+      const std::string index = std::to_string(next);
+      const Shader& shader = *shaders[next];
+      WriteFile(work / (index + ".container"), shader.container.data(), shader.container.size());
+      char hash[24];
+      std::snprintf(hash, sizeof(hash), "%016llX", static_cast<unsigned long long>(shader.exact_hash));
+      std::vector<std::string> args = {exe.string(), "--worker", work.string(), index, hash,
+                                       "--child-mem-mb", std::to_string(limits.mem_mb),
+                                       "--child-timeout", std::to_string(limits.timeout_s)};
+      if (!hlsl_dir.empty()) {
+        args.push_back("--hlsl");
+        args.push_back(hlsl_dir.string());
       }
-      if (pid < 0) {
-        std::perror("fork");
+      auto process = std::make_unique<asura::platform::Process>();
+      std::string error;
+      if (!process->Start(exe, args, /*capture_output=*/false, &error)) {
+        std::fprintf(stderr, "cannot start a worker: %s\n", error.c_str());
         return;
       }
-      running[pid] = next++;
+      running.push_back({std::move(process), next++, Clock::now()});
     }
-    int status = 0;
-    const pid_t pid = waitpid(-1, &status, 0);
-    if (pid > 0 && running.count(pid)) {
-      collect(pid, status);
+    bool any = false;
+    for (size_t i = 0; i < running.size();) {
+      Running& r = running[i];
+      std::optional<asura::platform::ExitStatus> status = r.process->TryWait();
+      bool timed_out = false;
+      if (!status && timeout.count() && Clock::now() - r.started > timeout) {
+        r.process->Kill();
+        status = r.process->Wait();
+        timed_out = true;
+      }
+      if (!status) {
+        ++i;
+        continue;
+      }
+      collect(r.index, *status, timed_out);
+      running.erase(running.begin() + std::ptrdiff_t(i));
+      any = true;
     }
+    if (!any) std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
 }
 
@@ -440,7 +499,7 @@ void ReportDumpCoverage(const fs::path& dumps, const std::map<uint64_t, Shader>&
       kind = "known, translation failed";
     } else {
       kind = "miss";
-      std::printf("  miss: %s\n", entry.path().filename().c_str());
+      std::printf("  miss: %s\n", entry.path().filename().string().c_str());
     }
     auto& c = counts[kind];
     (is_pixel ? c.second : c.first)++;
@@ -454,6 +513,17 @@ void ReportDumpCoverage(const fs::path& dumps, const std::map<uint64_t, Shader>&
 }  // namespace
 
 int main(int argc, char** argv) {
+  if (argc >= 5 && std::string_view(argv[1]) == "--worker") {
+    ChildLimits limits;
+    fs::path hlsl_dir;
+    for (int i = 5; i + 1 < argc; i += 2) {
+      const std::string_view arg = argv[i];
+      if (arg == "--child-mem-mb") limits.mem_mb = std::strtoull(argv[i + 1], nullptr, 10);
+      else if (arg == "--child-timeout") limits.timeout_s = unsigned(std::atoi(argv[i + 1]));
+      else if (arg == "--hlsl") hlsl_dir = argv[i + 1];
+    }
+    return RunWorker(argv[2], argv[3], std::strtoull(argv[4], nullptr, 16), hlsl_dir, limits);
+  }
   fs::path game, out, hlsl_dir;
   std::vector<fs::path> dumps;  // --dumps, repeatable
   unsigned jobs = 0;  // 0: pick from cores and available memory
@@ -507,21 +577,14 @@ int main(int argc, char** argv) {
     // MemAvailable (free memory plus reclaimable cache; _SC_AVPHYS_PAGES only
     // counts free pages). The child limit is an address-space cap, far above
     // what a translation actually uses, so budget ~1 GB per child.
-    unsigned long long avail_kb = 0;
-    if (std::FILE* meminfo = std::fopen("/proc/meminfo", "r")) {
-      char line[256];
-      while (std::fgets(line, sizeof(line), meminfo)) {
-        if (std::sscanf(line, "MemAvailable: %llu kB", &avail_kb) == 1) break;
-      }
-      std::fclose(meminfo);
-    }
+    const unsigned long long avail_kb = asura::platform::AvailableMemoryBytes() >> 10;
     if (avail_kb) {
       jobs = std::clamp<unsigned>(unsigned((avail_kb >> 10) / 1024), 1u, jobs);
     }
   }
   const fs::path cooked = game / "BCGame" / "CookedXbox360";
   if (!fs::is_directory(cooked)) {
-    std::fprintf(stderr, "not an extracted Asura's Wrath: %s missing\n", cooked.c_str());
+    std::fprintf(stderr, "not an extracted Asura's Wrath: %s missing\n", cooked.string().c_str());
     return 1;
   }
 
@@ -529,7 +592,7 @@ int main(int argc, char** argv) {
   uint32_t hits = 0;
   {
     const fs::path cache = cooked / "GlobalShaderCache-Xbox360.bin";
-    ScanContainers(ReadFile(cache), cache.filename(), shaders, hits);
+    ScanContainers(ReadFile(cache), cache.filename().string(), shaders, hits);
     std::printf("GlobalShaderCache: %zu unique shaders\n", shaders.size());
   }
   PackageStats stats;
@@ -543,13 +606,13 @@ int main(int argc, char** argv) {
       ++failed_packages;
     }
     ++packages;
-    ScanContainers(body, entry.path().filename(), shaders, hits);
+    ScanContainers(body, entry.path().filename().string(), shaders, hits);
     // Material shaders: UE3 keeps each package's shader code LZX-compressed
     // per shader type inside its ShaderCache export.
     std::vector<uint8_t> code;
     if (const uint32_t chunks = DecompressEmbeddedChunks(body, code)) {
       code_chunks += chunks;
-      ScanContainers(code, entry.path().filename(), shaders, hits);
+      ScanContainers(code, entry.path().filename().string(), shaders, hits);
     }
   }
   std::printf("packages: %u read (%u with failed chunks), %u shader code chunks, "
@@ -601,7 +664,7 @@ int main(int argc, char** argv) {
       if (!found) continue;
       if (!is_pixel && int(ContainerInterpolatorCount(found->container)) <= max_export) {
         std::fprintf(stderr, "%s exports o%d, past its container's %u interpolators\n",
-                     entry.path().filename().c_str(), max_export,
+                     entry.path().filename().string().c_str(), max_export,
                      ContainerInterpolatorCount(found->container));
       }
       const Shader& original = *found;
@@ -620,7 +683,7 @@ int main(int argc, char** argv) {
     const int taken = ReadExistingCache(out, shaders);
     if (taken < 0) {
       std::printf("update: %s can't be reused (missing or another version), translating all\n",
-                  out.c_str());
+                  out.string().c_str());
     } else {
       std::printf("update: %d shaders from the existing cache, %zu new\n", taken,
                   shaders.size() - size_t(taken));
@@ -636,7 +699,7 @@ int main(int argc, char** argv) {
     if (!it->second.from_cache) list.push_back(&it->second);
     ++it;
   }
-  const fs::path work = fs::temp_directory_path() / ("mantra_shadergen_" + std::to_string(getpid()));
+  const fs::path work = fs::temp_directory_path() / ("mantra_shadergen_" + std::to_string(asura::platform::ProcessId()));
   fs::create_directories(work);
   if (!hlsl_dir.empty()) {
     fs::create_directories(hlsl_dir);
@@ -644,7 +707,7 @@ int main(int argc, char** argv) {
   std::printf("translating with %u jobs...\n", jobs);
   TranslateAll(list, work, hlsl_dir, jobs, limits);
   if (keep_work) {
-    std::printf("kept %s\n", work.c_str());
+    std::printf("kept %s\n", work.string().c_str());
   } else {
     fs::remove_all(work);
   }
@@ -671,10 +734,10 @@ int main(int argc, char** argv) {
               textured, slots, with_bools, bool_overflow);
 
   if (!WriteCache(out, shaders)) {
-    std::fprintf(stderr, "failed to write %s\n", out.c_str());
+    std::fprintf(stderr, "failed to write %s\n", out.string().c_str());
     return 1;
   }
-  std::printf("wrote %s\n", out.c_str());
+  std::printf("wrote %s\n", out.string().c_str());
   for (const auto& dir : dumps) {
     ReportDumpCoverage(dir, shaders);
   }

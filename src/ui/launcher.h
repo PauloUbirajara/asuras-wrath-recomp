@@ -164,6 +164,8 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
                  std::function<void(const LauncherSettings&, bool restart)> on_resume);
   // Esc again: like Resume (changes that need a restart wait for the next start).
   void RequestResume() { resume_requested_ = true; }
+  // The game Play started (another process) is running.
+  bool PlayRunning() const { return game_.Running(); }
 
   // WindowListener / WindowInputListener.
   void OnFileDrop(rex::ui::FileDropEvent& e) override;
@@ -266,6 +268,9 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   };
   std::vector<TraceEntry> traces_;  // newest first
   // Each log's traces, with the size it had when read (read again once it grows).
+  // Per log: how far it was read, and its traces so far (logs only grow,
+  // so each check reads only what was added; a game log with traces is
+  // hundreds of MB).
   std::map<std::filesystem::path, std::pair<uintmax_t, std::vector<TraceEntry>>> trace_scan_;
   double traces_checked_at_ = -10.0;
   bool trace_was_pending_ = false;

@@ -102,7 +102,7 @@ bool PipelineStore::Open(const std::filesystem::path& path, std::vector<StoredSh
 
   // Rewrite compacted (dropping a truncated tail), then append from there.
   const std::filesystem::path temp = path.string() + ".tmp";
-  std::FILE* file = std::fopen(temp.c_str(), "wb");
+  std::FILE* file = std::fopen(temp.string().c_str(), "wb");
   if (!file) {
     MANTRA_WARN("pipeline store: cannot write {}", temp.string());
     shaders_.clear();

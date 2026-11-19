@@ -1,14 +1,11 @@
 #include "about_info.h"
 
-#include <sys/sysinfo.h>
-#include <sys/utsname.h>
-
 #include <cstdio>
 #include <cstdlib>
-#include <fstream>
 #include <thread>
 
 #include "build_info.h"  // generated (tools/build_info.cmake)
+#include "platform/platform.h"
 
 namespace asura::ui {
 namespace {
@@ -17,23 +14,6 @@ std::string Trim(std::string s) {
   const size_t a = s.find_first_not_of(" \t\"");
   const size_t b = s.find_last_not_of(" \t\"\r\n");
   return a == std::string::npos ? std::string() : s.substr(a, b - a + 1);
-}
-
-// The value of the first "key<sep>value" line in `path`.
-std::string ReadField(const char* path, const std::string& key, char sep) {
-  std::ifstream in(path);
-  for (std::string line; std::getline(in, line);) {
-    const size_t at = line.find(sep);
-    if (at != std::string::npos && Trim(line.substr(0, at)) == key) {
-      return Trim(line.substr(at + 1));
-    }
-  }
-  return {};
-}
-
-std::string Env(const char* name) {
-  const char* v = std::getenv(name);
-  return v ? v : "";
 }
 
 }  // namespace
@@ -72,26 +52,18 @@ const BuildInfo& GetBuildInfo() {
 const std::vector<std::pair<std::string, std::string>>& SystemInfo() {
   static const auto info = [] {
     std::vector<std::pair<std::string, std::string>> rows;
-    std::string os = ReadField("/etc/os-release", "PRETTY_NAME", '=');
-    if (os.empty()) os = "Linux";
-    rows.emplace_back("OS", os);
-    if (utsname u; uname(&u) == 0) {
-      rows.emplace_back("Kernel", std::string(u.release) + " (" + u.machine + ")");
-    }
-    std::string session = Env("XDG_CURRENT_DESKTOP");
-    const std::string type = Env("XDG_SESSION_TYPE");
-    if (!type.empty()) session += (session.empty() ? "" : ", ") + type;
-    if (!session.empty()) rows.emplace_back("Desktop", session);
-    std::string cpu = ReadField("/proc/cpuinfo", "model name", ':');
-    if (cpu.empty()) cpu = "unknown";
+    const platform::SystemSummary sys = platform::GetSystemSummary();
+    rows.emplace_back("OS", sys.os);
+    if (!sys.kernel.empty()) rows.emplace_back("Kernel", sys.kernel);
+    if (!sys.desktop.empty()) rows.emplace_back("Desktop", sys.desktop);
+    std::string cpu = sys.cpu.empty() ? "unknown" : sys.cpu;
     if (const unsigned n = std::thread::hardware_concurrency()) {
       cpu += " (" + std::to_string(n) + " threads)";
     }
     rows.emplace_back("CPU", cpu);
-    if (struct sysinfo s; sysinfo(&s) == 0) {
-      const double gib = double(s.totalram) * s.mem_unit / (1024.0 * 1024.0 * 1024.0);
+    if (sys.memory_bytes) {
       char text[32];
-      std::snprintf(text, sizeof(text), "%.1f GiB", gib);
+      std::snprintf(text, sizeof(text), "%.1f GiB", double(sys.memory_bytes) / (1024.0 * 1024.0 * 1024.0));
       rows.emplace_back("Memory", text);
     }
     return rows;

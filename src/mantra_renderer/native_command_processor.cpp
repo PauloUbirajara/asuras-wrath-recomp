@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <numeric>
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
@@ -263,13 +264,9 @@ struct ScopedNs {
 };
 
 // CPU time of the calling thread, in nanoseconds.
-uint64_t ThreadCpuNs() {
-  timespec ts{};
-  clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
-  return uint64_t(ts.tv_sec) * 1000000000ull + uint64_t(ts.tv_nsec);
-}
+uint64_t ThreadCpuNs() { return asura::platform::ThreadCpuNs(); }
 
-// Run time of every thread of the process (from /proc/self/task/*/schedstat,
+// Run time of every thread of the process (platform::SampleThreads,
 // nanoseconds), to name the threads that were busy over an interval.
 struct ThreadTimes {
   struct Entry {
@@ -280,24 +277,8 @@ struct ThreadTimes {
 
   static ThreadTimes Sample() {
     ThreadTimes out;
-    std::error_code ec;
-    for (const auto& dir : std::filesystem::directory_iterator("/proc/self/task", ec)) {
-      const int tid = std::atoi(dir.path().filename().c_str());
-      Entry entry;
-      if (std::FILE* f = std::fopen((dir.path() / "schedstat").c_str(), "r")) {
-        unsigned long long ns = 0;
-        if (std::fscanf(f, "%llu", &ns) == 1) entry.ns = ns;
-        std::fclose(f);
-      }
-      if (std::FILE* f = std::fopen((dir.path() / "comm").c_str(), "r")) {
-        char name[64] = {};
-        if (std::fgets(name, sizeof(name), f)) {
-          entry.name = name;
-          while (!entry.name.empty() && (entry.name.back() == '\n')) entry.name.pop_back();
-        }
-        std::fclose(f);
-      }
-      out.threads.emplace(tid, std::move(entry));
+    for (auto& t : asura::platform::SampleThreads()) {
+      out.threads.emplace(t.id, Entry{std::move(t.name), t.ns});
     }
     return out;
   }
@@ -934,6 +915,7 @@ bool NativeCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
       indices.is_32bit = index_buffer_info->format == xenos::IndexFormat::kInt32;
       indices.endianness = index_buffer_info->endianness;
     }
+    ScopedNs memexport_timer{frame_timing_.phase_ns[5]};
     const bool ran = mantra::RunMemExportDraw(
         *register_file_, *memory_, *mvs, index_count, index_buffer_info ? &indices : nullptr,
         memexport_stats_,
@@ -949,8 +931,12 @@ bool NativeCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
     if (ran && !register_file_->Get<reg::RB_COLOR_MASK>().value) return true;
   }
   const char* outcome = "fill";
-  if (TrySolidFill(prim_type, edram_mode, index_count, index_buffer_info != nullptr) ==
-      SolidFillResult::kNotSolidFill) {
+  SolidFillResult fill;
+  {
+    ScopedNs fill_timer{frame_timing_.phase_ns[6]};
+    fill = TrySolidFill(prim_type, edram_mode, index_count, index_buffer_info != nullptr);
+  }
+  if (fill == SolidFillResult::kNotSolidFill) {
     trace_current_draw_ = TracingThisFrame();
     const DrawResult result = DrawGuest(prim_type, index_count, index_buffer_info);
     trace_current_draw_ = false;
@@ -1389,7 +1375,7 @@ void NativeCommandProcessor::DumpDrawBuffers(uint32_t index_count,
     if (!length || !dumped.insert(uint64_t(address) << 32 | length).second) return name;
     const auto* src = memory_->TranslatePhysical<const uint8_t*>(address);
     if (!src || uint64_t(address) + length > 0x20000000u) return name;
-    if (std::FILE* file = std::fopen((std::filesystem::path(dir) / name).c_str(), "wb")) {
+    if (std::FILE* file = std::fopen((std::filesystem::path(dir) / name).string().c_str(), "wb")) {
       std::fwrite(src, 1, length, file);
       std::fclose(file);
     }
@@ -1463,7 +1449,7 @@ void NativeCommandProcessor::TraceDraw(xenos::PrimitiveType prim_type, uint32_t 
             std::filesystem::path(dir) /
             fmt::format("tex_{:08X}_f{}.bin", fetch.base_address << 12, uint32_t(fetch.format));
         if (!std::filesystem::exists(path)) {
-          if (std::FILE* file = std::fopen(path.c_str(), "wb")) {
+          if (std::FILE* file = std::fopen(path.string().c_str(), "wb")) {
             std::fwrite(t, 1, 256 * 1024, file);
             std::fclose(file);
           }
@@ -1904,7 +1890,7 @@ void NativeCommandProcessor::CaptureImage(mantra::TrackedImage& image, VkFormat 
       std::error_code ec;
       std::filesystem::create_directories(path.parent_path(), ec);
       double sum[4] = {}, peak[4] = {};
-      if (std::FILE* file = std::fopen(path.c_str(), "wb")) {
+      if (std::FILE* file = std::fopen(path.string().c_str(), "wb")) {
         std::fprintf(file, "P6\n%u %u\n255\n", width, height);
         std::vector<uint8_t> row(size_t(width) * 3);
         for (uint32_t y = 0; y < height; ++y) {
@@ -1984,7 +1970,7 @@ void NativeCommandProcessor::CaptureImage(mantra::TrackedImage& image, VkFormat 
       if (format == VK_FORMAT_R32_SFLOAT) {
         std::filesystem::path raw = path;
         raw.replace_extension(".f32");
-        if (std::FILE* f32 = std::fopen(raw.c_str(), "wb")) {
+        if (std::FILE* f32 = std::fopen(raw.string().c_str(), "wb")) {
           std::fwrite(bytes, 4, size_t(width) * height, f32);
           std::fclose(f32);
         }
@@ -1992,7 +1978,7 @@ void NativeCommandProcessor::CaptureImage(mantra::TrackedImage& image, VkFormat 
         // Raw RGBA halves: the .ppm clamps HDR (7e3 scenes) to [0, 1].
         std::filesystem::path raw = path;
         raw.replace_extension(".rgba16f");
-        if (std::FILE* f16 = std::fopen(raw.c_str(), "wb")) {
+        if (std::FILE* f16 = std::fopen(raw.string().c_str(), "wb")) {
           std::fwrite(bytes, 8, size_t(width) * height, f16);
           std::fclose(f16);
         }
@@ -2094,6 +2080,7 @@ void NativeCommandProcessor::EndFrameTiming() {
                                   tcs.untile_ns};
   const uint64_t buffer_bytes = buffer_cache_.stats().upload_bytes;
   const uint64_t vertex_bytes = guest_draw_stats_.vertex_bytes;
+  const uint64_t expand_ns = guest_draw_stats_.expand_ns;
   const uint64_t thread_cpu_ns = ThreadCpuNs();
   ThreadTimes threads;
   if (ThreadProfileEveryFrame()) threads = ThreadTimes::Sample();
@@ -2119,7 +2106,9 @@ void NativeCommandProcessor::EndFrameTiming() {
                   "{:.1f}, swap {:.1f}, other {:.1f}; gpu thread busy {:.1f}); new pipelines {}, "
                   "shader modules {}, texture loads {:.1f} MB in {:.1f} ms (watch {:.1f}, hash "
                   "{:.1f}, swap {:.1f}, untile {:.1f}), buffer uploads {:.1f} MB, "
-                  "expanded vertices {:.1f} MB{}{}",
+                  "vertex data {:.1f} MB (decoding {:.1f} ms); draw phases: textures {:.1f}, geometry "
+                  "{:.1f}, constants {:.1f}, targets {:.1f}, pipelines {:.1f}, memexport {:.1f}, "
+                  "fills {:.1f}, rest {:.1f}{}{}",
                   swap_stats_.swaps, total, ms(t.fence_ns), ms(t.draw_ns), ms(t.copy_ns),
                   ms(t.swap_ns), total - ms(t.draw_ns) - ms(t.copy_ns) - ms(t.swap_ns), busy,
                   pipelines - t.pipelines, modules - t.modules,
@@ -2128,19 +2117,26 @@ void NativeCommandProcessor::EndFrameTiming() {
                   ms(texture_ns[2] - t.texture_ns[2]), ms(texture_ns[3] - t.texture_ns[3]),
                   ms(texture_ns[4] - t.texture_ns[4]),
                   (buffer_bytes - t.buffer_bytes) / 1048576.0,
-                  (vertex_bytes - t.vertex_bytes) / 1048576.0,
+                  (vertex_bytes - t.vertex_bytes) / 1048576.0, ms(expand_ns - t.expand_ns),
+                  ms(t.phase_ns[0]), ms(t.phase_ns[1]), ms(t.phase_ns[2]), ms(t.phase_ns[3]),
+                  ms(t.phase_ns[4]), ms(t.phase_ns[5]), ms(t.phase_ns[6]),
+                  // Resolves run inside draws (copy draws).
+                  ms(t.draw_ns) - ms(t.copy_ns) -
+                      ms(std::accumulate(std::begin(t.phase_ns), std::end(t.phase_ns), uint64_t(0))),
                   ThreadProfileEveryFrame() ? "; busiest threads: " : "",
                   ThreadProfileEveryFrame() ? threads.Busiest(g_frame_threads, total, 5) : "");
     }
   }
   t.last_swap = now;
   t.fence_ns = t.draw_ns = t.copy_ns = t.swap_ns = 0;
+  std::fill(std::begin(t.phase_ns), std::end(t.phase_ns), uint64_t(0));
   t.pipelines = pipelines;
   t.modules = modules;
   t.texture_bytes = texture_bytes;
   std::copy(std::begin(texture_ns), std::end(texture_ns), std::begin(t.texture_ns));
   t.buffer_bytes = buffer_bytes;
   t.vertex_bytes = vertex_bytes;
+  t.expand_ns = expand_ns;
   t.thread_cpu_ns = thread_cpu_ns;
   if (ThreadProfileEveryFrame()) g_frame_threads = std::move(threads);
 }
@@ -2220,11 +2216,11 @@ void NativeCommandProcessor::ReportSwapStats() {
               draw_pipelines_.creation_failures(), draw_pipelines_.warm_done(),
               draw_pipelines_.warm_total(), draw_pipelines_.warm_hits());
   MANTRA_INFO("guest draws: {} drawn in {} render passes, {} pipelines ({} failed); skipped: "
-              "primitive {}, no target {}, viewport {}, geometry {}; {} zero-fed inputs, {} expanded; "
-              "streamed {:.1f} MB vertices, {:.1f} MB indices",
+              "primitive {}, no target {}, viewport {}, geometry {}; {} zero-fed inputs, {} expanded "
+              "(decoding {:.0f} ms); streamed {:.1f} MB vertices, {:.1f} MB indices",
               g.drawn, g.render_passes, draw_pipelines_.size(), draw_pipelines_.creation_failures(),
               g.skipped_primitive, g.skipped_no_target, g.skipped_viewport, g.skipped_geometry,
-              g.missing_inputs, g.expanded_inputs, g.vertex_bytes / 1048576.0, g.index_bytes / 1048576.0);
+              g.missing_inputs, g.expanded_inputs, g.expand_ns / 1e6, g.vertex_bytes / 1048576.0, g.index_bytes / 1048576.0);
   MANTRA_INFO("memexport: {} draws, {} vertices, {} elements ({:.1f} MB), {} unsupported",
               memexport_stats_.draws, memexport_stats_.vertices, memexport_stats_.elements,
               memexport_stats_.bytes / 1048576.0, memexport_stats_.unsupported);
@@ -2412,7 +2408,7 @@ void NativeCommandProcessor::DumpShader(uint64_t hash, bool is_pixel, const uint
   const std::string name =
       fmt::format("{}_{:016X}_{}.mc", is_pixel ? "ps" : "vs", hash, byte_count / 4);
   const std::filesystem::path path = std::filesystem::path(dump_dir) / name;
-  std::FILE* file = std::fopen(path.c_str(), "wb");
+  std::FILE* file = std::fopen(path.string().c_str(), "wb");
   if (!file) {
     MANTRA_WARN_ONCE("cannot write shader dumps to {}", dump_dir);
     return;
@@ -2447,7 +2443,7 @@ void NativeCommandProcessor::KeepForNextCacheBuild(uint64_t hash, bool is_pixel,
   // Written under a temporary name, so a build never reads half a file.
   std::filesystem::path temporary = path;
   temporary += ".tmp";
-  if (std::FILE* file = std::fopen(temporary.c_str(), "wb")) {
+  if (std::FILE* file = std::fopen(temporary.string().c_str(), "wb")) {
     const bool ok = std::fwrite(microcode, 1, byte_count, file) == byte_count;
     std::fclose(file);
     if (ok) {

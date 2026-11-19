@@ -14,6 +14,7 @@
 #include <rex/logging.h>
 #include <rex/runtime.h>
 
+#include "../platform/platform.h"
 #include "../ui/game_assets.h"
 
 namespace asura::game {
@@ -100,9 +101,8 @@ void SkipIntroMovies(rex::Runtime* runtime) {
       }
       REXLOG_WARN("Skip the intro: cannot shorten {}, keeping it", name);
     }
-    fs::create_symlink(fs::absolute(entry.path()), folder / name, ec);
-    if (ec) {
-      REXLOG_WARN("Skip the intro: cannot link {}: {}", name, ec.message());
+    if (std::string error; !platform::LinkFile(fs::absolute(entry.path()), folder / name, &error)) {
+      REXLOG_WARN("Skip the intro: cannot link {}: {}", name, error);
       return;
     }
     ++linked;

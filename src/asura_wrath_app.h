@@ -60,15 +60,10 @@ class AsuraWrathApp : public rex::ReXApp {
   }
 
   // Override virtual hooks for customization:
-  // Logs go to <files folder>/logs when the launcher's Files folder is set,
-  // else to <exe dir>/logs (the SDK default) when that folder is writable,
-  // else to <user data>/logs (the AppImage's folder is read-only).
+  // Logs (and the traces in them) go to <Files folder>/logs.
   void OnConfigureLogging(rex::LogConfig& config) override {
-    if (!launcher_settings_.data_folder.empty()) {
-      config.log_dir = std::filesystem::path(launcher_settings_.data_folder) / "logs";
-    } else if (!user_data_root_path_.empty() &&
-               access(config.log_dir.parent_path().c_str(), W_OK) != 0) {
-      config.log_dir = user_data_root_path_ / "logs";
+    if (const auto files = asura::platform::FilesDir(); !files.empty()) {
+      config.log_dir = files / "logs";
     }
     log_dir_ = config.log_dir;
     log_name_prefix_ = config.app_name + "_";
@@ -217,28 +212,37 @@ class AsuraWrathApp : public rex::ReXApp {
   }
   void OnConfigurePaths(rex::PathConfig& paths) override {
     MigrateLegacyFolders(paths);
+    // launcher.cfg stays in the SDK's user folder: it names the Files folder.
+    launcher_settings_path_ = asura::ui::LauncherSettings::PathIn(paths.user_data_root);
+    launcher_settings_.Load(launcher_settings_path_);
+    // The Files folder: saves and profile, caches (platform::CacheDir()),
+    // logs. Everything that reads it (here, the mantra plugin, the game Play
+    // starts) takes it from the environment. One set in the shell wins.
+    if (!std::getenv(asura::platform::kDataDirVariable)) {
+      const std::string files = launcher_settings_.data_folder.empty()
+                                    ? paths.user_data_root.string()
+                                    : launcher_settings_.data_folder;
+      asura::platform::SetEnv(asura::platform::kDataDirVariable, files.c_str());
+    }
+    const std::filesystem::path files = asura::platform::FilesDir();
+    paths.user_data_root = files;
+    if (rex::cvar::GetFlagSource("cache_root") == rex::cvar::Source::kDefault) {
+      paths.cache_root = asura::platform::CacheDir();
+    }
+    MoveLegacyCache();
     user_data_root_path_ = paths.user_data_root;
     // The config TOML next to the executable if there is one (portable
-    // installs), else in the user data folder (the AppImage's folder is
+    // installs), else in the Files folder (the AppImage's folder is
     // read-only).
     std::error_code ec;
     if (!std::filesystem::exists(paths.config_path, ec)) {
       paths.config_path = paths.user_data_root / paths.config_path.filename();
     }
-    launcher_settings_path_ = asura::ui::LauncherSettings::PathIn(paths.user_data_root);
-    launcher_settings_.Load(launcher_settings_path_);
-    // The Files folder: everything that reads platform::CacheDir() (here,
-    // the mantra plugin, the game Play starts) takes it from the environment.
-    // One set in the shell wins.
-    if (!launcher_settings_.data_folder.empty() && !std::getenv(asura::platform::kDataDirVariable)) {
-      asura::platform::SetEnv(asura::platform::kDataDirVariable,
-                              launcher_settings_.data_folder.c_str());
-    }
     // Game data > Traces: the file that makes mantra trace the next frame
     // (one set in the shell wins). The game Play starts inherits it.
     if (const char* trigger = std::getenv("MANTRA_TRACE_TRIGGER"); !trigger || !*trigger) {
       if (const auto dir = asura::platform::CacheDir(); !dir.empty()) {
-        asura::platform::SetEnv("MANTRA_TRACE_TRIGGER", (dir / "trace.now").c_str());
+        asura::platform::SetEnv("MANTRA_TRACE_TRIGGER", (dir / "trace.now").string().c_str());
       }
     }
     if (rex::cvar::GetFlagSource("game_data_root") == rex::cvar::Source::kDefault) {
@@ -272,9 +276,13 @@ class AsuraWrathApp : public rex::ReXApp {
     rex::ui::RegisterBind("bind_launcher", "Escape", "Open the launcher (in game)",
                           [this] { ToggleLauncherInGame(); });
     // F3 in game: trace the next frame (Game data > Traces). The SDK's
-    // performance overlay, F3 by default, gets no key (launcher BindDefault).
+    // performance overlay, F3 by default, gets no key (ApplyLauncherDefaults).
     rex::ui::RegisterBind("bind_trace", "F3", "Trace the next frame (in game)", [this] {
-      if (game_running_ && !launcher_) asura::ui::RequestTrace();
+      // In the game; or in the launcher's window while the game Play
+      // started runs (that process traces it).
+      if ((game_running_ && !launcher_) || (launcher_ && launcher_->PlayRunning())) {
+        asura::ui::RequestTrace();
+      }
     });
     // Again now that the overlays registered their bind_* keys.
     asura::ui::ApplyLauncherDefaults(launcher_settings_);
@@ -403,7 +411,28 @@ class AsuraWrathApp : public rex::ReXApp {
       }
     };
     move_once(paths.user_data_root);
-    move_once(asura::platform::CacheDir());
+    move_once(asura::platform::LegacyCacheDir());
+  }
+
+  // Builds before the single Files folder kept the caches in ~/.cache. Move
+  // them into <Files folder>/cache once (unless it has its own already).
+  static void MoveLegacyCache() {
+    namespace fs = std::filesystem;
+    const fs::path from = asura::platform::LegacyCacheDir(), to = asura::platform::CacheDir();
+    std::error_code ec;
+    if (from.empty() || to.empty() || fs::exists(to, ec) || !fs::is_directory(from, ec)) return;
+    fs::create_directories(to.parent_path(), ec);
+    fs::rename(from, to, ec);
+    if (ec) {  // another drive: copy, then remove the original
+      ec.clear();
+      fs::copy(from, to, fs::copy_options::recursive | fs::copy_options::copy_symlinks, ec);
+      if (!ec) fs::remove_all(from, ec);
+    }
+    if (ec) {
+      REXLOG_WARN("Could not move {} to {}: {}", from.string(), to.string(), ec.message());
+    } else {
+      REXLOG_INFO("Moved {} to {}", from.string(), to.string());
+    }
   }
 
   // Debug: ASURA_DUMP_ACHIEVEMENTS=<dir> writes the title's achievement icons

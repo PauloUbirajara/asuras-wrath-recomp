@@ -62,6 +62,8 @@ set(ASURAWRATH_SOURCES
     src/ui/launcher_text.cpp
     src/ui/notice_toast.cpp
     src/ui/save_data.cpp
+    src/ui/window_icon.cpp
+    $<$<PLATFORM_ID:Windows>:src/res/asura_wrath.rc>
 )
 
 if(WIN32)

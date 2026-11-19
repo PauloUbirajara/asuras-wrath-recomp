@@ -1,0 +1,3 @@
+// Windows resources: the executable's icon (Explorer, taskbar, Alt+Tab).
+// icon.ico is assets/ui/icon.png at 16-256 px.
+1 ICON "icon.ico"

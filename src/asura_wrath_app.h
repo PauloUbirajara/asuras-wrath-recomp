@@ -46,6 +46,7 @@
 #include "ui/launcher.h"
 #include "ui/launcher_text.h"
 #include "ui/notice_toast.h"
+#include "ui/window_icon.h"
 
 REXCVAR_DECLARE(bool, launcher);
 
@@ -271,6 +272,8 @@ class AsuraWrathApp : public rex::ReXApp {
   // below.
   std::optional<rex::PathConfig> OnFinalizePaths(
       const rex::PathConfig& defaults, std::function<void(rex::PathConfig)>) override {
+    // The window is up: its icon (assets/ui/icon.png), launcher and game alike.
+    asura::ui::ApplyWindowIcon();
     // Esc in game: the launcher over the running game. Registered before the
     // saved keys are applied, so a rebound key sticks.
     rex::ui::RegisterBind("bind_launcher", "Escape", "Open the launcher (in game)",

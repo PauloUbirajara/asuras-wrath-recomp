@@ -88,6 +88,8 @@ uint64_t AvailableMemoryBytes();
 
 // This process's id.
 int ProcessId();
+// Whether process `pid` still runs (for a child watching its parent).
+bool ProcessAlive(int pid);
 
 // Local time of `t` (localtime_r / localtime_s).
 inline std::tm LocalTime(std::time_t t) {

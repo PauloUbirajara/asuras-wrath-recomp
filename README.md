@@ -160,6 +160,8 @@ The mantra shader cache lives in `~/.cache/asura_wrath_recomp/mantra_shaders.msh
 mantra_shadergen --game extracted --out ~/.cache/asura_wrath_recomp/mantra_shaders.mshc
 ```
 
+A build can be stopped (**Stop the build**, or closing the launcher): it saves its progress every half minute and on stop in `mantra_shaders.mshc.partial`, and the next build continues from there (**Continue the build**; **Start over** drops it). From the command line, creating `<out>.stop` stops it the same way, the next run continues, and `--fresh` starts over; `--parent <pid>` stops it once that process exits.
+
 Some shaders only exist once the game patches them at runtime (e.g. the menu text). mantra keeps those in `~/.cache/asura_wrath_recomp/shader_dumps/` while you play; **Game data > Shaders** then says how many are missing, and **Add the N new shaders** translates only those, keeping the rest of the cache (**Rebuild all** starts over). From the command line: `--dumps ~/.cache/asura_wrath_recomp/shader_dumps` (repeatable), plus `--update` to keep what the `--out` cache already has (only for a cache of the same format version; otherwise it translates everything).
 
 Without a cache, mantra can't draw what uses an untranslated shader (the screen stays black, audio plays). When the game is started with **Play**, the launcher translates the shaders the game has used but the cache lacks in the background, at low priority (`mantra_shadergen --update --requested-only --background`), and the running game picks up the new cache within a few seconds. The first run has to read the game files once (cached in `shader_scan.bin` next to the shader cache, so later runs skip it), so building the full cache before playing is still the smoothest.

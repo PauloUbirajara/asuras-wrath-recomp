@@ -240,6 +240,14 @@ uint64_t AvailableMemoryBytes() {
 
 int ProcessId() { return int(GetCurrentProcessId()); }
 
+bool ProcessAlive(int pid) {
+  HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, DWORD(pid));
+  if (!h) return GetLastError() == ERROR_ACCESS_DENIED;
+  const bool alive = WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
+  CloseHandle(h);
+  return alive;
+}
+
 SystemSummary GetSystemSummary() {
   SystemSummary s;
   // GetVersionEx lies without a manifest; RtlGetVersion doesn't.

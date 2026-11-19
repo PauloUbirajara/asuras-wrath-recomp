@@ -188,6 +188,8 @@ uint64_t AvailableMemoryBytes() {
 
 int ProcessId() { return int(getpid()); }
 
+bool ProcessAlive(int pid) { return pid > 0 && (kill(pid, 0) == 0 || errno == EPERM); }
+
 SystemSummary GetSystemSummary() {
   SystemSummary s;
   s.os = ReadField("/etc/os-release", "PRETTY_NAME", '=');

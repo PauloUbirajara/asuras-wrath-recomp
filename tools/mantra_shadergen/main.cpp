@@ -30,6 +30,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <string>
@@ -74,6 +75,7 @@ struct Shader {
   // Translation results.
   bool translated = false;
   bool from_cache = false;  // --update: results taken from the existing cache
+  bool attempted = false;   // translated (or failed) in this run
   uint32_t spec_constants_mask = 0;
   uint32_t texture_slot_mask = 0;
   uint32_t bool_mask = 0;
@@ -190,6 +192,23 @@ void ScanContainers(const std::vector<uint8_t>& data, const std::string& source,
   }
 }
 
+// Stopping: the launcher's Stop creates <out>.stop; --parent <pid> stops
+// too once that process (the launcher) is gone, e.g. closed or crashed.
+fs::path g_stop_file;
+int g_parent_pid = 0;
+bool StopRequested() {
+  static bool stop = false;
+  static auto checked = std::chrono::steady_clock::time_point{};
+  const auto now = std::chrono::steady_clock::now();
+  if (stop || now - checked < std::chrono::milliseconds(250)) return stop;
+  checked = now;
+  std::error_code ec;
+  stop = (!g_stop_file.empty() && fs::exists(g_stop_file, ec)) ||
+         (g_parent_pid && !asura::platform::ProcessAlive(g_parent_pid));
+  return stop;
+}
+constexpr int kExitStopped = 5;
+
 // Translates every shader, `jobs` child processes at a time. A child writes
 // <work>/<index>.spv plus a .ok marker holding the spec constants mask; a
 // crash or DXC error just leaves the shader untranslated.
@@ -253,8 +272,12 @@ int RunWorker(const fs::path& work, const std::string& index, uint64_t exact_has
   return 0;
 }
 
-void TranslateAll(std::vector<Shader*>& shaders, const fs::path& work, const fs::path& hlsl_dir,
-                  unsigned jobs, const ChildLimits& limits) {
+// `checkpoint` runs every 30 s or more and when stopped (saving the progress);
+// `base` shaders were done before (a resumed build), for the progress lines.
+// Returns false when stopped.
+bool TranslateAll(std::vector<Shader*>& shaders, const fs::path& work, const fs::path& hlsl_dir,
+                  unsigned jobs, const ChildLimits& limits, size_t base,
+                  const std::function<void()>& checkpoint) {
   using Clock = std::chrono::steady_clock;
   const fs::path exe = asura::platform::ExePath();
   struct Running {
@@ -266,6 +289,7 @@ void TranslateAll(std::vector<Shader*>& shaders, const fs::path& work, const fs:
   size_t next = 0, done = 0;
   auto collect = [&](size_t index, const asura::platform::ExitStatus& status, bool timed_out) {
     Shader& s = *shaders[index];
+    s.attempted = true;
     const fs::path ok = work / (std::to_string(index) + ".ok");
     if (!status.Ok()) {
 #ifndef _WIN32
@@ -302,13 +326,31 @@ void TranslateAll(std::vector<Shader*>& shaders, const fs::path& work, const fs:
     std::error_code ec;
     fs::remove(work / (std::to_string(index) + ".container"), ec);
     if (++done % 50 == 0 || done == shaders.size()) {
-      std::printf("  translated %zu/%zu\n", done, shaders.size());
+      std::printf("  translated %zu/%zu\n", base + done, base + shaders.size());
       std::fflush(stdout);
     }
   };
   // Wall clock per worker: twice the CPU limit (as the POSIX alarm).
   const auto timeout = std::chrono::seconds(limits.timeout_s ? limits.timeout_s * 2 : 0);
+  auto saved_at = Clock::now();
+  Clock::duration save_every = std::chrono::seconds(30);
   while (next < shaders.size() || !running.empty()) {
+    if (StopRequested()) {
+      // The running workers' shaders stay untried: translated next time.
+      for (Running& r : running) {
+        r.process->Kill();
+        r.process->Wait();
+      }
+      checkpoint();
+      return false;
+    }
+    // The file grows to a few hundred MB: save at most 1/20 of the time.
+    if (Clock::now() - saved_at > save_every) {
+      const auto start = Clock::now();
+      checkpoint();
+      saved_at = Clock::now();
+      save_every = std::max<Clock::duration>(std::chrono::seconds(30), (saved_at - start) * 20);
+    }
     while (next < shaders.size() && running.size() < jobs) {
       const std::string index = std::to_string(next);
       const Shader& shader = *shaders[next];
@@ -326,7 +368,7 @@ void TranslateAll(std::vector<Shader*>& shaders, const fs::path& work, const fs:
       std::string error;
       if (!process->Start(exe, args, /*capture_output=*/false, &error)) {
         std::fprintf(stderr, "cannot start a worker: %s\n", error.c_str());
-        return;
+        return true;
       }
       running.push_back({std::move(process), next++, Clock::now()});
     }
@@ -350,13 +392,18 @@ void TranslateAll(std::vector<Shader*>& shaders, const fs::path& work, const fs:
     }
     if (!any) std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
+  return true;
 }
 
-bool WriteCache(const fs::path& path, const std::map<uint64_t, Shader>& shaders) {
+// `tried_only`: just the shaders with a result (a stopped build's progress;
+// the others would read as failed).
+bool WriteCache(const fs::path& path, const std::map<uint64_t, Shader>& shaders,
+                bool tried_only = false) {
   using namespace mantra::shader_cache;
   std::vector<CacheEntry> entries;
   std::vector<uint8_t> blobs;
   for (const auto& [hash, s] : shaders) {  // std::map: sorted by exact hash
+    if (tried_only && !s.attempted && !s.from_cache) continue;
     CacheEntry e{};
     e.exact_hash = s.exact_hash;
     e.normalized_hash = s.normalized_hash;
@@ -637,6 +684,8 @@ int main(int argc, char** argv) {
   bool requested_only = false;
   // --background: while the game runs: lower priority, half the cores.
   bool background = false;
+  // --fresh: start over, dropping a stopped build's progress (<out>.partial).
+  bool fresh = false;
   fs::path scan_cache;  // --scan-cache (default <out dir>/shader_scan.bin)
   std::unordered_set<uint64_t> only;  // --only  // --keep-work: keep the per-shader logs (<work>/<index>.log)
   ChildLimits limits;
@@ -647,6 +696,7 @@ int main(int argc, char** argv) {
                 : flag == "--update"         ? &update
                 : flag == "--requested-only" ? &requested_only
                 : flag == "--background"     ? &background
+                : flag == "--fresh"          ? &fresh
                                              : nullptr;
     if (set) {
       *set = true;
@@ -667,6 +717,7 @@ int main(int argc, char** argv) {
     }
     else if (arg == "--hlsl") hlsl_dir = argv[i + 1];
     else if (arg == "--scan-cache") scan_cache = argv[i + 1];
+    else if (arg == "--parent") g_parent_pid = std::atoi(argv[i + 1]);
     else if (arg == "--only") {
       // Comma-separated exact hashes: translate just these (debugging).
       std::string list = argv[i + 1];
@@ -683,12 +734,17 @@ int main(int argc, char** argv) {
   if (game.empty() || out.empty()) {
     std::fprintf(stderr,
                  "usage: %s --game <extracted dir> --out <cache file> [--dumps <dir>]... "
-                 "[--update] [--requested-only] [--background] [--scan-cache <file>] [--hlsl <dir>] [--jobs N] [--child-mem-mb N] [--child-timeout S]\n",
+                 "[--update] [--requested-only] [--background] [--fresh] [--parent <pid>] [--scan-cache <file>] [--hlsl <dir>] [--jobs N] [--child-mem-mb N] [--child-timeout S]\n",
                  argv[0]);
     return 1;
   }
   if (background) {
     asura::platform::LowerProcessPriority();  // the workers inherit it
+  }
+  g_stop_file = out.string() + ".stop";
+  {
+    std::error_code ec;
+    fs::remove(g_stop_file, ec);
   }
   if (!jobs) {
     jobs = std::max(1u, std::thread::hardware_concurrency() / (background ? 2 : 1));
@@ -763,6 +819,11 @@ int main(int argc, char** argv) {
     };
     auto work = [&] {
       for (;;) {
+        if (StopRequested()) {
+          std::printf("stopped while reading the game files\n");
+          std::fflush(stdout);
+          std::_Exit(kExitStopped);
+        }
         size_t i;
         {
           std::lock_guard<std::mutex> lock(mutex);
@@ -888,6 +949,23 @@ int main(int argc, char** argv) {
     }
   }
 
+  // A stopped full build left its progress in <out>.partial: take it, so
+  // only the rest is translated. Not for --requested-only (a few shaders
+  // next to the game), which leaves the file for the full build.
+  const fs::path partial = out.string() + ".partial";
+  size_t resumed = 0;
+  if (!requested_only && only.empty()) {
+    std::error_code ec;
+    if (fresh) {
+      fs::remove(partial, ec);
+    } else if (const int taken = ReadExistingCache(partial, shaders); taken > 0) {
+      for (const auto& [hash, s] : shaders) resumed += s.from_cache;
+      std::printf("resume: %d shaders from the stopped build\n", taken);
+    }
+  }
+  // --update shaders came from the finished cache: not part of this build's count.
+  if (update) resumed = 0;
+
   std::vector<Shader*> list;
   for (auto it = shaders.begin(); it != shaders.end();) {
     if (!only.empty() && !only.count(it->first)) {
@@ -907,11 +985,26 @@ int main(int argc, char** argv) {
     fs::create_directories(hlsl_dir);
   }
   std::printf("translating with %u jobs...\n", jobs);
-  TranslateAll(list, work, hlsl_dir, jobs, limits);
+  auto checkpoint = [&] {
+    if (requested_only || !only.empty()) return;
+    if (!WriteCache(partial, shaders, /*tried_only=*/true)) {
+      std::fprintf(stderr, "could not write %s\n", partial.string().c_str());
+    }
+  };
+  const bool finished = TranslateAll(list, work, hlsl_dir, jobs, limits, resumed, checkpoint);
   if (keep_work) {
     std::printf("kept %s\n", work.string().c_str());
   } else {
     fs::remove_all(work);
+  }
+  if (!finished) {
+    size_t tried = 0;
+    for (const auto& [hash, s] : shaders) tried += s.attempted || s.from_cache;
+    std::printf("stopped: %zu of %zu shaders done, kept in %s (the next build continues)\n",
+                tried, shaders.size(), partial.string().c_str());
+    std::error_code ec;
+    fs::remove(g_stop_file, ec);
+    return kExitStopped;
   }
 
   size_t ok_vs = 0, ok_ps = 0, failed = 0;
@@ -940,6 +1033,10 @@ int main(int argc, char** argv) {
     return 1;
   }
   std::printf("wrote %s\n", out.string().c_str());
+  if (!requested_only && only.empty()) {  // a complete build
+    std::error_code ec;
+    fs::remove(partial, ec);
+  }
   for (const auto& dir : dumps) {
     ReportDumpCoverage(dir, shaders);
   }

@@ -604,6 +604,31 @@ uint32_t ShaderCacheVersion() {
   return version;
 }
 
+// Shaders a stopped build saved in <cache>.partial (current version only),
+// which the next build continues from; 0 if none.
+int StoppedBuildShaders() {
+  namespace sc = mantra::shader_cache;
+  static std::filesystem::path path;
+  static std::filesystem::file_time_type time;
+  static int count = 0;
+  const std::filesystem::path partial = ShaderCachePath().string() + ".partial";
+  std::error_code ec;
+  const auto written = std::filesystem::last_write_time(partial, ec);
+  if (ec) return 0;
+  if (partial != path || written != time) {
+    path = partial;
+    time = written;
+    count = 0;
+    sc::CacheHeader header{};
+    std::ifstream in(partial, std::ios::binary);
+    if (in.read(reinterpret_cast<char*>(&header), sizeof(header)) &&
+        std::memcmp(header.magic, sc::kMagic, 4) == 0 && header.version == sc::kVersion) {
+      count = int(header.entry_count);
+    }
+  }
+  return count;
+}
+
 // Whether the cache works with these settings. Shaders don't depend on the
 // settings themselves; only a render resolution other than the game's needs
 // a cache from version 8 on (older ones misplace screen-space effects).
@@ -625,12 +650,17 @@ void LauncherDialog::ShaderBuild::Start(const std::filesystem::path& tool,
                                         const std::filesystem::path& game,
                                         const std::filesystem::path& out,
                                         const std::vector<std::filesystem::path>& dumps,
-                                        bool update, bool in_background) {
+                                        bool update, bool in_background, bool fresh) {
   Stop();
   background = in_background;
+  stopping = false;
+  this->out = out;
   std::error_code ec;
   std::filesystem::create_directories(out.parent_path(), ec);
-  std::vector<std::string> args = {tool.string(), "--game", game.string(), "--out", out.string()};
+  // --parent: it stops by itself once this launcher is gone (closed, killed).
+  std::vector<std::string> args = {tool.string(), "--game", game.string(), "--out", out.string(),
+                                   "--parent", std::to_string(platform::ProcessId())};
+  if (fresh) args.push_back("--fresh");
   for (const auto& dir : dumps) {
     args.push_back("--dumps");
     args.push_back(dir.string());
@@ -683,13 +713,42 @@ void LauncherDialog::ShaderBuild::Start(const std::filesystem::path& tool,
         }
       }
     }
-    state = process.Wait().Ok() ? kDone : kFailed;
+    const platform::ExitStatus status = process.Wait();
+    state = status.Ok()                        ? kDone
+            : status.normal && status.code == 5 ? kStopped  // kExitStopped
+                                                : kFailed;
   });
 }
 
+void LauncherDialog::ShaderBuild::RequestStop() {
+  if (state != kRunning || stopping) return;
+  std::ofstream(out.string() + ".stop") << "stop\n";
+  stopping = true;
+  stop_requested = std::chrono::steady_clock::now();
+}
+
+void LauncherDialog::ShaderBuild::Tick() {
+  // It checks for the file a few times a second; saving takes a moment.
+  if (state == kRunning && stopping &&
+      std::chrono::steady_clock::now() - stop_requested > std::chrono::seconds(20)) {
+    process.Kill();
+    stopping = false;
+  }
+}
+
 void LauncherDialog::ShaderBuild::Stop() {
-  if (state == kRunning) process.Terminate();
+  if (state == kRunning) {
+    // Let it save its progress, briefly; then kill it.
+    RequestStop();
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (state == kRunning && std::chrono::steady_clock::now() < until) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    if (state == kRunning) process.Kill();
+  }
   if (reader.joinable()) reader.join();
+  std::error_code ec;
+  if (!out.empty()) std::filesystem::remove(out.string() + ".stop", ec);
 }
 
 std::string LauncherDialog::ShaderBuild::Line() {
@@ -1385,6 +1444,7 @@ void LauncherDialog::OnDraw(ImGuiIO& io) {
     achievements_loaded_ = false;
     if (failed) message_ = T("The game closed with an error (see the log).");
   }
+  shader_build_.Tick();
   MaybeTranslateForGame();
   if (iso_extract_.state == IsoExtract::kDone) {
     if (iso_extract_.worker.joinable()) iso_extract_.worker.join();
@@ -1461,6 +1521,53 @@ bool LauncherDialog::SidebarButton(const char* label, bool selected, float width
   const bool clicked = ImGui::Button(label, ImVec2(width, height));
   ImGui::PopStyleColor(5);
   return clicked;
+}
+
+// In game: Quit, above Resume, after a confirmation (Esc or Cancel goes back).
+void LauncherDialog::DrawQuit(const ImVec2& pos, const ImVec2& size, float scale) {
+  ImGui::PushFont(font_, 24.0f * scale);
+  ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+  ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.06f));
+  ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.12f));
+  ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.75f, 0.73f, 0.70f, 1.0f));
+  ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + size.y - 140 * scale));
+  if (ImGui::Button((std::string(T("Quit the game")) + "##quit").c_str(), ImVec2(size.x, 44 * scale))) {
+    ImGui::OpenPopup("##quit_confirm");
+  }
+  ImGui::PopStyleColor(4);
+  ImGui::PopFont();
+
+  const ImGuiViewport* viewport = ImGui::GetMainViewport();
+  ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+  ImGui::PushFont(font_, 26.0f * scale);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(28 * scale, 22 * scale));
+  ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.11f, 0.10f, 0.10f, 0.98f));
+  ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, ImVec4(0, 0, 0, 0.55f));
+  quit_confirm_ = ImGui::BeginPopupModal("##quit_confirm", nullptr,
+                                         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
+                                             ImGuiWindowFlags_AlwaysAutoResize);
+  if (quit_confirm_) {
+    ImGui::TextUnformatted(T("Quit the game?"));
+    ImGui::TextDisabled("%s", T("Progress since the last save is lost."));
+    ImGui::Spacing();
+    ImGui::Spacing();
+    const float w = 180 * scale;
+    if (ImGui::Button(T("Quit"), ImVec2(w, 0))) {
+      ImGui::CloseCurrentPopup();
+      REXLOG_INFO("launcher: quit from the in-game launcher");
+      // As closing the window: the game shuts down the usual way.
+      if (window_) window_->RequestClose();
+    }
+    ImGui::SameLine();
+    if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();  // Enter = Cancel
+    // Esc (the launcher's own key, which would resume the game) goes back.
+    const bool esc = std::exchange(resume_requested_, false);
+    if (ImGui::Button(T("Cancel"), ImVec2(w, 0)) || esc) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+  }
+  ImGui::PopStyleColor(2);
+  ImGui::PopStyleVar();
+  ImGui::PopFont();
 }
 
 void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float scale) {
@@ -1576,7 +1683,9 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
     ImGui::PushFont(font_, 20.0f * scale);
     const float wrap = size.x - 20 * scale;
     const ImVec2 text_size = ImGui::CalcTextSize(notice.c_str(), nullptr, false, wrap);
-    const ImVec2 at(pos.x + 10 * scale, pos.y + size.y - 100 * scale - text_size.y);
+    // Above Play, and above Quit in game.
+    const float above = (in_game_needs_restart_ ? 150 : 100) * scale;
+    const ImVec2 at(pos.x + 10 * scale, pos.y + size.y - above - text_size.y);
     ImGui::SetCursorScreenPos(at);
     ImGui::PushTextWrapPos(pos.x + size.x - 10 * scale);
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.95f, 0.55f, 0.40f, 1.0f));
@@ -1594,6 +1703,9 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
     }
     ImGui::PopFont();
   }
+  // Over the running game: Resume, or Restart for changes that need one.
+  const bool in_game = bool(in_game_needs_restart_);
+  if (in_game) DrawQuit(pos, size, scale);
   ImGui::PushFont(font_, 34.0f * scale);
   ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
   ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.06f));
@@ -1601,8 +1713,6 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
   ImGui::PushStyleColor(ImGuiCol_Text, busy ? ImVec4(0.5f, 0.5f, 0.5f, 1.0f)
                                             : ImVec4(0.96f, 0.95f, 0.92f, 1.0f));
   ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + size.y - 90 * scale));
-  // Over the running game: Resume, or Restart for changes that need one.
-  const bool in_game = bool(in_game_needs_restart_);
   const bool restart = in_game && in_game_needs_restart_(settings_);
   // The game started from here: Stop while it runs.
   const bool stop = !in_game && game_.Running();
@@ -3478,6 +3588,12 @@ void LauncherDialog::DrawShaders(float scale) {
     const float fraction = total ? float(done) / float(total)
                            : packages ? float(shader_build_.read) / float(packages) : 0.0f;
     ProgressBarText(fraction, ImGui::GetFrameHeight(), text);
+    ImGui::SetCursorPosX(label_w);
+    ImGui::BeginDisabled(shader_build_.stopping);
+    if (ImGui::Button(shader_build_.stopping ? T("Stopping...") : T("Stop the build"))) {
+      shader_build_.RequestStop();
+    }
+    ImGui::EndDisabled();
   } else if (have_cache) {
     ImGui::Text(T("Ready (%.0f MB)"), double(std::filesystem::file_size(cache, ec)) / 1048576.0);
     // Shaders the game patched while playing (checked once a second).
@@ -3514,12 +3630,32 @@ void LauncherDialog::DrawShaders(float scale) {
     }
     ImGui::SameLine();
   }
-  if (ImGui::Button(have_cache ? T("Rebuild all") : T("Build (about 10 minutes)"))) {
-    shader_build_.Start(tool, settings_.game_data, cache, ShaderDumpDirs());
+  // A stopped build continues where it was (mantra_shadergen takes
+  // <cache>.partial); starting over drops that.
+  const int stopped_at = state == ShaderBuild::kRunning ? 0 : StoppedBuildShaders();
+  if (stopped_at) {
+    char text[96];
+    std::snprintf(text, sizeof(text), T("Continue the build (%d shaders done)"), stopped_at);
+    if (ImGui::Button(text)) {
+      shader_build_.Start(tool, settings_.game_data, cache, ShaderDumpDirs());
+      message_.clear();
+      play_without_shaders_ = false;
+    }
+    ImGui::SameLine();
+  }
+  if (ImGui::Button(stopped_at    ? T("Start over")
+                    : have_cache  ? T("Rebuild all")
+                                  : T("Build (about 10 minutes)"))) {
+    shader_build_.Start(tool, settings_.game_data, cache, ShaderDumpDirs(), /*update=*/false,
+                        /*background=*/false, /*fresh=*/true);
     message_.clear();
     play_without_shaders_ = false;
   }
   ImGui::EndDisabled();
+  if (state == ShaderBuild::kStopped && stopped_at) {
+    ImGui::SetCursorPosX(label_w);
+    ImGui::TextDisabled("%s", T("Stopped: the next build continues from there."));
+  }
   if (state == ShaderBuild::kFailed) {
     ImGui::SetCursorPosX(label_w);
     const std::string line = shader_build_.Line();

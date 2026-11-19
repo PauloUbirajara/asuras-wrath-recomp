@@ -197,10 +197,13 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
 
   // A child process (mantra_shadergen) run in the background.
   struct ShaderBuild {
-    enum State { kIdle, kRunning, kDone, kFailed };
+    enum State { kIdle, kRunning, kDone, kFailed, kStopped };
     std::atomic<int> state{kIdle};
     platform::Process process;
     std::thread reader;
+    std::filesystem::path out;  // the cache being built (<out>.stop asks it to stop)
+    bool stopping = false;      // RequestStop called (UI thread)
+    std::chrono::steady_clock::time_point stop_requested;
     std::mutex mutex;
     std::string last_line;  // under mutex
     std::atomic<int> done{0}, total{0};  // shaders translated ("translated N/M" lines)
@@ -208,7 +211,12 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
     // update: keep the shaders `out` already has, translate only new ones.
     void Start(const std::filesystem::path& tool, const std::filesystem::path& game,
                const std::filesystem::path& out, const std::vector<std::filesystem::path>& dumps,
-               bool update = false, bool background = false);
+               bool update = false, bool background = false, bool fresh = false);
+    // Asks it to stop (it saves its progress, for the next build to continue).
+    void RequestStop();
+    // Kills it if a requested stop takes too long; every frame.
+    void Tick();
+    // Stops it and waits (closing the launcher).
     void Stop();
     bool background = false;  // started while the game runs (MaybeTranslateForGame)
     std::string Line();
@@ -281,6 +289,7 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   void DrawSettings(float scale);
   void LoadAchievements();
   void UseDroppedPath(const std::filesystem::path& path);
+  void DrawQuit(const ImVec2& pos, const ImVec2& size, float scale);
   void DrawSidebar(const ImVec2& pos, const ImVec2& size, float scale);
   void DrawPanel(const ImVec2& pos, const ImVec2& size, float scale);
   void DrawControls(float scale);
@@ -342,6 +351,7 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   bool OverGame() const { return bool(in_game_needs_restart_); }
   std::function<void(const LauncherSettings&, bool)> on_resume_;
   bool resume_requested_ = false;
+  bool quit_confirm_ = false;  // the in-game Quit's confirmation is open
   bool fonts_at_start_ = false;  // the game fonts were there when the launcher opened
   AssetJob asset_job_;
   std::vector<ProfileInfo> profiles_;

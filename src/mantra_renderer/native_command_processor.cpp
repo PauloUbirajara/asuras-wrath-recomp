@@ -1,4 +1,5 @@
 #include "native_command_processor.h"
+#include "render_scale.h"
 
 #include <array>
 #include "memexport.h"
@@ -218,7 +219,7 @@ bool NativeCommandProcessor::SetupContext() {
   }
   if (!cache_path.empty() && shader_cache_.Load(cache_path)) {
     MANTRA_INFO("shader cache: {} entries from {}", shader_cache_.size(), cache_path.string());
-    if (mantra::RenderScale8() != 8 && shader_cache_.version() < 8) {
+    if (mantra::RenderScaleUnits() != mantra::kScaleOne && shader_cache_.version() < 8) {
       MANTRA_WARN("shader cache v{} predates the render scale: rebuild it (screen-space effects "
                   "will be misplaced)", shader_cache_.version());
     }
@@ -226,9 +227,8 @@ bool NativeCommandProcessor::SetupContext() {
     MANTRA_WARN("no shader cache at {}; run mantra_shadergen --game <extracted> --out <path>",
                 cache_path.string());
   }
-  if (mantra::RenderScale8() != 8) {
-    MANTRA_INFO("render scale {}x ({}/8, MANTRA_RENDER_SCALE)", mantra::RenderScale8() / 8.0,
-                mantra::RenderScale8());
+  if (mantra::RenderScaleUnits() != mantra::kScaleOne) {
+    MANTRA_INFO("render scale {}x", double(mantra::RenderScaleUnits()) / mantra::kScaleOne);
   }
   StartPipelineWarmUp();
   return true;
@@ -511,12 +511,13 @@ void NativeCommandProcessor::ReportGpuProfile(double frames) {
   for (uint64_t ns : p.kind_ns) busy += per_frame(ns);
   busy -= kind(GpuMarkKind::kStart);
   MANTRA_INFO("gpu profile: {:.1f} ms busy per frame: passes {:.1f} (draws {:.1f}, ends {:.1f}), "
-              "pass setup {:.1f}, fills {:.1f}, resolves {:.1f}, present {:.1f}, tail {:.1f}; "
-              "{} marks dropped",
+              "pass setup {:.1f}, 7e3 conversions {:.1f}, fills {:.1f}, resolves {:.1f}, "
+              "present {:.1f}, tail {:.1f}; {} marks dropped; alias clears {} deferred, {} applied",
               busy, kind(GpuMarkKind::kDraw) + kind(GpuMarkKind::kPass),
               kind(GpuMarkKind::kDraw), kind(GpuMarkKind::kPass), kind(GpuMarkKind::kSetup),
-              kind(GpuMarkKind::kFill), kind(GpuMarkKind::kResolve), kind(GpuMarkKind::kPresent),
-              kind(GpuMarkKind::kTail), p.overflows);
+              kind(GpuMarkKind::kConvert), kind(GpuMarkKind::kFill), kind(GpuMarkKind::kResolve),
+              kind(GpuMarkKind::kPresent), kind(GpuMarkKind::kTail), p.overflows,
+              render_targets_.deferred_clears(), render_targets_.flushed_clears());
   using Item = std::pair<const std::tuple<uint8_t, uint64_t, uint64_t>*, const GpuProfileEntry*>;
   std::vector<Item> passes, draws, others;
   for (const auto& [key, entry] : p.entries) {
@@ -548,10 +549,10 @@ void NativeCommandProcessor::ReportGpuProfile(double frames) {
                 per_frame(e->ns), double(e->count) / frames, double(e->n) / frames,
                 std::get<1>(*key), std::get<2>(*key), e->extra & 0xFFFF, e->extra >> 16);
   }
-  for (size_t i = 0; i < std::min<size_t>(others.size(), 6); ++i) {
+  for (size_t i = 0; i < std::min<size_t>(others.size(), 8); ++i) {
     const auto& [key, e] = others[i];
-    static const char* const kNames[] = {"start", "setup", "pass", "draw",
-                                         "fill",  "resolve", "present", "tail"};
+    static const char* const kNames[] = {"start",   "setup",   "pass", "draw",   "fill",
+                                         "resolve", "present", "tail", "convert"};
     MANTRA_INFO("gpu profile:   {} {:.2f} ms ({:.1f}/frame): {:X} {:X}",
                 kNames[std::get<0>(*key)], per_frame(e->ns), double(e->count) / frames,
                 std::get<1>(*key), std::get<2>(*key));
@@ -609,6 +610,7 @@ VkCommandBuffer NativeCommandProcessor::BeginCommands() {
   dfn.vkResetDescriptorPool(device, slot.descriptor_pool, 0);
   slot.descriptor_sets_used = 0;
   resolved_surfaces_.Collect(submission_completed_);
+  render_targets_.Collect(submission_completed_);
 
   VkCommandBufferBeginInfo begin_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -714,11 +716,26 @@ mantra::RenderTarget* NativeCommandProcessor::GetColorTarget(
   mantra::CopyRect rect;
   rect.width = std::min(rt->image.width, from->image.width);
   rect.height = std::min(rt->image.height, from->image.height);
+  // Only the rows `from` wrote since the two were last the same (the main
+  // 1280-pitch target is 1328 rows for EDRAM's sake; the game draws 720).
+  // MANTRA_FULL_7E3_CONVERSIONS=1 converts everything.
+  static const bool full_conversions = std::getenv("MANTRA_FULL_7E3_CONVERSIONS") != nullptr;
+  if (!full_conversions) {
+    rect.height = std::min(rect.height, from->dirty_rows);
+  }
+  from->dirty_rows = 0;
+  rt->dirty_rows = 0;
+  if (!rect.height) {
+    ++draw_stats_.float7e3_conversions_skipped;
+    return rt;
+  }
   mantra::CopyPushConstants constants;
   constants.mode = to_32 ? 1 : 2;
   if (copy_pipelines_.Record(cmd, CurrentSlot().descriptor_pool, src_view, false, dst_view,
-                             dst_format, rt->image.width, rt->image.height, rect, constants)) {
+                             dst_format, rt->image.width, rt->image.height, rect, constants,
+                             rt->image.rscale, from->image.rscale)) {
     ++draw_stats_.float7e3_conversions;
+    GpuMarkHere(GpuMarkKind::kConvert, base_tiles, (uint64_t(to_32) << 32) | rect.height);
     if (FirstRoute((uint64_t(base_tiles) << 40) ^ (uint64_t(pitch_px) << 20) ^ (to_32 ? 7 : 3) ^
                    (uint64_t(0x7E3) << 52))) {
       MANTRA_INFO("edram: 7e3 {} 32bpp at base {} pitch {} ({}x{})", to_32 ? "->" : "<-",
@@ -1177,7 +1194,7 @@ bool NativeCommandProcessor::Resolve() {
       mantra::ResolvedSurface* surface = resolved_surfaces_.Get(
           dest_address, std::max<uint32_t>(dest_pitch.copy_dest_pitch, rect.x + rect.width),
           std::max<uint32_t>(dest_pitch.copy_dest_height, rect.y + rect.height),
-          info.copy_dest_info.copy_dest_format, frame, true);
+          info.copy_dest_info.copy_dest_format, frame, true, SurfaceScaleUnits());
       VkDescriptorPool descriptor_pool = ReserveDescriptorSet();
       cmd = BeginNonDrawCommands();
       if (surface && cmd) resolved_surfaces_.PrepareWrite(cmd, *surface);
@@ -1195,7 +1212,8 @@ bool NativeCommandProcessor::Resolve() {
         if (copy_pipelines_.Record(cmd, descriptor_pool, src_view,
                                    msaa != xenos::MsaaSamples::k1X, surface->view,
                                    VK_FORMAT_R32_SFLOAT, surface->image.width,
-                                   surface->image.height, rect, constants)) {
+                                   surface->image.height, rect, constants,
+                                   surface->image.rscale, rt->image.rscale)) {
           ++draw_stats_.depth_copies;
           surface->write_count = ++resolve_serial_;  // unique: surfaces get recreated
           surface->last_write_frame = frame;
@@ -1240,7 +1258,13 @@ bool NativeCommandProcessor::Resolve() {
       mantra::ResolvedSurface* surface = resolved_surfaces_.Get(
           dest_address, std::max<uint32_t>(dest_pitch.copy_dest_pitch, rect.x + rect.width),
           std::max<uint32_t>(dest_pitch.copy_dest_height, rect.y + rect.height), dest_format,
-          frame);
+          frame, false, SurfaceScaleUnits());
+      // The target the game presents from keeps the guest resolution (sharp
+      // HUD); everything drawn before it may be scaled.
+      if (last_frontbuffer_.address &&
+          (last_frontbuffer_.address & (kGuestPhysicalMemorySize - 1)) == dest_address) {
+        render_targets_.SetPresentation(rt->key);
+      }
       VkDescriptorPool descriptor_pool = ReserveDescriptorSet();
       cmd = BeginNonDrawCommands();  // may have been submitted to free descriptors
       if (surface && cmd) resolved_surfaces_.PrepareWrite(cmd, *surface);
@@ -1278,7 +1302,8 @@ bool NativeCommandProcessor::Resolve() {
         if (src_view &&
             copy_pipelines_.Record(cmd, descriptor_pool, src_view, msaa != xenos::MsaaSamples::k1X,
                                    surface->view, dest_host_format, surface->image.width,
-                                   surface->image.height, rect, constants)) {
+                                   surface->image.height, rect, constants, surface->image.rscale,
+                                   rt->image.rscale, /*linear=*/true)) {
           ++draw_stats_.color_copies;
           surface->write_count = ++resolve_serial_;  // unique: surfaces get recreated
           surface->last_write_frame = frame;
@@ -1324,6 +1349,10 @@ bool NativeCommandProcessor::Resolve() {
             render_targets_.GetDepth(cmd, info.depth_original_base, pitch_px, msaa, frame)) {
       render_targets_.ClearDepth(cmd, *rt, depth_info.depth_format, clear_rect,
                                  info.rb_depth_clear);
+      if (mantra::RenderTarget* twin = render_targets_.DepthTwin(*rt)) {
+        render_targets_.ClearDepth(cmd, *twin, depth_info.depth_format, clear_rect,
+                                   info.rb_depth_clear);
+      }
       ++draw_stats_.depth_clears;
     }
   }
@@ -1632,6 +1661,21 @@ void NativeCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
   EndFrameTiming();
   ScopedNs swap_timer{frame_timing_.swap_ns};
   ++swap_stats_.swaps;
+  // Testing live scale changes: MANTRA_RENDER_SCALE_SCHEDULE="600:0.5,900:1.5"
+  // (swap number: scale).
+  static const char* schedule = std::getenv("MANTRA_RENDER_SCALE_SCHEDULE");
+  for (const char* p = schedule; p && *p;) {
+    char* end = nullptr;
+    const unsigned long swap = std::strtoul(p, &end, 10);
+    if (*end != ':') break;
+    const double factor = std::strtod(end + 1, &end);
+    if (swap == swap_stats_.swaps) mantra_set_render_scale(factor);
+    p = *end == ',' ? end + 1 : end;
+  }
+  if (mantra::ApplyPendingRenderScale()) {
+    MANTRA_INFO("render scale {}x", double(mantra::RenderScaleUnits()) / mantra::kScaleOne);
+  }
+  last_color_rscale_ = mantra::RenderScaleUnits();
   g_guest_swaps.fetch_add(1, std::memory_order_relaxed);
   // The traced frame (TracingThisFrame) is the one after swap trace_swap_ - 1:
   // its lines go to a file of their own (mantra::TraceLine).
@@ -1855,8 +1899,8 @@ bool NativeCommandProcessor::PresentResolvedSurface(mantra::ResolvedSurface& sur
   const uint32_t display_height = std::max(uint32_t(1), uint32_t(video_mode.display_height));
 
   // At the internal resolution: the presenter scales it to the window.
-  const uint32_t output_width = mantra::HostSize(width, surface.image.scale8);
-  const uint32_t output_height = mantra::HostSize(height, surface.image.scale8);
+  const uint32_t output_width = mantra::HostSize(width, surface.image.rscale);
+  const uint32_t output_height = mantra::HostSize(height, surface.image.rscale);
   return presenter->RefreshGuestOutput(
       output_width, output_height, display_width, display_height,
       [&](ui::Presenter::GuestOutputRefreshContext& context) -> bool {
@@ -1888,7 +1932,7 @@ bool NativeCommandProcessor::PresentResolvedSurface(mantra::ResolvedSurface& sur
         const bool recorded = copy_pipelines_.Record(
             cmd, descriptor_pool, surface.view, false, vk_context.image_view(),
             ui::vulkan::VulkanPresenter::kGuestOutputFormat, width, height, rect, constants,
-            surface.image.scale8);
+            surface.image.rscale);
         mantra::TransitionImage(vulkan_device_, cmd, output,
                                 ui::vulkan::VulkanPresenter::kGuestOutputInternalLayout,
                                 ui::vulkan::VulkanPresenter::kGuestOutputInternalStageMask,
@@ -1998,8 +2042,8 @@ void NativeCommandProcessor::CaptureImage(mantra::TrackedImage& image, VkFormat 
                                           const std::string& name,
                                           const std::filesystem::path& out_path) {
   // Captures hold the image's real pixels (the render scale included).
-  width = mantra::HostSize(width, image.scale8);
-  height = mantra::HostSize(height, image.scale8);
+  width = mantra::HostSize(width, image.rscale);
+  height = mantra::HostSize(height, image.rscale);
   uint32_t texel_size;
   switch (format) {
     case VK_FORMAT_R8G8B8A8_UNORM:
@@ -2542,7 +2586,8 @@ bool NativeCommandProcessor::AttachTranslation(MantraShader& shader,
     // drawn with: renumber the translation's interpolator outputs to match.
     uint8_t map[16];
     const std::vector<uint32_t> runtime_exports =
-        mantra::shader_key::InterpolatorExports(microcode_be, byte_count);
+        mantra::shader_key::InterpolatorExports(microcode_be, byte_count, nullptr,
+                                                lookup.legacy_exports);
     if (!mantra::shader_key::InterpolatorLocationMap(lookup.exports, runtime_exports, map)) {
       // Identity, or exports that don't correspond (then left as is).
       auto list = [](const std::vector<uint32_t>& exports) {

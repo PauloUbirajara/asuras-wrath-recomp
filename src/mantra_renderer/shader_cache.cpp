@@ -114,6 +114,7 @@ ShaderCache::Lookup ShaderCache::Find(const void* microcode_be, size_t byte_coun
                   e.export_count * sizeof(uint32_t));
       if (version_ >= 7 && !(e.flags & kEntryPixelShader)) {
         result.container_formats = version_ >= 10;
+        result.legacy_exports = version_ < 11;
         result.vertex_swizzles.resize(e.vertex_element_count);
         std::memcpy(result.vertex_swizzles.data(),
                     blobs_ + e.vertex_elements_offset +
@@ -138,7 +139,8 @@ ShaderCache::Lookup ShaderCache::Find(const void* microcode_be, size_t byte_coun
       // shader's input undefined (e.g. a texture coordinate of 0).
       std::vector<uint32_t> runtime_signatures;
       const std::vector<uint32_t> runtime =
-          shader_key::InterpolatorExports(microcode_be, byte_count, &runtime_signatures);
+          shader_key::InterpolatorExports(microcode_be, byte_count, &runtime_signatures,
+                                          version_ < 11);
       // v9: the game shader whose exports compute the same as the runtime
       // code's (only their registers renumbered). The first one that merely
       // exports to every register can compute something else: the UI text

@@ -175,16 +175,19 @@ bool CopyPipelines::Record(VkCommandBuffer cmd, VkDescriptorPool descriptor_pool
                            VkImageView src_view, bool src_multisampled, VkImageView dst_view,
                            VkFormat dst_format, uint32_t dst_width, uint32_t dst_height,
                            const CopyRect& guest_rect, const CopyPushConstants& guest_constants,
-                           uint32_t scale8) {
+                           uint32_t rscale, uint32_t src_rscale, bool linear) {
+  if (!src_rscale) src_rscale = rscale;
   const VkRect2D host = HostRect(
-      {{guest_rect.x, guest_rect.y}, {guest_rect.width, guest_rect.height}}, scale8);
+      {{guest_rect.x, guest_rect.y}, {guest_rect.width, guest_rect.height}}, rscale);
   const CopyRect rect = {host.offset.x, host.offset.y, host.extent.width, host.extent.height};
-  dst_width = HostSize(dst_width, scale8);
-  dst_height = HostSize(dst_height, scale8);
+  dst_width = HostSize(dst_width, rscale);
+  dst_height = HostSize(dst_height, rscale);
   CopyPushConstants constants = guest_constants;
   for (int32_t& offset : constants.src_offset) {
-    offset = int32_t(std::lround(double(offset) * scale8 / 8.0));
+    offset = int32_t(std::lround(double(offset) * src_rscale / double(kScaleOne)));
   }
+  constants.src_ratio = float(src_rscale) / float(rscale);
+  constants.linear = linear && !src_multisampled && src_rscale != rscale ? 1u : 0u;
   if (!rect.width || !rect.height) {
     return true;
   }

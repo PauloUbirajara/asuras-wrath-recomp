@@ -40,7 +40,12 @@ constexpr char kMagic[4] = {'M', 'S', 'H', 'C'};
 //    shader). The driver sets fetch formats per vertex declaration, so a
 //    normalized match can get packed data on another input (mantra then
 //    decodes on the CPU). Older caches: assumed to match the runtime.
-constexpr uint32_t kVersion = 10;
+// 11: a scalar export's interpolator is vector_dest (exports write both
+//    results there); earlier versions recorded scalar_dest, which made
+//    renumbered normalized matches look inconsistent, so they weren't
+//    remapped (wrong particles, atmosphere on a first run). Older caches
+//    load and compare the old way.
+constexpr uint32_t kVersion = 11;
 constexpr uint32_t kSwizzlePackedFormat = 1u << 16;
 constexpr uint32_t kMinVersion = 5;
 

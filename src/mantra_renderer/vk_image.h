@@ -18,14 +18,14 @@ struct TrackedImage {
   VkFormat format = VK_FORMAT_UNDEFINED;
   VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
   // In guest pixels. Render targets, resolved surfaces and textures copied
-  // from them are allocated `scale8` / 8 times larger (RenderScale8()), so
+  // from them are allocated `rscale` / kScaleOne times larger (RenderScaleUnits()), so
   // host_width/host_height are the real image size; rects given to Vulkan go
   // through HostRect().
   uint32_t width = 0;
   uint32_t height = 0;
   uint32_t host_width = 0;
   uint32_t host_height = 0;
-  uint32_t scale8 = 8;
+  uint32_t rscale = 40;  // kScaleOne
   VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
 
   VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -39,7 +39,7 @@ bool CreateTrackedImage(const rex::ui::vulkan::VulkanDevice* device, VkFormat fo
                         VkImageAspectFlags aspect, uint32_t width, uint32_t height,
                         VkSampleCountFlagBits samples, VkImageUsageFlags usage,
                         const VkFormat* view_formats, uint32_t view_format_count,
-                        TrackedImage& out, uint32_t scale8 = 8);
+                        TrackedImage& out, uint32_t rscale = 40);
 void DestroyTrackedImage(const rex::ui::vulkan::VulkanDevice* device, TrackedImage& image);
 
 VkImageView CreateImageView(const rex::ui::vulkan::VulkanDevice* device, VkImage image,
@@ -51,20 +51,26 @@ void TransitionImage(const rex::ui::vulkan::VulkanDevice* device, VkCommandBuffe
                      TrackedImage& image, VkImageLayout layout, VkPipelineStageFlags stage,
                      VkAccessFlags access, bool discard = false);
 
-// Internal resolution: host pixels per guest pixel, in eighths (8 = the game's
-// 1280x720). From MANTRA_RENDER_SCALE: a factor ("1.5") or a target height
-// ("1080"), rounded to eighths so EDRAM tiles (80x16 samples) stay whole host
-// pixels; 4 (0.5x) to 32 (4x).
-uint32_t RenderScale8();
+// Internal resolution: host pixels per guest pixel, in kScaleOne units
+// (kScaleOne = the game's 1280x720; 1/40 = 2.5% steps). From
+// MANTRA_RENDER_SCALE at start (a factor "1.5", or a target height "1080"),
+// then mantra_set_render_scale (render_scale.h); 2 (5%) to 160 (4x). A change takes
+// effect at the next frame (ApplyPendingRenderScale, at swap): render targets
+// are recreated at the new scale as they are next used.
+constexpr uint32_t kScaleOne = 40;
+constexpr uint32_t kMinScaleUnits = 2, kMaxScaleUnits = 160;
+uint32_t RenderScaleUnits();
+// Takes a pending mantra_set_render_scale; returns whether the scale changed.
+bool ApplyPendingRenderScale();
 // Guest -> host pixels (coordinates floor, sizes cover the whole guest size).
-inline uint32_t HostCoord(uint32_t guest, uint32_t scale8) { return guest * scale8 / 8; }
-inline uint32_t HostSize(uint32_t guest, uint32_t scale8) { return (guest * scale8 + 7) / 8; }
-inline VkRect2D HostRect(const VkRect2D& guest, uint32_t scale8) {
-  if (scale8 == 8) return guest;
-  const uint32_t x0 = HostCoord(uint32_t(guest.offset.x), scale8);
-  const uint32_t y0 = HostCoord(uint32_t(guest.offset.y), scale8);
-  const uint32_t x1 = HostCoord(uint32_t(guest.offset.x) + guest.extent.width, scale8);
-  const uint32_t y1 = HostCoord(uint32_t(guest.offset.y) + guest.extent.height, scale8);
+inline uint32_t HostCoord(uint32_t guest, uint32_t rscale) { return guest * rscale / kScaleOne; }
+inline uint32_t HostSize(uint32_t guest, uint32_t rscale) { return (guest * rscale + kScaleOne - 1) / kScaleOne; }
+inline VkRect2D HostRect(const VkRect2D& guest, uint32_t rscale) {
+  if (rscale == kScaleOne) return guest;
+  const uint32_t x0 = HostCoord(uint32_t(guest.offset.x), rscale);
+  const uint32_t y0 = HostCoord(uint32_t(guest.offset.y), rscale);
+  const uint32_t x1 = HostCoord(uint32_t(guest.offset.x) + guest.extent.width, rscale);
+  const uint32_t y1 = HostCoord(uint32_t(guest.offset.y) + guest.extent.height, rscale);
   return {{int32_t(x0), int32_t(y0)}, {x1 - x0, y1 - y0}};
 }
 

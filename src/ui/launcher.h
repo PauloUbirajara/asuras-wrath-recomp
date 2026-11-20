@@ -80,10 +80,8 @@ struct LauncherSettings {
   uint32_t turbo = 0;                        // Turbo: held controls repeat (bit = PadControl)
   bool hide_cursor = true;                   // mouse cursor hides while it isn't moving, in game
   bool mute_background = false;              // no sound while the window isn't focused
-  int render_height = 720;                   // internal resolution (16:9), 720 = the game's
-  // Graphics > "Higher resolution" (experimental): off, the game renders at
-  // its own 720p whatever render_height says (RenderHeight).
-  bool native_render = false;
+  // Internal resolution, % of the game's 1280x720 (5..400, steps of 5).
+  int render_scale = 100;
   bool toasts = true;                        // achievement pop-ups
   int toast_corner = 3;                      // 0 top left, 1 top right, 2 bottom left, 3 bottom right
   double toast_seconds = 4.5;                // how long each pop-up stays
@@ -95,6 +93,7 @@ struct LauncherSettings {
   static std::filesystem::path PathIn(const std::filesystem::path& user_data_root);
   bool Load(const std::filesystem::path& path);  // false if missing
   bool Save(const std::filesystem::path& path) const;
+  std::string Serialize() const;  // the file's text (Save)
 };
 
 // Applies the settings to flags nothing else set (command line, environment,
@@ -116,9 +115,8 @@ void ApplyLiveSettings(const LauncherSettings& settings);
 // Whether the shader cache works with the given settings.
 enum class ShaderCacheFit { kReady, kMissing, kOutdated };
 ShaderCacheFit ShaderCacheFitFor(const LauncherSettings& s);
-// The render height mantra uses: render_height with "Higher resolution" on,
-// else the game's 720.
-int RenderHeight(const LauncherSettings& s);
+// The render scale mantra uses, as a factor (1 = the game's 1280x720).
+double RenderScale(const LauncherSettings& s);
 bool NeedsRestart(const LauncherSettings& before, const LauncherSettings& after);
 
 // Turns the SDK's green ImGui accents (all overlays) orange.
@@ -361,6 +359,9 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   // Opened over the running game (Esc): drawn translucent, the game shows through.
   bool OverGame() const { return bool(in_game_needs_restart_); }
   std::function<void(const LauncherSettings&, bool)> on_resume_;
+  // In game: the settings when the launcher opened (Cancel goes back to them).
+  LauncherSettings opened_settings_;
+  std::string opened_serialized_;
   bool resume_requested_ = false;
   bool quit_confirm_ = false;  // the in-game Quit's confirmation is open
   bool fonts_at_start_ = false;  // the game fonts were there when the launcher opened

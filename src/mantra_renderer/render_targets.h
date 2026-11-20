@@ -10,10 +10,12 @@
 // ResolvedSurfaces: the destinations of resolves (EDRAM -> texture copies),
 // kept on the GPU and keyed by guest address. The frontbuffer present and
 // (later) the texture cache read them instead of guest memory.
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -49,6 +51,21 @@ struct RenderTarget {
   // 32bpp and 64bpp images at one key alias the same EDRAM.
   uint64_t use_serial = 0;
   xenos::ColorRenderTargetFormat last_format = xenos::ColorRenderTargetFormat::k_8_8_8_8;
+  // Clears deferred until the image is next used (RenderTargetPool::
+  // FlushClears): the depth -> color alias clears mostly hit views that are
+  // cleared again before anything reads them.
+  struct PendingClear {
+    VkImageView view;
+    VkRect2D rect;  // host pixels
+    VkClearValue value;
+    VkImageAspectFlags aspects;
+  };
+  std::vector<PendingClear> pending_clears;
+  // Rows [0, dirty_rows) (guest pixels) may differ from the 7e3 <-> 32bpp
+  // counterpart: written since the two were last made the same by a
+  // conversion. Conversions copy only these rows.
+  uint32_t dirty_rows = 0;
+  void NoteWritten(uint32_t bottom_row) { dirty_rows = std::max(dirty_rows, bottom_row); }
 };
 
 struct ResolvedSurface {
@@ -97,8 +114,10 @@ class RenderTargetPool {
     return format == xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT ||
            format == xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT_AS_16_16_16_16;
   }
+  // `rscale` (0: ScaleFor): a depth buffer for a pass at another scale (a
+  // native HUD pass) is a twin of the scaled one; depth fills clear both.
   RenderTarget* GetDepth(VkCommandBuffer cmd, uint32_t base_tiles, uint32_t pitch_px,
-                         xenos::MsaaSamples msaa, uint64_t frame);
+                         xenos::MsaaSamples msaa, uint64_t frame, uint32_t rscale = 0);
 
   VkImageView GetView(RenderTarget& rt, VkFormat format);
   // Depth-aspect-only view of a depth target, for sampling it.
@@ -135,30 +154,57 @@ class RenderTargetPool {
 
   // Clears `rect` (in pixels) of the render target, with the guest clear
   // value interpreted as `format` (RB_COLOR_CLEAR | RB_COLOR_CLEAR_LO << 32).
+  // `defer`: record the clear and apply it when the target is next looked
+  // up (GetColor / GetDepth) or cleared right away (for alias clears).
   void ClearColor(VkCommandBuffer cmd, RenderTarget& rt, xenos::ColorRenderTargetFormat format,
-                  const VkRect2D& rect, uint64_t clear_value);
+                  const VkRect2D& rect, uint64_t clear_value, bool defer = false);
   // Clears with an already-decoded color (shader output values, in the
   // host view of `format`).
   void ClearColorFloat(VkCommandBuffer cmd, RenderTarget& rt, xenos::ColorRenderTargetFormat format,
-                       const VkRect2D& rect, const float color[4]);
+                       const VkRect2D& rect, const float color[4], bool defer = false);
   void ClearDepthStencil(VkCommandBuffer cmd, RenderTarget& rt, const VkRect2D& rect,
-                         bool clear_depth, float depth, bool clear_stencil, uint32_t stencil);
+                         bool clear_depth, float depth, bool clear_stencil, uint32_t stencil,
+                         bool defer = false);
+  // Applies the target's deferred clears.
+  void FlushClears(VkCommandBuffer cmd, RenderTarget& rt);
+  // MANTRA_LAZY_ALIAS_CLEARS=0 applies alias clears right away.
+  static bool DeferAliasClears();
+  uint64_t deferred_clears() const { return deferred_clears_; }
+  uint64_t flushed_clears() const { return flushed_clears_; }
   // RB_DEPTH_CLEAR: depth in the upper 24 bits, stencil in the low 8.
   void ClearDepth(VkCommandBuffer cmd, RenderTarget& rt, xenos::DepthRenderTargetFormat format,
                   const VkRect2D& rect, uint32_t clear_value);
 
   size_t size() const { return targets_.size(); }
 
+  // Native HUD (render scale below 1x): the 32bpp target the game resolves
+  // to the frontbuffer (where it draws the HUD over the tonemapped scene)
+  // stays at the guest resolution; the rest uses the render scale.
+  // MANTRA_NATIVE_HUD=0 scales everything.
+  static bool NativeHud();
+  // A target resolved to the frontbuffer: native from its next lookup on.
+  void SetPresentation(const RtKey& key);
+  // The native twin of a scaled depth buffer, if one was made.
+  RenderTarget* DepthTwin(const RenderTarget& rt);
+  uint32_t ScaleFor(const RtKey& key) const;
+  // Frees targets replaced at another scale once `completed_frame` is done.
+  void Collect(uint64_t completed_frame);
+
  private:
-  RenderTarget* Create(VkCommandBuffer cmd, const RtKey& key);
+  RenderTarget* Create(VkCommandBuffer cmd, const RtKey& key, bool twin = false);
+  void Destroy(RenderTarget& rt);
   void ClearAttachment(VkCommandBuffer cmd, RenderTarget& rt, VkImageView view,
                        const VkRect2D& rect, const VkClearValue& value,
-                       VkImageAspectFlags aspects = 0);
+                       VkImageAspectFlags aspects = 0, bool defer = false);
 
   const rex::ui::vulkan::VulkanDevice* device_ = nullptr;
   VkFormat depth_format_ = VK_FORMAT_UNDEFINED;
   std::unordered_map<uint64_t, std::unique_ptr<RenderTarget>> targets_;
   uint64_t use_serial_ = 0;
+  uint64_t deferred_clears_ = 0, flushed_clears_ = 0;
+  std::unordered_set<uint64_t> presentation_keys_;
+  std::unordered_map<uint64_t, std::unique_ptr<RenderTarget>> depth_twins_;  // native scale
+  std::vector<std::pair<uint64_t, std::unique_ptr<RenderTarget>>> retired_;
 };
 
 class ResolvedSurfaces {
@@ -173,8 +219,9 @@ class ResolvedSurfaces {
   // Finds or (re)creates the surface at `address` able to hold `pitch` x
   // `height` texels of `format`. Returns nullptr if the format is unsupported.
   // A replaced surface is destroyed once submission `frame` has completed.
+  // `rscale`: the image's render scale (RenderScaleUnits() units).
   ResolvedSurface* Get(uint32_t address, uint32_t pitch, uint32_t height,
-                       xenos::ColorFormat format, uint64_t frame, bool depth = false);
+                       xenos::ColorFormat format, uint64_t frame, bool depth, uint32_t rscale);
   // The surface last resolved to `address`, if any.
   ResolvedSurface* Find(uint32_t address);
   // Call before each write: zeroes a new surface, and if it grew from an older

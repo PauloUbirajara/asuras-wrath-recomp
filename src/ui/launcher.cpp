@@ -30,9 +30,22 @@
 
 #include <SDL3/SDL.h>
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
+
 #include "../game/frame_rate.h"
 #include "fps_counter.h"
 #include "../input/pad_remap.h"
+#include "../mantra_renderer/render_scale.h"
 #include "../mantra_renderer/shader_cache_format.h"
 #include "../platform/platform.h"
 #include "about_info.h"
@@ -288,6 +301,9 @@ bool LauncherSettings::Load(const std::filesystem::path& path) {
   std::ifstream in(path);
   if (!in) return false;
   std::string line;
+  // Before render_scale: "Higher resolution" + a render height.
+  bool native_render = false, have_scale = false;
+  int render_height = 720;
   while (std::getline(in, line)) {
     const size_t eq = line.find('=');
     if (eq == std::string::npos || line[0] == '#') continue;
@@ -328,6 +344,10 @@ bool LauncherSettings::Load(const std::filesystem::path& path) {
     else if (key == "native_render") native_render = on;
     else if (key == "fps_cap") fps_cap = std::clamp(std::atoi(value.c_str()), 0, 240);
     else if (key == "render_height") render_height = std::clamp(std::atoi(value.c_str()), 360, 2880);
+    else if (key == "render_scale") {
+      render_scale = std::clamp((std::atoi(value.c_str()) + 2) / 5 * 5, 5, 400);
+      have_scale = true;
+    }
     else if (key == "toasts") toasts = on;
     else if (key == "toast_corner") toast_corner = std::clamp(std::atoi(value.c_str()), 0, 3);
     else if (key == "toast_seconds")
@@ -339,6 +359,9 @@ bool LauncherSettings::Load(const std::filesystem::path& path) {
     else if (key.rfind("pad.", 0) == 0) pad[key.substr(4)] = value;
     else if (key.rfind("flag.", 0) == 0) binds[key.substr(5)] = value;
   }
+  if (!have_scale && native_render) {
+    render_scale = std::clamp((render_height * 100 / 720 + 2) / 5 * 5, 5, 400);
+  }
   return true;
 }
 
@@ -347,6 +370,12 @@ bool LauncherSettings::Save(const std::filesystem::path& path) const {
   std::filesystem::create_directories(path.parent_path(), ec);
   std::ofstream out(path);
   if (!out) return false;
+  out << Serialize();
+  return bool(out);
+}
+
+std::string LauncherSettings::Serialize() const {
+  std::ostringstream out;
   out << "# Asura's Wrath Recompiled launcher settings\n"
       << "gpu=" << gpu << "\nvsync=" << vsync << "\nfullscreen=" << fullscreen << "\nexclusive=" << exclusive
       << "\nmonitor=" << monitor
@@ -354,7 +383,7 @@ bool LauncherSettings::Save(const std::filesystem::path& path) const {
       << window_width << "x" << window_height << "\nlanguage=" << language
       << "\ngame_data=" << game_data << "\ndata_folder=" << data_folder << "\ndeadzone_left=" << deadzone_left
       << "\ndeadzone_right=" << deadzone_right << "\nvibration=" << vibration
-      << "\nshow_fps=" << show_fps << "\nfps_corner=" << fps_corner << "\nfps_cap=" << fps_cap << "\nrender_height=" << render_height << "\nnative_render=" << native_render << "\ntoasts=" << toasts << "\ntoast_corner=" << toast_corner
+      << "\nshow_fps=" << show_fps << "\nfps_corner=" << fps_corner << "\nfps_cap=" << fps_cap << "\nrender_scale=" << render_scale << "\ntoasts=" << toasts << "\ntoast_corner=" << toast_corner
       << "\ntoast_seconds=" << toast_seconds << "\ntrace_picture=" << trace_picture
       << "\ntrace_notice=" << trace_notice << "\ntrace_notice_position=" << trace_notice_position
       << "\nhide_cursor=" << hide_cursor
@@ -367,7 +396,28 @@ bool LauncherSettings::Save(const std::filesystem::path& path) const {
       << "\nachievements_view=" << (achievements_grid ? "grid" : "list") << "\n";
   for (const auto& [target, source] : pad) out << "pad." << target << "=" << source << "\n";
   for (const auto& [flag, value] : binds) out << "flag." << flag << "=" << value << "\n";
-  return bool(out);
+  return out.str();
+}
+
+// Changes mantra's render scale in the running game, through the loaded
+// plugin (a shared library; nothing happens if another renderer runs).
+static void RequestRenderScale(double factor) {
+  using SetScale = void (*)(double);
+  static SetScale set = []() -> SetScale {
+#if defined(_WIN32)
+    HMODULE module = GetModuleHandleA("rexgpu-mantra.dll");
+    return module ? reinterpret_cast<SetScale>(GetProcAddress(module, kMantraSetRenderScale))
+                  : nullptr;
+#else
+    void* module = dlopen("librexgpu-mantra.so", RTLD_NOW | RTLD_NOLOAD);
+    return module ? reinterpret_cast<SetScale>(dlsym(module, kMantraSetRenderScale)) : nullptr;
+#endif
+  }();
+  if (set) {
+    set(factor);
+  } else {
+    REXLOG_WARN("launcher: mantra isn't loaded; the render scale applies on the next start");
+  }
 }
 
 // MANTRA_RENDER_SCALE set before the launcher's settings were first applied
@@ -377,11 +427,6 @@ bool RenderScaleFromEnvironment() {
   return from_environment;
 }
 
-// The guest display rate a frame-rate cap needs (0 = the SDK's default, 60).
-static int GuestRefreshRate(int fps_cap) {
-  if (fps_cap == 30) return 0;
-  return fps_cap <= 0 || fps_cap > 120 ? 240 : 2 * fps_cap;
-}
 
 void ApplyLauncherDefaults(const LauncherSettings& s) {
   SetIfUnset("vulkan_device", std::to_string(s.gpu));
@@ -418,19 +463,19 @@ void ApplyLauncherDefaults(const LauncherSettings& s) {
   input::SetVibrationStrength(s.vibration);
   input::SetTurboControls(s.turbo);
   game::SetFrameRateCap(s.fps_cap);
-  // The game also presents only every second guest vblank, so above 30 fps
-  // the (emulated) display needs twice the cap: 60 fps -> 120 Hz. Read once
-  // when the GPU starts, so an in-game cap change takes it on the next start.
-  if (const int hz = GuestRefreshRate(s.fps_cap)) {
-    SetIfUnset("video_mode_refresh_rate", std::to_string(hz));
-  }
-  // mantra reads it when it starts (vk_image.h RenderScale8).
+  // The game presents every second guest vblank, so above 30 fps the
+  // (emulated) display needs twice the cap. The SDK reads the rate once when
+  // the GPU starts, so it is the most any cap needs (240 Hz = 120 presents a
+  // second); the cap itself (GetMaxTickRate) then changes live, 30 included.
+  SetIfUnset("video_mode_refresh_rate", "240");
+  // mantra reads it when it starts (vk_image.h RenderScaleUnits); in game,
+  // ApplyLiveSettings changes it.
   // Unless the environment set it before the first call: the launcher's
   // process applies its start-up settings, and the game process (started by
   // Play) inherits the environment, so a stale value must not stay.
   if (!RenderScaleFromEnvironment()) {
-    platform::SetEnv("MANTRA_RENDER_SCALE", RenderHeight(s) != 720
-                                                ? std::to_string(RenderHeight(s)).c_str()
+    platform::SetEnv("MANTRA_RENDER_SCALE", s.render_scale != 100
+                                                ? std::to_string(RenderScale(s)).c_str()
                                                 : nullptr);
   }
   SetToastOptions({s.toasts, s.toast_corner, float(s.toast_seconds)});
@@ -470,6 +515,7 @@ void ApplyLiveSettings(const LauncherSettings& s) {
   input::SetVibrationStrength(s.vibration);
   input::SetTurboControls(s.turbo);
   game::SetFrameRateCap(s.fps_cap);
+  if (!RenderScaleFromEnvironment()) RequestRenderScale(RenderScale(s));
   SetToastOptions({s.toasts, s.toast_corner, float(s.toast_seconds)});
   SetFpsCorner(s.fps_corner);
   SetTraceOptions({s.trace_notice, s.trace_notice_position, s.trace_picture});
@@ -477,10 +523,9 @@ void ApplyLiveSettings(const LauncherSettings& s) {
 
 bool NeedsRestart(const LauncherSettings& before, const LauncherSettings& after) {
   return before.gpu != after.gpu || before.vsync != after.vsync ||
-         RenderHeight(before) != RenderHeight(after) || before.monitor != after.monitor ||
+         before.monitor != after.monitor ||
          (before.fullscreen && before.exclusive) != (after.fullscreen && after.exclusive) ||
-         (before.aspect == AspectMode::kFill) != (after.aspect == AspectMode::kFill) ||
-         GuestRefreshRate(before.fps_cap) != GuestRefreshRate(after.fps_cap);
+         (before.aspect == AspectMode::kFill) != (after.aspect == AspectMode::kFill);
 }
 
 void ApplyOrangeAccent(ImGuiStyle& imgui_style, rex::ui::Style& ui_style) {
@@ -619,11 +664,11 @@ ShaderCacheFit ShaderCacheFitFor(const LauncherSettings& s) {
   namespace sc = mantra::shader_cache;
   const uint32_t version = ShaderCacheVersion();
   if (version < sc::kMinVersion || version > sc::kVersion) return ShaderCacheFit::kMissing;
-  const uint32_t needed = RenderHeight(s) != 720 ? 8 : sc::kMinVersion;
+  const uint32_t needed = s.render_scale != 100 ? 8 : sc::kMinVersion;
   return version < needed ? ShaderCacheFit::kOutdated : ShaderCacheFit::kReady;
 }
 
-int RenderHeight(const LauncherSettings& s) { return s.native_render ? s.render_height : 720; }
+double RenderScale(const LauncherSettings& s) { return s.render_scale / 100.0; }
 
 bool HaveGameFonts() { return HaveExtractedUiFonts(); }
 
@@ -1046,6 +1091,8 @@ void LauncherDialog::SetInGame(std::function<bool(const LauncherSettings&)> need
                                std::function<void(const LauncherSettings&, bool)> on_resume) {
   in_game_needs_restart_ = std::move(needs_restart);
   on_resume_ = std::move(on_resume);
+  opened_settings_ = settings_;
+  opened_serialized_ = settings_.Serialize();
 }
 
 LauncherDialog::~LauncherDialog() {
@@ -1668,14 +1715,49 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
                            : !in_game ? T("Play")
                            : restart  ? T("Restart")
                                       : T("Resume");
+  // In game, after a change: Cancel beside it, back to the settings the
+  // launcher opened with.
+  const bool can_cancel = in_game && settings_.Serialize() != opened_serialized_;
+  const float play_width = can_cancel ? std::floor(size.x * 0.6f) : size.x;
   const bool clicked =
-      ImGui::Button((std::string(play_label) + "##play").c_str(), ImVec2(size.x, 64 * scale));
+      ImGui::Button((std::string(play_label) + "##play").c_str(), ImVec2(play_width, 64 * scale));
+  const bool play_hovered = ImGui::IsItemHovered();
+  bool cancel = false;
+  if (can_cancel) {
+    ImGui::SameLine(0, 0);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.75f, 0.73f, 0.70f, 1.0f));
+    cancel = ImGui::Button((std::string(T("Cancel")) + "##cancel").c_str(),
+                           ImVec2(size.x - play_width, 64 * scale));
+    ImGui::PopStyleColor();
+    if (ImGui::IsItemHovered()) {
+      ImGui::PushFont(font_, 22.0f * scale);
+      ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14 * scale, 10 * scale));
+      ImGui::BeginTooltip();
+      ImGui::TextUnformatted(T("Undoes the changes made here and goes back to the game."));
+      ImGui::EndTooltip();
+      ImGui::PopStyleVar();
+      ImGui::PopFont();
+    }
+  }
   const bool esc_resume = std::exchange(resume_requested_, false) && in_game;
   const bool play = (clicked || esc_resume) && !busy;
   const bool restart_chosen = clicked && restart;
   ImGui::PopStyleColor(4);
   ImGui::PopFont();
-  if (ImGui::IsItemHovered() && stop) {
+  if (cancel) {
+    settings_ = opened_settings_;
+    std::snprintf(game_data_buffer_, sizeof(game_data_buffer_), "%s", settings_.game_data.c_str());
+    capture_flag_.clear();
+    pad_capture_ = -1;
+    ClosePad();
+    SaveSettings();
+    playing_ = true;
+    // After this frame: the callback may destroy the launcher.
+    imgui_drawer()->RemoveDialog(this);
+    call_in_ui_thread_deferred_([cb = on_resume_, s = settings_] { cb(s, false); });
+    return;
+  }
+  if (play_hovered && stop) {
     ImGui::PushFont(font_, 22.0f * scale);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14 * scale, 10 * scale));
     ImGui::BeginTooltip();
@@ -1688,7 +1770,7 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
     ImGui::PopStyleVar();
     ImGui::PopFont();
   }
-  if (ImGui::IsItemHovered() && restart && !busy) {
+  if (play_hovered && restart && !busy) {
     ImGui::PushFont(font_, 22.0f * scale);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14 * scale, 10 * scale));
     ImGui::BeginTooltip();
@@ -1698,7 +1780,7 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
     ImGui::PopStyleVar();
     ImGui::PopFont();
   }
-  if (ImGui::IsItemHovered() && busy) {
+  if (play_hovered && busy) {
     // In the launcher's font and size (tooltips otherwise use ImGui's), with
     // what the task is doing.
     std::string detail;
@@ -3198,48 +3280,41 @@ void LauncherDialog::DrawSettings(float scale) {
     }
   }
 
-  // Off: the game's own 1280x720, scaled to the window by the presenter (the
-  // rendering before render scaling). On: mantra renders at render_height.
-  restart_label(T("Higher resolution"));
-  if (ImGui::Checkbox(T("Render above the game's 1280 x 720 (experimental)"),
-                      &settings_.native_render)) {
-    changed = true;
-  }
-  hint(T("Some effects can show green areas."));
-
-  restart_label(T("Render resolution"));
+  // mantra's internal resolution, % of the game's 1280x720; changes in game
+  // apply on Resume.
+  label(T("Render resolution"));
   {
-    struct RenderSize {
-      const char* label;
-      int height;
-    };
-    static const RenderSize kRenderSizes[] = {
-        {"3840 x 2160 (16:9)", 2160}, {"2560 x 1440 (16:9)", 1440}, {"1920 x 1080 (16:9)", 1080},
-        {"1600 x 900 (16:9)", 900},   {"1280 x 720 (16:9)", 720},   {"960 x 540 (16:9)", 540},
-    };
-    const int height = RenderHeight(settings_);
-    std::string current = SizeLabel(height * 16 / 9, height);
-    for (const auto& r : kRenderSizes) {
-      if (r.height == height) current = r.label;
+    constexpr int kMin = 5, kMax = 400;
+    int value = std::clamp(settings_.render_scale, kMin, kMax);
+    const int height = (720 * value + 50) / 100, width = (1280 * value + 50) / 100;
+    std::string format =
+        "%d%%  (" + std::to_string(width) + " x " + std::to_string(height);
+    if (value == 100) format += std::string(", ") + T("the game's");
+    format += ")";
+    ImGui::SetNextItemWidth(360 * scale);
+    ImGui::BeginDisabled(RenderScaleFromEnvironment());
+    if (ImGui::SliderInt("##render_scale", &value, kMin, kMax, format.c_str(),
+                         ImGuiSliderFlags_AlwaysClamp)) {
+      settings_.render_scale = std::clamp((value + 2) / 5 * 5, kMin, kMax);
+      changed = true;
     }
-    if (height == 720) current += std::string(" (") + T("the game's") + ")";
-    ImGui::SetNextItemWidth(260 * scale);
-    ImGui::BeginDisabled(!settings_.native_render ||
-                         RenderScaleFromEnvironment());
-    if (ImGui::BeginCombo("##render", current.c_str())) {
-      for (const auto& r : kRenderSizes) {
-        std::string text = r.label;
-        if (r.height == 720) text += std::string(" (") + T("the game's") + ")";
-        if (ImGui::Selectable(text.c_str(), r.height == height)) {
-          settings_.render_height = r.height;
-          changed = true;
-        }
+    // Common scales one click away, under the slider.
+    bool first = true;
+    for (int pct : {50, 75, 100, 150, 200}) {
+      if (first) {
+        ImGui::SetCursorPosX(label_w);
+        first = false;
+      } else {
+        ImGui::SameLine();
       }
-      ImGui::EndCombo();
+      if (ImGui::SmallButton((std::to_string(pct) + "%##rs" + std::to_string(pct)).c_str())) {
+        settings_.render_scale = pct;
+        changed = true;
+      }
     }
     ImGui::EndDisabled();
-    hint(T("Higher is sharper, cutscenes included, and needs a faster graphics card with more "
-           "memory."));
+    hint(T("Lower is faster, for weaker graphics cards (the menus and text stay sharp). Above "
+           "100% is sharper and experimental: some effects can show green areas."));
   }
 
   label(T("Wide screens"));
@@ -3268,8 +3343,7 @@ void LauncherDialog::DrawSettings(float scale) {
     settings_.window_width = defaults.window_width;
     settings_.window_height = defaults.window_height;
     settings_.aspect = defaults.aspect;
-    settings_.render_height = defaults.render_height;
-    settings_.native_render = defaults.native_render;
+    settings_.render_scale = defaults.render_scale;
     changed = true;
   }
   ImGui::EndChild();  // ##tab_body
@@ -3290,7 +3364,7 @@ void LauncherDialog::DrawSettings(float scale) {
   }
   ImGui::EndDisabled();
 
-  restart_label(T("Frame rate limit"));
+  label(T("Frame rate limit"));
   {
     // 30 to 240 in steps of 5; the far right is Unlimited (0).
     constexpr int kMin = 30, kMax = 240, kUnlimited = kMax + 5;

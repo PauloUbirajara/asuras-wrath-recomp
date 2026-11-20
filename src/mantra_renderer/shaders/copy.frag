@@ -20,6 +20,9 @@ layout(push_constant) uniform PushConstants {
   // 0 = plain copy, 1 = float -> 7e3 bits as 10:10:10:2 unorm,
   // 2 = 10:10:10:2 unorm holding 7e3 bits -> float.
   uint mode;
+  // Source pixels per destination pixel; bilinear when linear != 0.
+  float src_ratio;
+  uint linear;
 } pc;
 
 // Xenos 7e3: 3-bit exponent (bias 3), 7-bit mantissa, [0, 31.875].
@@ -40,7 +43,29 @@ vec3 Float7e3To32(uvec3 f10) {
 layout(location = 0) out vec4 out_color;
 
 void main() {
-  ivec2 coord = ivec2(gl_FragCoord.xy) + pc.src_offset;
+  // Source position (render scales may differ between the two images).
+  vec2 src_pos = gl_FragCoord.xy * pc.src_ratio + vec2(pc.src_offset);
+  ivec2 coord = ivec2(floor(src_pos));
+#ifndef MULTISAMPLE
+  if (pc.linear != 0u) {
+    ivec2 last = textureSize(src_texture, 0) - 1;
+    vec2 p = src_pos - 0.5;
+    ivec2 i0 = ivec2(floor(p));
+    vec2 f = p - vec2(i0);
+    ivec2 a = clamp(i0, ivec2(0), last), b = clamp(i0 + 1, ivec2(0), last);
+    vec4 t00 = texelFetch(src_texture, a, 0), t10 = texelFetch(src_texture, ivec2(b.x, a.y), 0);
+    vec4 t01 = texelFetch(src_texture, ivec2(a.x, b.y), 0), t11 = texelFetch(src_texture, b, 0);
+    vec4 value = mix(mix(t00, t10, f.x), mix(t01, t11, f.x), f.y);
+    if (pc.mode == 1u) {
+      out_color = vec4(vec3(Float32To7e3(value.rgb)) / 1023.0, clamp(value.a, 0.0, 1.0));
+      return;
+    }
+    value *= pc.scale;
+    float lc[6] = float[6](value.r, value.g, value.b, value.a, 0.0, 1.0);
+    out_color = vec4(lc[pc.swizzle.x], lc[pc.swizzle.y], lc[pc.swizzle.z], lc[pc.swizzle.w]);
+    return;
+  }
+#endif
 #ifdef MULTISAMPLE
   vec4 sum = vec4(0.0);
   float count = 0.0;

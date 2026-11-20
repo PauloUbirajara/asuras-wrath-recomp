@@ -137,8 +137,12 @@ inline uint64_t NormalizedHash(const void* microcode_be, size_t byte_count) {
 // they are, so the container whose signatures equal the runtime code's is
 // the one to use (e.g. the UI text shader: one candidate exports the vertex
 // colour as .xyz, the runtime code as .zyxw).
+//
+// `legacy` (caches before v11) records a scalar export under scalar_dest, as
+// those caches did, so their stored lists still compare.
 inline std::vector<uint32_t> InterpolatorExports(const void* microcode_be, size_t byte_count,
-                                                 std::vector<uint32_t>* signatures = nullptr) {
+                                                 std::vector<uint32_t>* signatures = nullptr,
+                                                 bool legacy = false) {
   const size_t dwords = byte_count / sizeof(uint32_t);
   const auto* bytes = static_cast<const uint8_t*>(microcode_be);
   auto word = [&](size_t i) {
@@ -168,13 +172,16 @@ inline std::vector<uint32_t> InterpolatorExports(const void* microcode_be, size_
     if (!is_alu[i]) continue;
     const uint32_t w0 = word(i * 3);
     if (!((w0 >> 15) & 1)) continue;  // not an export
-    const uint32_t vector_dest = w0 & 0x3F, scalar_dest = (w0 >> 8) & 0x3F;
+    // An export writes both its vector and its scalar result to vector_dest
+    // (scalar_dest isn't a register then; see ucode::AluInstruction).
+    const uint32_t vector_dest = w0 & 0x3F;
     const size_t before = exports.size();
     if (((w0 >> 16) & 0xF) && vector_dest < 16) {
       exports.push_back(uint32_t(i) << 8 | vector_dest);
     }
-    if (((w0 >> 20) & 0xF) && scalar_dest < 16) {
-      exports.push_back(uint32_t(i) << 8 | 1u << 4 | scalar_dest);
+    const uint32_t scalar_reg = legacy ? (w0 >> 8) & 0x3F : vector_dest;
+    if (((w0 >> 20) & 0xF) && scalar_reg < 16) {
+      exports.push_back(uint32_t(i) << 8 | 1u << 4 | scalar_reg);
     }
     if (signatures && exports.size() != before) {
       const uint32_t words[3] = {w0 & ~0x3F3Fu, word(i * 3 + 1), word(i * 3 + 2)};

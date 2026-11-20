@@ -220,7 +220,7 @@ NativeCommandProcessor::SolidFillResult NativeCommandProcessor::TrySolidFillRect
       render_targets_.ClearColorFloat(cmd, *rt, color_info.color_format, rect, value);
       for (const auto& alias : render_targets_.Aliases(*rt, rect)) {
         render_targets_.ClearColorFloat(cmd, *alias.rt, color_info.color_format, alias.rect,
-                                        value);
+                                        value, mantra::RenderTargetPool::DeferAliasClears());
         render_targets_.MarkWritten(*alias.rt, color_info.color_format);
       }
       uint64_t route = XXH3_64bits(value, sizeof(value)) ^ (uint64_t(color_info.color_base) << 1) ^
@@ -255,7 +255,13 @@ NativeCommandProcessor::SolidFillResult NativeCommandProcessor::TrySolidFillRect
                                         stencil_ref);
       for (const auto& alias : render_targets_.Aliases(*rt, rect)) {
         render_targets_.ClearDepthStencil(cmd, *alias.rt, alias.rect, write_depth, depth,
-                                          write_stencil, stencil_ref);
+                                          write_stencil, stencil_ref,
+                                          mantra::RenderTargetPool::DeferAliasClears());
+      }
+      // The native twin used by HUD passes (render scale with a native HUD).
+      if (mantra::RenderTarget* twin = render_targets_.DepthTwin(*rt)) {
+        render_targets_.ClearDepthStencil(cmd, *twin, rect, write_depth, depth, write_stencil,
+                                          stencil_ref, mantra::RenderTargetPool::DeferAliasClears());
       }
       // Depth and 32bpp color share EDRAM: a depth clear also overwrites the
       // color data in the same tiles. Games use that to fill color fast
@@ -286,7 +292,8 @@ NativeCommandProcessor::SolidFillResult NativeCommandProcessor::TrySolidFillRect
           if (render_targets_.CounterpartIsNewer(*alias.rt)) {
             continue;
           }
-          render_targets_.ClearColor(cmd, *alias.rt, alias.rt->last_format, alias.rect, word);
+          render_targets_.ClearColor(cmd, *alias.rt, alias.rt->last_format, alias.rect, word,
+                                     mantra::RenderTargetPool::DeferAliasClears());
           render_targets_.MarkWritten(*alias.rt, alias.rt->last_format);
           if (TracingThisFrame()) {
             MANTRA_FRAME_TRACE("fill depth -> color alias base {} pitch {} fmt {} rect {},{} {}x{} "

@@ -537,6 +537,29 @@ void NativeCommandProcessor::EndRendering() {
   gpu_profiler_.pass_draws = 0;
 }
 
+uint32_t NativeCommandProcessor::DrawScaleUnits(uint32_t color_mask) const {
+  const RegisterFile& regs = *register_file_;
+  const auto surface_info = regs.Get<reg::RB_SURFACE_INFO>();
+  for (uint32_t i = 0; i < mantra::kMaxColorAttachments; ++i) {
+    if (!((color_mask >> (i * 4)) & 0xF)) continue;
+    const auto info = regs.Get<reg::RB_COLOR_INFO>(reg::RB_COLOR_INFO::rt_register_indices[i]);
+    if (mantra::RenderTargetPool::HostColorFormat(info.color_format) == VK_FORMAT_UNDEFINED) {
+      continue;
+    }
+    mantra::RtKey key{info.color_base & (xenos::kEdramTileCount - 1),
+                      surface_info.surface_pitch, surface_info.msaa_samples,
+                      mantra::RenderTargetPool::HostColorClass(info.color_format)};
+    return render_targets_.ScaleFor(key);
+  }
+  return last_color_rscale_;
+}
+
+uint32_t NativeCommandProcessor::SurfaceScaleUnits() {
+  const uint32_t rscale = mantra::RenderScaleUnits();
+  return rscale < mantra::kScaleOne && mantra::RenderTargetPool::NativeHud() ? mantra::kScaleOne
+                                                                           : rscale;
+}
+
 bool NativeCommandProcessor::BeginDrawRendering(VkCommandBuffer cmd, uint32_t color_mask,
                                                 bool use_depth, mantra::PipelineKey& key,
                                                 VkRect2D& render_area) {
@@ -581,7 +604,13 @@ bool NativeCommandProcessor::BeginDrawRendering(VkCommandBuffer cmd, uint32_t co
                             : nullptr;
     }
     if (use_depth && create) {
-      depth_rt = render_targets_.GetDepth(cmd, depth_base, pitch, msaa, frame);
+      // At the colors' scale (a native HUD pass gets the native twin).
+      uint32_t rscale = 0;
+      for (uint32_t i = 0; i < color_count && !rscale; ++i) {
+        if (color_rts[i]) rscale = color_rts[i]->image.rscale;
+      }
+      if (!rscale) rscale = last_color_rscale_;
+      depth_rt = render_targets_.GetDepth(cmd, depth_base, pitch, msaa, frame, rscale);
     }
   };
   if (same) {
@@ -601,7 +630,8 @@ bool NativeCommandProcessor::BeginDrawRendering(VkCommandBuffer cmd, uint32_t co
                rendering_.color_format[i] == colors[i].host_format;
       }
     }
-    same = same && (use_depth ? key_matches(rendering_.depth, depth_base, mantra::RtClass::kDepth)
+    same = same && (use_depth ? key_matches(rendering_.depth, depth_base, mantra::RtClass::kDepth) &&
+                                    rendering_.depth->image.rscale == rendering_.rscale
                               : !rendering_.depth);
   }
   if (same) {
@@ -612,6 +642,29 @@ bool NativeCommandProcessor::BeginDrawRendering(VkCommandBuffer cmd, uint32_t co
   } else {
     EndRendering();
     lookup(true);
+  }
+
+  // One render scale per pass (a native HUD target with a scaled depth
+  // buffer can't share one): attachments at another scale are left out.
+  uint32_t pass_rscale = 0;
+  for (uint32_t i = 0; i < color_count && !pass_rscale; ++i) {
+    if (color_rts[i]) pass_rscale = color_rts[i]->image.rscale;
+  }
+  if (!pass_rscale) {
+    pass_rscale = depth_rt ? depth_rt->image.rscale : last_color_rscale_;
+  } else {
+    last_color_rscale_ = pass_rscale;
+  }
+  for (uint32_t i = 0; i < color_count; ++i) {
+    if (color_rts[i] && color_rts[i]->image.rscale != pass_rscale) {
+      MANTRA_WARN_ONCE("render scale: a color target at another scale is left out of a pass");
+      color_rts[i] = nullptr;
+    }
+  }
+  if (depth_rt && depth_rt->image.rscale != pass_rscale) {
+    MANTRA_WARN_ONCE("render scale: depth at another scale is left out of a native pass");
+    ++guest_draw_stats_.depth_scale_mismatch;
+    depth_rt = nullptr;
   }
 
   // Pipeline key: attachment formats and samples.
@@ -666,7 +719,7 @@ bool NativeCommandProcessor::BeginDrawRendering(VkCommandBuffer cmd, uint32_t co
   // Guest pixels here and in rendering_.area; the images are larger by the
   // render scale.
   const VkRect2D guest_area = {{0, 0}, {width, height}};
-  info.renderArea = mantra::HostRect(guest_area, mantra::RenderScale8());
+  info.renderArea = mantra::HostRect(guest_area, pass_rscale);
   info.layerCount = 1;
   info.colorAttachmentCount = color_count;
   info.pColorAttachments = color_attachments;
@@ -687,6 +740,7 @@ bool NativeCommandProcessor::BeginDrawRendering(VkCommandBuffer cmd, uint32_t co
   }
   rendering_.depth = depth_rt;
   rendering_.area = guest_area;
+  rendering_.rscale = pass_rscale;
   render_area = guest_area;
   return true;
 }
@@ -1410,7 +1464,8 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
 
   mantra::SharedConstants shared;
   std::copy_n(viewport.ndc_scale, 3, shared.ndc_scale);
-  shared.pixel_scale_inv = 8.0f / float(mantra::RenderScale8());
+  const uint32_t draw_rscale = DrawScaleUnits(color_mask);
+  shared.pixel_scale_inv = float(mantra::kScaleOne) / float(draw_rscale);
   std::copy_n(viewport.ndc_offset, 3, shared.ndc_offset);
   {
     // Fetch results are scaled by 2^exp_adjust in the shader (mantraExpAdjust).
@@ -1555,7 +1610,7 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
   shader_interface_.Bind(cmd, offsets, texture_set);
 
   // Viewport and scissor (inside the render area).
-  const float render_scale = float(mantra::RenderScale8()) / 8.0f;
+  const float render_scale = float(rendering_.rscale) / float(mantra::kScaleOne);
   VkViewport vk_viewport;
   vk_viewport.x = float(viewport.xy_offset[0]) * render_scale;
   vk_viewport.y = float(viewport.xy_offset[1]) * render_scale;
@@ -1575,8 +1630,18 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
     return DrawResult::kSkipped;
   }
   const VkRect2D vk_scissor =
-      mantra::HostRect({{int32_t(x0), int32_t(y0)}, {x1 - x0, y1 - y0}}, mantra::RenderScale8());
+      mantra::HostRect({{int32_t(x0), int32_t(y0)}, {x1 - x0, y1 - y0}}, rendering_.rscale);
   dfn.vkCmdSetScissor(cmd, 0, 1, &vk_scissor);
+  // Rows this draw can write (scissor, and the viewport plus a guard row for
+  // wide points and lines), for the 7e3 <-> 32bpp conversions.
+  {
+    const float vp_bottom = float(viewport.xy_offset[1]) + float(viewport.xy_extent[1]);
+    const uint32_t bottom =
+        vp_bottom > 0.0f ? std::min<uint32_t>(y1, uint32_t(std::ceil(vp_bottom)) + 1) : y1;
+    for (mantra::RenderTarget* rt : rendering_.color) {
+      if (rt) rt->NoteWritten(bottom);
+    }
+  }
 
   // Depth bias, blend constants, stencil.
   const float constant_scale =

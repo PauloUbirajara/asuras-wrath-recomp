@@ -253,8 +253,18 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
     VkFormat color_format[mantra::kMaxColorAttachments] = {};
     mantra::RenderTarget* depth = nullptr;
     VkRect2D area = {};
+    uint32_t rscale = 40;  // kScaleOne; of all the attachments
   };
   ActiveRendering rendering_;
+  // Render scale a draw with these targets renders at (see
+  // RenderTargetPool::ScaleFor): its first color target's, else the scale.
+  uint32_t DrawScaleUnits(uint32_t color_mask) const;
+  // Depth-only passes render at the scale of the last color pass this frame
+  // (a HUD stencil mask after the native tonemap; the scene's depth prepass
+  // before it): reset to the render scale at each swap.
+  uint32_t last_color_rscale_ = 40;  // kScaleOne
+  // Resolved surfaces: native with a native HUD (resolves upscale the scene).
+  static uint32_t SurfaceScaleUnits();
 
   struct GuestDrawStats {
     uint64_t drawn = 0;
@@ -267,6 +277,7 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
     uint64_t missing_inputs = 0;     // inputs fed zeros (undecodable fetch / format)
     uint64_t expanded_inputs = 0;    // inputs decoded on the CPU (10:11:11 into float)
     uint64_t render_passes = 0;
+    uint64_t depth_scale_mismatch = 0;  // depth left out (native HUD pass)
     uint64_t vertex_bytes = 0;
     uint64_t expand_ns = 0;          // decoding those inputs
     uint64_t index_bytes = 0;
@@ -384,7 +395,7 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
   // (and each draw in draw mode); the interval ending at a mark is charged to
   // that mark. Read back when the submission's fence is waited on.
   enum class GpuMarkKind : uint8_t {
-    kStart, kSetup, kPass, kDraw, kFill, kResolve, kPresent, kTail, kCount
+    kStart, kSetup, kPass, kDraw, kFill, kResolve, kPresent, kTail, kConvert, kCount
   };
   struct GpuMark {
     GpuMarkKind kind;
@@ -432,6 +443,7 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
     uint64_t resolves_failed = 0;
     uint64_t color_copies = 0;
     uint64_t float7e3_conversions = 0;
+    uint64_t float7e3_conversions_skipped = 0;  // nothing written since the last one
     uint64_t depth_copies = 0;
     uint64_t depth_copies_skipped = 0;
     uint64_t unsupported_dest_format = 0;

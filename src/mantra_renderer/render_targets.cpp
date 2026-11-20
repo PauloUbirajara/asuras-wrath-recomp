@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <cstring>
 
 #include <rex/math.h>
@@ -59,19 +60,58 @@ bool RenderTargetPool::Initialize(const vk::VulkanDevice* device) {
   return true;
 }
 
+void RenderTargetPool::Destroy(RenderTarget& rt) {
+  const auto& dfn = device_->functions();
+  for (auto& [format, view] : rt.views) {
+    dfn.vkDestroyImageView(device_->device(), view, nullptr);
+  }
+  rt.views.clear();
+  DestroyTrackedImage(device_, rt.image);
+}
+
 void RenderTargetPool::Shutdown() {
   if (!device_) {
     return;
   }
-  const auto& dfn = device_->functions();
-  for (auto& [hash, rt] : targets_) {
-    for (auto& [format, view] : rt->views) {
-      dfn.vkDestroyImageView(device_->device(), view, nullptr);
-    }
-    DestroyTrackedImage(device_, rt->image);
-  }
+  for (auto& [hash, rt] : targets_) Destroy(*rt);
+  for (auto& [frame, rt] : retired_) Destroy(*rt);
+  for (auto& [hash, rt] : depth_twins_) Destroy(*rt);
+  depth_twins_.clear();
   targets_.clear();
+  retired_.clear();
   device_ = nullptr;
+}
+
+bool RenderTargetPool::NativeHud() {
+  static const bool native = [] {
+    const char* env = std::getenv("MANTRA_NATIVE_HUD");
+    return !env || std::strcmp(env, "0") != 0;
+  }();
+  return native;
+}
+
+void RenderTargetPool::SetPresentation(const RtKey& key) {
+  if (key.cls == RtClass::kColor32 && presentation_keys_.insert(key.Hash()).second) {
+    MANTRA_INFO("render scale: base {} pitch {} is the presentation target (native resolution)",
+                key.base_tiles, key.pitch_px);
+  }
+}
+
+uint32_t RenderTargetPool::ScaleFor(const RtKey& key) const {
+  const uint32_t rscale = RenderScaleUnits();
+  if (rscale < kScaleOne && NativeHud() && key.cls == RtClass::kColor32 &&
+      presentation_keys_.contains(key.Hash())) {
+    return kScaleOne;
+  }
+  return rscale;
+}
+
+void RenderTargetPool::Collect(uint64_t completed_frame) {
+  std::erase_if(retired_, [&](auto& entry) {
+    if (entry.first > completed_frame) return false;
+    Destroy(*entry.second);
+    return true;
+  });
 }
 
 VkFormat RenderTargetPool::HostColorFormat(xenos::ColorRenderTargetFormat format) {
@@ -109,6 +149,12 @@ RenderTarget* RenderTargetPool::GetColor(VkCommandBuffer cmd, uint32_t base_tile
                                          RenderTarget** convert_from) {
   RtKey key{base_tiles & (xenos::kEdramTileCount - 1), pitch_px, msaa, HostColorClass(format)};
   auto it = targets_.find(key.Hash());
+  if (it != targets_.end() && it->second->image.rscale != ScaleFor(key)) {
+    // Now native (SetPresentation): the old image may still be in flight.
+    retired_.emplace_back(frame, std::move(it->second));
+    targets_.erase(it);
+    it = targets_.end();
+  }
   RenderTarget* rt = it != targets_.end() ? it->second.get() : Create(cmd, key);
   if (!rt) {
     return nullptr;
@@ -123,9 +169,11 @@ RenderTarget* RenderTargetPool::GetColor(VkCommandBuffer cmd, uint32_t base_tile
       // 32bpp after 7e3: the 7e3 bits. 7e3 after any 32bpp format: its bits as 7e3.
       if (key.cls == RtClass::kColor32 ? IsFloat7e3(o->last_format) : IsFloat7e3(format)) {
         *convert_from = o;
+        FlushClears(cmd, *o);
       }
     }
   }
+  FlushClears(cmd, *rt);
   rt->last_used_frame = frame;
   rt->use_serial = ++use_serial_;
   rt->last_format = format;
@@ -134,11 +182,18 @@ RenderTarget* RenderTargetPool::GetColor(VkCommandBuffer cmd, uint32_t base_tile
 
 RenderTarget* RenderTargetPool::GetDepth(VkCommandBuffer cmd, uint32_t base_tiles,
                                          uint32_t pitch_px, xenos::MsaaSamples msaa,
-                                         uint64_t frame) {
+                                         uint64_t frame, uint32_t rscale) {
   RtKey key{base_tiles & (xenos::kEdramTileCount - 1), pitch_px, msaa, RtClass::kDepth};
-  auto it = targets_.find(key.Hash());
-  RenderTarget* rt = it != targets_.end() ? it->second.get() : Create(cmd, key);
+  RenderTarget* rt;
+  if (rscale && rscale != ScaleFor(key)) {
+    auto it = depth_twins_.find(key.Hash());
+    rt = it != depth_twins_.end() ? it->second.get() : Create(cmd, key, true);
+  } else {
+    auto it = targets_.find(key.Hash());
+    rt = it != targets_.end() ? it->second.get() : Create(cmd, key);
+  }
   if (rt) {
+    FlushClears(cmd, *rt);
     rt->last_used_frame = frame;
   }
   return rt;
@@ -238,7 +293,15 @@ std::vector<RenderTargetPool::Alias> RenderTargetPool::Aliases(const RenderTarge
   return result;
 }
 
-RenderTarget* RenderTargetPool::Create(VkCommandBuffer cmd, const RtKey& key) {
+RenderTarget* RenderTargetPool::DepthTwin(const RenderTarget& rt) {
+  if (rt.key.cls != RtClass::kDepth) return nullptr;
+  auto it = depth_twins_.find(rt.key.Hash());
+  return it != depth_twins_.end() && it->second.get() != &rt ? it->second.get() : nullptr;
+}
+
+RenderTarget* RenderTargetPool::Create(VkCommandBuffer cmd, const RtKey& key, bool twin) {
+  // A twin is native while the pool's target is scaled.
+  const uint32_t rscale = twin ? kScaleOne : ScaleFor(key);
   if (!key.pitch_px) {
     MANTRA_WARN_ONCE("render target with zero surface pitch");
     return nullptr;
@@ -268,7 +331,7 @@ RenderTarget* RenderTargetPool::Create(VkCommandBuffer cmd, const RtKey& key) {
         height, samples,
         VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
             VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-        nullptr, 0, rt->image, RenderScale8());
+        nullptr, 0, rt->image, rscale);
   } else {
     if (!(props.framebufferColorSampleCounts & samples)) {
       MANTRA_WARN_ONCE("{}x MSAA color is not supported by the host", uint32_t(samples));
@@ -283,7 +346,7 @@ RenderTarget* RenderTargetPool::Create(VkCommandBuffer cmd, const RtKey& key) {
                                  VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                                      VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                                      VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                                 formats, format_count, rt->image, RenderScale8());
+                                 formats, format_count, rt->image, rscale);
   }
   if (!created) {
     MANTRA_ERROR("failed to create a {}x{} {}x render target (base {} pitch {})", width, height,
@@ -300,7 +363,7 @@ RenderTarget* RenderTargetPool::Create(VkCommandBuffer cmd, const RtKey& key) {
   VkClearValue zero = {};
   VkRect2D whole = {{0, 0}, {width, height}};
   RenderTarget* result = rt.get();
-  targets_.emplace(key.Hash(), std::move(rt));
+  (twin ? depth_twins_ : targets_).emplace(key.Hash(), std::move(rt));
   ClearAttachment(cmd, *result, GetView(*result, result->image.format), whole, zero);
   return result;
 }
@@ -331,9 +394,17 @@ VkImageView RenderTargetPool::GetDepthSampleView(RenderTarget& rt) {
   return view;
 }
 
+bool RenderTargetPool::DeferAliasClears() {
+  static const bool defer = [] {
+    const char* env = std::getenv("MANTRA_LAZY_ALIAS_CLEARS");
+    return !env || std::strcmp(env, "0") != 0;
+  }();
+  return defer;
+}
+
 void RenderTargetPool::ClearAttachment(VkCommandBuffer cmd, RenderTarget& rt, VkImageView view,
                                        const VkRect2D& rect, const VkClearValue& value,
-                                       VkImageAspectFlags aspects) {
+                                       VkImageAspectFlags aspects, bool defer) {
   if (!view) {
     return;
   }
@@ -348,6 +419,44 @@ void RenderTargetPool::ClearAttachment(VkCommandBuffer cmd, RenderTarget& rt, Vk
   if (!clamped.extent.width || !clamped.extent.height) {
     return;
   }
+  rt.NoteWritten(uint32_t(clamped.offset.y) + clamped.extent.height);
+  // The image is RenderScaleUnits() larger than the guest surface.
+  clamped = HostRect(clamped, rt.image.rscale);
+  if (!clamped.extent.width || !clamped.extent.height) {
+    return;
+  }
+  const bool is_depth = rt.key.cls == RtClass::kDepth;
+  if (!aspects) {
+    aspects = is_depth ? (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)
+                       : VK_IMAGE_ASPECT_COLOR_BIT;
+  }
+  if (defer) {
+    // A clear covering an earlier one (all of its aspects) supersedes it.
+    auto covers = [&](const VkRect2D& r) {
+      return r.offset.x >= clamped.offset.x && r.offset.y >= clamped.offset.y &&
+             r.offset.x + int64_t(r.extent.width) <= clamped.offset.x + int64_t(clamped.extent.width) &&
+             r.offset.y + int64_t(r.extent.height) <=
+                 clamped.offset.y + int64_t(clamped.extent.height);
+    };
+    std::erase_if(rt.pending_clears, [&](const RenderTarget::PendingClear& p) {
+      return (p.aspects & ~aspects) == 0 && covers(p.rect);
+    });
+    rt.pending_clears.push_back({view, clamped, value, aspects});
+    ++deferred_clears_;
+    if (rt.pending_clears.size() > 32) {
+      FlushClears(cmd, rt);
+    }
+    return;
+  }
+  FlushClears(cmd, rt);
+  rt.pending_clears.push_back({view, clamped, value, aspects});
+  FlushClears(cmd, rt);
+}
+
+void RenderTargetPool::FlushClears(VkCommandBuffer cmd, RenderTarget& rt) {
+  if (rt.pending_clears.empty() || !cmd) {
+    return;
+  }
   const auto& dfn = device_->functions();
   const bool is_depth = rt.key.cls == RtClass::kDepth;
   if (is_depth) {
@@ -357,44 +466,56 @@ void RenderTargetPool::ClearAttachment(VkCommandBuffer cmd, RenderTarget& rt, Vk
     TransitionImage(device_, cmd, rt.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                     kColorAttachmentStage, kColorAttachmentAccess);
   }
-
-  VkRenderingAttachmentInfo attachment = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-  attachment.imageView = view;
-  attachment.imageLayout = rt.image.layout;
-  attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-  attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-  VkRenderingInfo rendering = {VK_STRUCTURE_TYPE_RENDERING_INFO};
-  // The image is RenderScale8() larger than the guest surface.
-  clamped = HostRect(clamped, rt.image.scale8);
-  if (!clamped.extent.width || !clamped.extent.height) {
-    return;
+  // One rendering instance per run of clears through the same view.
+  for (size_t begin = 0; begin < rt.pending_clears.size();) {
+    const VkImageView view = rt.pending_clears[begin].view;
+    size_t end = begin;
+    int64_t x0 = INT64_MAX, y0 = INT64_MAX, x1 = INT64_MIN, y1 = INT64_MIN;
+    while (end < rt.pending_clears.size() && rt.pending_clears[end].view == view) {
+      const VkRect2D& r = rt.pending_clears[end].rect;
+      x0 = std::min<int64_t>(x0, r.offset.x);
+      y0 = std::min<int64_t>(y0, r.offset.y);
+      x1 = std::max<int64_t>(x1, r.offset.x + int64_t(r.extent.width));
+      y1 = std::max<int64_t>(y1, r.offset.y + int64_t(r.extent.height));
+      ++end;
+    }
+    VkRenderingAttachmentInfo attachment = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    attachment.imageView = view;
+    attachment.imageLayout = rt.image.layout;
+    attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingInfo rendering = {VK_STRUCTURE_TYPE_RENDERING_INFO};
+    rendering.renderArea = {{int32_t(x0), int32_t(y0)}, {uint32_t(x1 - x0), uint32_t(y1 - y0)}};
+    rendering.layerCount = 1;
+    if (is_depth) {
+      rendering.pDepthAttachment = &attachment;
+      rendering.pStencilAttachment = &attachment;
+    } else {
+      rendering.colorAttachmentCount = 1;
+      rendering.pColorAttachments = &attachment;
+    }
+    dfn.vkCmdBeginRendering(cmd, &rendering);
+    for (size_t i = begin; i < end; ++i) {
+      const RenderTarget::PendingClear& p = rt.pending_clears[i];
+      VkClearAttachment clear = {};
+      clear.aspectMask = p.aspects;
+      clear.colorAttachment = 0;
+      clear.clearValue = p.value;
+      VkClearRect clear_rect = {};
+      clear_rect.rect = p.rect;
+      clear_rect.layerCount = 1;
+      dfn.vkCmdClearAttachments(cmd, 1, &clear, 1, &clear_rect);
+      ++flushed_clears_;
+    }
+    dfn.vkCmdEndRendering(cmd);
+    begin = end;
   }
-  rendering.renderArea = clamped;
-  rendering.layerCount = 1;
-  if (is_depth) {
-    rendering.pDepthAttachment = &attachment;
-    rendering.pStencilAttachment = &attachment;
-  } else {
-    rendering.colorAttachmentCount = 1;
-    rendering.pColorAttachments = &attachment;
-  }
-  dfn.vkCmdBeginRendering(cmd, &rendering);
-  VkClearAttachment clear = {};
-  clear.aspectMask = aspects ? aspects
-                     : is_depth ? (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)
-                                : VK_IMAGE_ASPECT_COLOR_BIT;
-  clear.colorAttachment = 0;
-  clear.clearValue = value;
-  VkClearRect clear_rect = {};
-  clear_rect.rect = clamped;
-  clear_rect.layerCount = 1;
-  dfn.vkCmdClearAttachments(cmd, 1, &clear, 1, &clear_rect);
-  dfn.vkCmdEndRendering(cmd);
+  rt.pending_clears.clear();
 }
 
 void RenderTargetPool::ClearColor(VkCommandBuffer cmd, RenderTarget& rt,
                                   xenos::ColorRenderTargetFormat format, const VkRect2D& rect,
-                                  uint64_t clear_value) {
+                                  uint64_t clear_value, bool defer) {
   using F = xenos::ColorRenderTargetFormat;
   VkClearValue value = {};
   float* c = value.color.float32;
@@ -433,27 +554,27 @@ void RenderTargetPool::ClearColor(VkCommandBuffer cmd, RenderTarget& rt,
       std::memcpy(c, bits, sizeof(bits));
     } break;
   }
-  ClearAttachment(cmd, rt, GetView(rt, HostColorFormat(format)), rect, value);
+  ClearAttachment(cmd, rt, GetView(rt, HostColorFormat(format)), rect, value, 0, defer);
 }
 
 void RenderTargetPool::ClearColorFloat(VkCommandBuffer cmd, RenderTarget& rt,
                                        xenos::ColorRenderTargetFormat format, const VkRect2D& rect,
-                                       const float color[4]) {
+                                       const float color[4], bool defer) {
   VkClearValue value = {};
   std::memcpy(value.color.float32, color, sizeof(value.color.float32));
-  ClearAttachment(cmd, rt, GetView(rt, HostColorFormat(format)), rect, value);
+  ClearAttachment(cmd, rt, GetView(rt, HostColorFormat(format)), rect, value, 0, defer);
 }
 
 void RenderTargetPool::ClearDepthStencil(VkCommandBuffer cmd, RenderTarget& rt,
                                          const VkRect2D& rect, bool clear_depth, float depth,
-                                         bool clear_stencil, uint32_t stencil) {
+                                         bool clear_stencil, uint32_t stencil, bool defer) {
   VkClearValue value = {};
   value.depthStencil.depth = depth;
   value.depthStencil.stencil = stencil & 0xFF;
   const VkImageAspectFlags aspects = (clear_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) |
                                      (clear_stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
   if (aspects) {
-    ClearAttachment(cmd, rt, GetView(rt, depth_format_), rect, value, aspects);
+    ClearAttachment(cmd, rt, GetView(rt, depth_format_), rect, value, aspects, defer);
   }
 }
 
@@ -577,7 +698,8 @@ ResolvedSurface* ResolvedSurfaces::Find(uint32_t address) {
 }
 
 ResolvedSurface* ResolvedSurfaces::Get(uint32_t address, uint32_t pitch, uint32_t height,
-                                       xenos::ColorFormat format, uint64_t frame, bool depth) {
+                                       xenos::ColorFormat format, uint64_t frame, bool depth,
+                                       uint32_t rscale) {
   const VkFormat host_format = depth ? VK_FORMAT_R32_SFLOAT : HostFormat(format);
   if (host_format == VK_FORMAT_UNDEFINED) {
     return nullptr;
@@ -589,7 +711,7 @@ ResolvedSurface* ResolvedSurfaces::Get(uint32_t address, uint32_t pitch, uint32_
   if (auto it = surfaces_.find(address); it != surfaces_.end()) {
     ResolvedSurface& existing = *it->second;
     if (existing.format == format && existing.depth == depth && existing.image.width >= pitch &&
-        existing.image.height >= height) {
+        existing.image.height >= height && existing.image.rscale == rscale) {
       existing.pitch = pitch;
       existing.height = height;
       return &existing;
@@ -598,7 +720,8 @@ ResolvedSurface* ResolvedSurfaces::Get(uint32_t address, uint32_t pitch, uint32_
     // use by in-flight submissions.
     pitch = std::max(pitch, existing.image.width);
     height = std::max(height, existing.image.height);
-    const bool grows = existing.format == format && existing.depth == depth;
+    const bool grows = existing.format == format && existing.depth == depth &&
+                       existing.image.rscale == rscale;
     retired_.emplace_back(frame, std::move(it->second));
     surfaces_.erase(it);
     if (grows) {
@@ -617,7 +740,7 @@ ResolvedSurface* ResolvedSurfaces::Get(uint32_t address, uint32_t pitch, uint32_
                           VK_SAMPLE_COUNT_1_BIT,
                           VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                               VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                          nullptr, 0, surface->image, RenderScale8())) {
+                          nullptr, 0, surface->image, rscale)) {
     MANTRA_ERROR("failed to create a {}x{} resolved surface (format {})", pitch, height,
                  uint32_t(format));
     return nullptr;

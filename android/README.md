@@ -46,7 +46,7 @@ The first build also cross-builds DXC, the shader compiler `mantra_shadergen` us
 - **Shader cache:** **Shader cache › Build the shader cache** runs `mantra_shadergen` on the phone, in the background with a progress notification (Stop is there too; the next build continues). It takes much longer than on a computer, so keep the phone charging. Or build it on any computer (Game data › Shaders) and use **Import**: the cache is SPIR-V, the same for every CPU.
 - **Files:** `launcher.cfg` is in `Android/data/org.asurawrath.recompiled/files/`. Saves, the shader cache and logs go in `asura_wrath_recomp/` next to it, or the folder picked under **Files folder**.
 - **In game:** Back opens the in-game menu. It has the controls, achievements and the other settings, and Quit returns to the launcher. A Restart there (for settings that need one) ends the game, and the launcher starts it again.
-- **Not here yet:** extracting an `.iso` (do it on a computer), and translations of the launcher screen. The in-game menu is translated.
+- **Not here yet:** extracting an `.iso` (do it on a computer), and touch controls (connect a controller).
 
 ## Back button
 

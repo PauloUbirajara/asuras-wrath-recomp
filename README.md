@@ -2,7 +2,7 @@
 
 PC port of Asura's Wrath (`default.xex`, Title ID `43430817`) via Xbox 360 static PowerPC recompilation to C++23, rendered by the in-repo Vulkan renderer `mantra`.
 
-> Note: made and tested on Linux. A Windows build can be made (natively or cross-compiled from Linux). Android is on the TODO list.
+> Note: made and tested on Linux. A Windows build can be made (natively or cross-compiled from Linux). An **experimental Android** build exists (arm64, needs a controller; see [Android](#android-experimental)).
 
 <a href="https://www.youtube.com/playlist?list=PLVyuezqTsTB0">
         <img alt="cover" src="https://github.com/user-attachments/assets/339f7f1b-85d4-48ac-9b5f-ac4fad276dad" />
@@ -22,6 +22,8 @@ https://www.youtube.com/playlist?list=PLVyuezqTsTB0
 4. **Game data > Shaders**: build the shader cache (about 10 minutes, once).
 5. **Play**.
 
+On Android: install the APK, copy the extracted game to the phone, pick it in the launcher, build or import the shader cache, then **Play** (see [Android](#android-experimental)).
+
 ---
 
 ## 1. Requirements
@@ -31,6 +33,7 @@ https://www.youtube.com/playlist?list=PLVyuezqTsTB0
 - Linux: clang-20, CMake 3.25+, Ninja, glslc (shaderc), Vulkan drivers, Git.
 - Windows (native build): Visual Studio 2022 Build Tools (Windows SDK + C runtime), LLVM clang 20+ on PATH, CMake 3.25+, Ninja, Git, the Vulkan SDK.
 - Windows (cross build from Linux): the Linux requirements plus lld-20 and llvm-20 (`llvm-rc`, `llvm-ar`, `llvm-mt`); `tools/setup_windows_cross.sh` downloads Microsoft's SDK and runtime (see below).
+- Android (built on Linux): JDK 17+, the Android SDK (`platforms;android-35`, `build-tools;35.0.0`, `ndk;28.2.13676358`) in `$ANDROID_HOME` or `~/Android/Sdk`, CMake 3.25+, Ninja (details in [android/README.md](android/README.md)).
 
 ---
 
@@ -102,6 +105,20 @@ tools/setup_windows_cross.sh
 
 The same with presets: `cmake --preset win-amd64-release-cross` then `cmake --build out/build/win-amd64-release-cross --parallel` (toolchain file `cmake/windows-cross.cmake`; `XWIN_DIR` and `LLVM_SUFFIX` override the SDK folder and the `-20` suffix).
 
+### Option E: Android (experimental), from Linux
+
+Gradle builds the same CMake project with the NDK, plus a Kotlin launcher (see [android/README.md](android/README.md)).
+
+```bash
+# APKs in android/app/build/outputs/apk/release/ (universal, arm64-v8a, x86_64)
+./build.sh --android
+
+# One ABI only (faster)
+ASURA_ABIS=arm64-v8a ./build.sh --android
+```
+
+The first build also cross-builds DXC for the on-phone shader builder (about 8 minutes per ABI); later builds reuse it.
+
 ### Package
 
 ```bash
@@ -112,7 +129,7 @@ tools/package.sh --appimage --clean --version 0.1.0
 # out/package/
 # ├── asuras-wrath-recomp-0.1.0-linux-x86_64.tar.gz
 # ├── asuras-wrath-recomp-0.1.0-linux-x86_64.AppImage
-# └── SHA256SUMS
+# └── SHA256SUMS-linux
 ```
 
 Without `--version`, the files are named after the git tag on HEAD (`v0.1.0` → `0.1.0`), else the short commit; uncommitted changes only print a warning. `--clean` deletes earlier packages in `out/package`; the staging folders are always removed. The AppImage needs appimagetool (`APPIMAGETOOL=<path>`, PATH, or `../appimagetool/appimagetool`), which downloads its runtime unless `APPIMAGE_RUNTIME=<file>` is set.
@@ -129,6 +146,21 @@ tools/package.sh --windows --version 0.1.0
 # Native build on Windows: out\package\asuras-wrath-recomp-<version>-windows-x86_64.zip + SHA256SUMS.txt
 .\build.ps1 -Portable
 tools\package.ps1 -Version 0.1.0
+```
+
+Android packages are the APKs, copied with the version in the name:
+
+```bash
+# out/package/asuras-wrath-recomp-<version>-android-{universal,arm64-v8a,x86_64}.apk + SHA256SUMS-android
+./build.sh --android
+tools/package.sh --android --version 0.1.0
+```
+
+Everything at once (Linux tar.gz + AppImage, Windows zip, APKs), from the builds already made:
+
+```bash
+./build.sh --portable && ./build.sh --windows --portable && ./build.sh --android
+tools/package.sh --all --clean --version 0.1.0
 ```
 
 The Windows build links the Microsoft C++ runtime dynamically: players without it install the [Visual C++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe) (the zip's README says so).
@@ -230,12 +262,12 @@ The launcher opens first:
   - *Logs*: the log files, newest first. *Detailed logs* (off by default) adds debug messages for bug reports; the logs get much larger.
   - *Traces*: *Trace the next frame* (or F3 in game) writes everything mantra does for one frame to `<Files folder>/traces/<date>_<time>_frame<N>.log`, for picture bugs. The newest 30 are kept.
   - *Info* / *Progress*: your save, achievements and the episodes reached (later ones stay hidden).
-- **Controls**: a live button test, controller remapping, deadzones and vibration, keyboard and mouse, key rebinding.
+- **Controls**: a live button test, controller remapping, deadzones, vibration and Turbo buttons, keyboard and mouse, key rebinding.
 - **Achievements**: list or grid, filtered by unlocked / locked.
 - **Settings**
   - *System*: language (game, achievements and launcher), achievement pop-ups.
-  - *Display*: GPU, VSync, display mode, monitor, resolution, *Higher resolution* (experimental) and how 16:9 fills other screens.
-  - *Enhancements*: FPS counter, frame rate limit (above 30 is experimental), skip the intro logos, Turbo buttons, hide the cursor, mute in the background.
+  - *Display*: GPU, VSync, display mode, monitor, resolution, *Higher resolution* (experimental), how 16:9 fills other screens, and *Effects* (bloom, depth of field, motion and radial blur, shadows, ambient occlusion, light shafts, lens flares, distortion; turning some off helps slow GPUs, applies at the next start).
+  - *Enhancements*: FPS counter, frame rate limit (above 30 is experimental), skip the intro logos, hide the cursor, mute in the background.
 - **About**: version, this computer's details with a *Copy* button for bug reports.
 
 **Play** starts the game as a separate process and becomes **Stop**. Settings changed meanwhile apply on the next start. In game, **Esc** opens the launcher over the running game: *Resume* applies most changes at once; ones that need a fresh start turn it into *Restart* (progress since the last save is lost).
@@ -245,6 +277,17 @@ In game: F3 traces a frame, F4 settings, F7 achievements, `` ` `` console, Esc t
 The launcher's fonts and achievement icons come from your game files, cached in the *Files folder*. Before a game folder is set it uses Noto Serif from `assets/ui` (SIL Open Font License, `assets/ui/OFL.txt`); `NotoSerifJP-Launcher.awf` holds the Japanese characters of the launcher's text (rerun `tools/make_launcher_font.py` after adding Japanese text).
 
 The render resolution is also `MANTRA_RENDER_SCALE` (a factor such as `1.5`, or a height such as `1080`).
+
+### Android (experimental)
+
+Runs on Android 10+ with an arm64 (or x86_64) CPU and Vulkan 1.1. There are no touch controls yet: connect a controller (USB or Bluetooth).
+
+1. Install the APK (`…-android-arm64-v8a.apk` for phones, or the universal one).
+2. Copy the extracted game (the folder with `default.xex`) to the phone, then pick it in the launcher (**Game › Choose folder**, which asks for "All files access"). A copy in `Android/data/org.asurawrath.recompiled/files/extracted/` is found without asking. `.iso` extraction isn't available on the phone: extract it on a computer.
+3. **Shader cache**: build it on the phone (slow; keep it charging), or build it on a computer (**Game data > Shaders**) and **Import** the `.mshc` (the same file works on every platform).
+4. **Play**. In game, Back opens the in-game menu (controls, achievements, settings, Quit).
+
+What to expect: it is slow on mid-range phones (well below 30 fps on a Snapdragon 695 / Adreno 619 class device), and some character voices can drop out in cutscenes when the frame rate is low. Lowering *Render resolution* and turning off some *Effects* (both under *Settings > Display*) helps. Logs and frame traces (under *Game data*) are welcome in bug reports. More details: [android/README.md](android/README.md).
 
 ## 6. Custom Run Flags
 
@@ -319,12 +362,13 @@ At the default `info` level the renderer logs a `frame times` line every 5 secon
 ## 9. Issues
 
 - Episodes are still being tested: Episode 1 seems playable with some minor visual issues, the others are still to be tested.
+- Android is experimental: slow on mid-range phones, character voices can drop out at low frame rates, no touch controls.
 
 ---
 
 ## 10. TODO
 
-- [ ] Port to Android
+- [ ] Port to Android (experimental build available; needs performance work)
 - [ ] Add touch controls for Android (?)
 - [ ] Test all episodes
 - [ ] Improve performance

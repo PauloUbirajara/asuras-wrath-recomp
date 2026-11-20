@@ -1,4 +1,86 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Asura\'s Wrath Recompiled</string>
+
+    <string name="play">Play</string>
+    <string name="play_anyway">Play anyway</string>
+    <string name="cancel">Cancel</string>
+    <string name="choose_folder">Choose folder…</string>
+    <string name="use_default">Default</string>
+    <string name="open_settings">Open settings</string>
+    <string name="menu">Menu</string>
+    <string name="page_game">Game data</string>
+    <string name="page_settings">Settings</string>
+    <string name="page_about">About</string>
+    <string name="notice_game">Choose the game folder. Game data › Game folder</string>
+    <string name="notice_shaders">The shaders aren\'t built yet. Game data › Shader cache</string>
+    <string name="settings_more">Controls, achievements and the other settings are in the in-game menu (Back in game).</string>
+
+    <!-- Game -->
+    <string name="section_game">Game</string>
+    <string name="game_folder">Game folder</string>
+    <string name="game_not_chosen">Not chosen yet</string>
+    <string name="game_found">default.xex found</string>
+    <string name="game_missing">No default.xex in this folder. Choose the extracted game folder (the one with default.xex).</string>
+    <string name="game_hint">The extracted game, copied to the phone (for example with extract-xiso on a computer).</string>
+    <string name="game_needed">Choose the game folder first.</string>
+
+    <!-- Shaders -->
+    <string name="section_shaders">Shader cache</string>
+    <string name="shaders_ready">Ready (version %1$d)</string>
+    <string name="shaders_missing">Not imported yet</string>
+    <string name="shaders_outdated">Too old for this render resolution (version %1$d). Rebuild it.</string>
+    <string name="shaders_unknown">Not a shader cache this version can use (version %1$d). Rebuild it.</string>
+    <string name="shaders_hint">Build it here, once (it takes a while on a phone: keep it charging; it goes on with the screen off), or build it on a computer (desktop launcher: Game data › Shaders, any computer) and import mantra_shaders.mshc.</string>
+    <string name="shaders_build">Build the shader cache</string>
+    <string name="shaders_rebuild">Rebuild</string>
+    <string name="shaders_build_continue">Continue the build (%1$d shaders done)</string>
+    <string name="shaders_build_start_over">Start over</string>
+    <string name="shaders_build_stop">Stop</string>
+    <string name="shaders_build_starting">Starting…</string>
+    <string name="shaders_build_reading">Reading the game files: %1$d of %2$d</string>
+    <string name="shaders_build_translating">Translating shaders: %1$d of %2$d</string>
+    <string name="shaders_build_done">The shader cache is built.</string>
+    <string name="shaders_build_stopped">Stopped: the next build continues from there.</string>
+    <string name="shaders_build_failed">Failed: %1$s</string>
+    <string name="shaders_build_channel">Shader cache build</string>
+    <string name="shaders_building">Wait for the shader build to finish, or stop it (Game data › Shader cache).</string>
+    <string name="shaders_import">Import shader cache…</string>
+    <string name="shaders_imported">Shader cache imported</string>
+    <string name="shaders_import_failed">Not a shader cache: %1$s</string>
+    <string name="shaders_needed">Without the shader cache the game can\'t draw most of its graphics.</string>
+
+    <!-- Settings -->
+    <string name="section_settings">Settings</string>
+    <string name="language">Language</string>
+    <string name="render_resolution">Render resolution</string>
+    <string name="render_resolution_value">%1$d%% (%2$d × %3$d)</string>
+    <string name="render_resolution_game">%1$d%% (%2$d × %3$d, the game\'s)</string>
+    <string name="fps_cap">Frame rate limit</string>
+    <string name="fps_unlimited">Unlimited</string>
+    <string name="aspect">Picture</string>
+    <string name="aspect_fit">Fit</string>
+    <string name="aspect_fill">Fill</string>
+    <string name="aspect_stretch">Stretch</string>
+    <string name="vsync">V-Sync</string>
+    <string name="show_fps">Show the frame rate</string>
+    <string name="skip_intro">Skip the intro logos</string>
+    <string name="toasts">Achievement pop-ups</string>
+    <string name="vibration">Controller vibration</string>
+    <string name="vibration_value">%1$d%%</string>
+
+    <!-- Files -->
+    <string name="section_files">Files folder</string>
+    <string name="files_hint">Everything the game makes: saves, the shader cache, logs. Changing it doesn\'t move what is already in the old folder.</string>
+
+    <!-- About -->
+    <string name="section_about">About</string>
+    <string name="about_text">Asura\'s Wrath (Xbox 360), statically recompiled. You need your own copy of the game.\n\nIn game, Back opens the in-game menu (controls, settings, quit).</string>
+    <string name="about_version">Version %1$s · shader cache format %2$d</string>
+
+    <!-- Storage access -->
+    <string name="access_title">Allow access to your files</string>
+    <string name="access_text">The game reads its files straight from the folder you pick. Android asks you to allow \"All files access\" for that.</string>
+    <string name="folder_unsupported">This location can\'t be used. Choose a folder on the internal storage or an SD card.</string>
+    <string name="files_not_writable">The game can\'t write to this folder.</string>
 </resources>

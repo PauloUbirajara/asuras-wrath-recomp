@@ -7,6 +7,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <cstdlib>
 #include <fstream>
 #include <thread>
 
@@ -18,6 +19,14 @@ std::filesystem::path ExePath() {
   std::error_code ec;
   auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
   return ec ? std::filesystem::path() : exe;
+}
+
+std::filesystem::path LauncherDir() {
+  // An AppImage runs from a read-only mount; $APPIMAGE is the file itself.
+  if (const char* appimage = std::getenv("APPIMAGE"); appimage && *appimage) {
+    return std::filesystem::path(appimage).parent_path();
+  }
+  return ExePath().parent_path();
 }
 
 std::vector<std::string> ExeArgs() {

@@ -1,0 +1,206 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The pages on the parchment panel; one shows at a time (LauncherActivity). -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:theme="@style/ThemeOverlay.AsurasWrath.Paper"
+    android:paddingVertical="8dp">
+
+    <!-- Game data: the game, the Files folder under it, the shader cache. -->
+    <LinearLayout
+        android:id="@+id/page_game"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:showDividers="middle"
+        android:divider="@drawable/section_gap">
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/game_folder" />
+            <TextView android:id="@+id/game_path" style="@style/Text.Paper.Path"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:textIsSelectable="true" />
+            <TextView android:id="@+id/game_status"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="4dp" android:textSize="15sp" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:text="@string/game_hint" />
+            <Button android:id="@+id/game_choose" style="@style/Widget.Paper.Button"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:text="@string/choose_folder" />
+        </LinearLayout>
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/section_files" />
+            <TextView android:id="@+id/files_path" style="@style/Text.Paper.Path"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:textIsSelectable="true" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:text="@string/files_hint" />
+            <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:orientation="horizontal">
+                <Button android:id="@+id/files_choose" style="@style/Widget.Paper.Button"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="@string/choose_folder" />
+                <Button android:id="@+id/files_default" style="@style/Widget.Paper.Button"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp" android:text="@string/use_default" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/section_shaders" />
+            <TextView android:id="@+id/shaders_status"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:textSize="16sp" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:text="@string/shaders_hint" />
+            <!-- The build on the phone (ShaderBuildService): progress, then the buttons. -->
+            <com.google.android.material.progressindicator.LinearProgressIndicator
+                android:id="@+id/shaders_progress"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="10dp" android:visibility="gone"
+                app:indicatorColor="@color/accent" app:trackColor="@color/field" />
+            <TextView android:id="@+id/shaders_build_status" style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="4dp" android:visibility="gone" />
+            <LinearLayout
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="2dp" android:orientation="vertical">
+                <Button android:id="@+id/shaders_build" style="@style/Widget.Paper.Button"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="@string/shaders_build" />
+                <Button android:id="@+id/shaders_start_over" style="@style/Widget.Paper.Button"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="@string/shaders_build_start_over"
+                    android:visibility="gone" />
+                <Button android:id="@+id/shaders_import" style="@style/Widget.Paper.Button"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="@string/shaders_import" />
+            </LinearLayout>
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Settings -->
+    <LinearLayout
+        android:id="@+id/page_settings"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <com.google.android.material.textfield.TextInputLayout
+            style="@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:hint="@string/language"
+            app:boxStrokeColor="@color/panel_text"
+            app:boxCornerRadiusTopStart="0dp" app:boxCornerRadiusTopEnd="0dp"
+            app:boxCornerRadiusBottomStart="0dp" app:boxCornerRadiusBottomEnd="0dp">
+            <com.google.android.material.textfield.MaterialAutoCompleteTextView
+                android:id="@+id/language"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:inputType="none" android:textColor="@color/panel_text" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <TextView style="@style/Text.Paper.Heading"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="24dp" android:text="@string/render_resolution" />
+        <TextView android:id="@+id/render_scale_value" style="@style/Text.Paper.Hint"
+            android:layout_width="wrap_content" android:layout_height="wrap_content" />
+        <com.google.android.material.slider.Slider
+            android:id="@+id/render_scale"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:valueFrom="25" android:valueTo="200" android:stepSize="5"
+            app:labelBehavior="gone" app:tickVisible="false" />
+
+        <TextView style="@style/Text.Paper.Heading"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="16dp" android:text="@string/fps_cap" />
+        <com.google.android.material.button.MaterialButtonToggleGroup
+            android:id="@+id/fps_cap"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            app:singleSelection="true" app:selectionRequired="true">
+            <Button android:id="@+id/fps_30" style="@style/Widget.Paper.Toggle"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="30" />
+            <Button android:id="@+id/fps_60" style="@style/Widget.Paper.Toggle"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="60" />
+            <Button android:id="@+id/fps_120" style="@style/Widget.Paper.Toggle"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="120" />
+            <Button android:id="@+id/fps_unlimited" style="@style/Widget.Paper.Toggle"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/fps_unlimited" />
+        </com.google.android.material.button.MaterialButtonToggleGroup>
+
+        <TextView style="@style/Text.Paper.Heading"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="20dp" android:text="@string/aspect" />
+        <com.google.android.material.button.MaterialButtonToggleGroup
+            android:id="@+id/aspect"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            app:singleSelection="true" app:selectionRequired="true">
+            <Button android:id="@+id/aspect_fit" style="@style/Widget.Paper.Toggle"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/aspect_fit" />
+            <Button android:id="@+id/aspect_fill" style="@style/Widget.Paper.Toggle"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/aspect_fill" />
+            <Button android:id="@+id/aspect_stretch" style="@style/Widget.Paper.Toggle"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/aspect_stretch" />
+        </com.google.android.material.button.MaterialButtonToggleGroup>
+
+        <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/vsync"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="20dp" android:textSize="16sp" android:text="@string/vsync" />
+        <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/show_fps"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textSize="16sp" android:text="@string/show_fps" />
+        <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/skip_intro"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textSize="16sp" android:text="@string/skip_intro" />
+        <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/toasts"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:textSize="16sp" android:text="@string/toasts" />
+
+        <TextView style="@style/Text.Paper.Heading"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="20dp" android:text="@string/vibration" />
+        <TextView android:id="@+id/vibration_value" style="@style/Text.Paper.Hint"
+            android:layout_width="wrap_content" android:layout_height="wrap_content" />
+        <com.google.android.material.slider.Slider
+            android:id="@+id/vibration"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:valueFrom="0" android:valueTo="200" android:stepSize="10"
+            app:labelBehavior="gone" app:tickVisible="false" />
+
+        <TextView style="@style/Text.Paper.Hint"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="16dp" android:text="@string/settings_more" />
+    </LinearLayout>
+
+    <!-- About -->
+    <LinearLayout
+        android:id="@+id/page_about"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:visibility="gone">
+        <TextView style="@style/Text.Paper.Body"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="@string/about_text" />
+        <TextView android:id="@+id/about_version" style="@style/Text.Paper.Hint"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="12dp" />
+    </LinearLayout>
+</FrameLayout>

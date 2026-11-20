@@ -297,6 +297,30 @@ std::filesystem::path LauncherSettings::PathIn(const std::filesystem::path& user
   return user_data_root / "launcher.cfg";
 }
 
+std::filesystem::path LauncherSettings::Locate(const std::filesystem::path& user_data_root) {
+  namespace fs = std::filesystem;
+  if (const char* env = std::getenv("ASURA_LAUNCHER_CONFIG"); env && *env) return env;
+  const fs::path old = PathIn(user_data_root);
+  const fs::path dir = platform::LauncherDir();
+  if (dir.empty() || !platform::IsWritable(dir)) return old;
+  const fs::path beside = PathIn(dir);
+  std::error_code ec;
+  if (beside != old && !fs::exists(beside, ec) && fs::exists(old, ec)) {
+    fs::rename(old, beside, ec);
+    if (ec) {
+      // Another drive: copy, then remove the original.
+      ec.clear();
+      if (fs::copy_file(old, beside, ec)) fs::remove(old, ec);
+    }
+    if (ec) {
+      REXLOG_WARN("launcher: couldn't move {} next to the launcher: {}", old.string(), ec.message());
+      return old;
+    }
+    REXLOG_INFO("launcher: moved {} to {}", old.string(), beside.string());
+  }
+  return beside;
+}
+
 bool LauncherSettings::Load(const std::filesystem::path& path) {
   std::ifstream in(path);
   if (!in) return false;
@@ -884,8 +908,9 @@ std::string LauncherDialog::IsoExtract::Message() {
 // --- Moving the Files folder ---------------------------------------------------
 
 namespace {
-// What moves with the Files folder: everything but launcher.cfg (it stays in
-// the default folder, as it names the Files folder).
+// What moves with the Files folder: everything but launcher.cfg (when an
+// unwritable launcher folder keeps it in the default folder, it names the
+// Files folder and stays).
 std::vector<std::filesystem::path> MovableFiles(const std::filesystem::path& folder) {
   std::vector<std::filesystem::path> out;
   std::error_code ec;
@@ -1359,6 +1384,21 @@ void LauncherDialog::OnFileDrop(rex::ui::FileDropEvent& e) {
   if (!playing_) UseDroppedPath(e.filename());
 }
 
+void LauncherDialog::Back() {
+  if (playing_) return;
+  last_input_ = std::chrono::steady_clock::now();
+  if (pad_capture_ >= 0) {
+    pad_capture_ = -1;
+  } else if (!capture_flag_.empty()) {
+    capture_flag_.clear();
+  } else if (drawer_open_) {
+    drawer_open_ = false;
+  } else if (in_game_needs_restart_) {
+    // An open confirmation takes it (Cancel), else the launcher resumes.
+    resume_requested_ = true;
+  }
+}
+
 void LauncherDialog::OnKeyDown(rex::ui::KeyEvent& e) {
   if (playing_) return;
   last_input_ = std::chrono::steady_clock::now();
@@ -1462,9 +1502,15 @@ void LauncherDialog::OnDraw(ImGuiIO& io) {
   // sidebar would squeeze the panel, so it becomes a drawer, and the layout
   // scales for a 720x1280 portrait screen instead of 1280x720.
   const bool compact = display.x < display.y * 1.25f;
-  const float scale =
-      compact ? std::clamp(std::min(display.x / 720.0f, display.y / 1280.0f), 0.6f, 3.0f)
-              : std::clamp(std::min(display.y / 720.0f, display.x / 1280.0f), 0.6f, 3.0f);
+  // Fitting the layout to the screen keeps text readable on monitors; on a
+  // phone (a small screen with dense pixels) it would be tiny, so the text
+  // keeps a size in the display's own units (Android dp) at least, and the
+  // pages scroll instead.
+  const float density = window_ ? float(window_->GetDpi()) / float(window_->GetMediumDpi()) : 1.0f;
+  const float fit =
+      compact ? std::min(display.x / 720.0f, display.y / 1280.0f)
+              : std::min(display.y / 720.0f, display.x / 1280.0f);
+  const float scale = std::clamp(std::max(fit, 0.85f * density), 0.6f, 4.0f);
   UsePalette(OverGame());
 
   ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
@@ -2963,8 +3009,8 @@ void LauncherDialog::ApplyPicked() {
 // --- Files folder ----------------------------------------------------------------
 
 void LauncherDialog::SetFilesFolder(const std::filesystem::path& folder) {
-  // The default: the folder launcher.cfg is in (the SDK's user folder).
-  const std::filesystem::path fallback = settings_path_.parent_path().lexically_normal();
+  // The default: the SDK's user folder.
+  const std::filesystem::path fallback = platform::DefaultFilesDir().lexically_normal();
   const std::filesystem::path chosen = folder.empty() ? fallback : folder.lexically_normal();
   settings_.data_folder = chosen == fallback ? "" : chosen.string();
   std::snprintf(files_folder_buffer_, sizeof(files_folder_buffer_), "%s", chosen.string().c_str());

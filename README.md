@@ -211,8 +211,11 @@ Without a cache, mantra can't draw what uses an untranslated shader (the screen 
 
 | OS | Location |
 | :--- | :--- |
-| Linux | `~/.local/share/asura_wrath_recomp` (saves, achievements, `launcher.cfg`, `asura_wrath_recomp.toml`) |
+| Linux | `~/.local/share/asura_wrath_recomp` (saves, achievements, `cache/`, `logs/`, `asura_wrath_recomp.toml`), or the launcher's *Files folder* |
 | Windows | `Documents\asura_wrath_recomp` (saves, achievements, `cache\`, `logs\`), or the launcher's *Files folder* |
+| Android | `Android/data/org.asurawrath.recompiled/files/asura_wrath_recomp` |
+
+The launcher's own settings, `launcher.cfg`, sit next to the launcher: beside `asura_wrath` (`asura_wrath.exe`), or beside the `.AppImage`. If that folder can't be written (e.g. a system install), they stay in the folder above. An older `launcher.cfg` from the folder above moves next to the launcher the first time.
 
 ### Launcher
 ```bash

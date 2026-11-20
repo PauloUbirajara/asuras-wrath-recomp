@@ -2,7 +2,7 @@
 // Launcher shown before the game starts (AsuraWrathApp::OnFinalizePaths), in
 // a window: a sidebar (Controls, Achievements, Saves, Settings, About,
 // Play) and a content panel, in the language chosen in Settings
-// (launcher_text.h). Settings are kept in <user data>/launcher.cfg and applied at startup
+// (launcher_text.h). Settings are kept in launcher.cfg next to the launcher (LauncherSettings::Locate) and applied at startup
 // as defaults, so command-line flags and the config TOML still win.
 //
 // Text uses the game's fonts when they were extracted (MediumFont.awf,
@@ -91,6 +91,11 @@ struct LauncherSettings {
   int trace_notice_position = 1;             // 0..2 top left/centre/right, 3..5 bottom
 
   static std::filesystem::path PathIn(const std::filesystem::path& user_data_root);
+  // Where launcher.cfg lives: next to the launcher (platform::LauncherDir())
+  // when that folder is writable, else in the SDK user folder. One in the user
+  // folder from an earlier version moves next to the launcher.
+  // $ASURA_LAUNCHER_CONFIG (a file) wins, for test runs.
+  static std::filesystem::path Locate(const std::filesystem::path& user_data_root);
   bool Load(const std::filesystem::path& path);  // false if missing
   bool Save(const std::filesystem::path& path) const;
   std::string Serialize() const;  // the file's text (Save)
@@ -178,8 +183,11 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   void SetPlayInThisProcess(std::function<void(const LauncherSettings&)> play) {
     play_here_ = std::move(play);
   }
-  // Esc again: like Resume (changes that need a restart wait for the next start).
-  void RequestResume() { resume_requested_ = true; }
+  // Esc / Android's Back: closes what is on top (a key being rebound, the
+  // drawer, a confirmation), else, in game, resumes like Resume (changes that
+  // need a restart wait for the next start). Nothing on the launcher's own
+  // first page.
+  void Back();
   // The game Play started (another process) is running.
   bool PlayRunning() const { return game_.Running(); }
 

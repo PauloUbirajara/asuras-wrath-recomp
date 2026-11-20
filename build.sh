@@ -10,8 +10,11 @@
 #   ./build.sh --windows        build for Windows x64 from Linux (clang + lld-link with
 #                               Microsoft's SDK from tools/setup_windows_cross.sh;
 #                               needs the Linux build first, for its codegen tool)
-#   ./build.sh --android        the Android APK (android/, Gradle + NDK; needs the
-#                               Android SDK in $ANDROID_HOME or ~/Android/Sdk)
+#   ./build.sh --android        the Android APKs (one per ABI plus a universal one;
+#                               tools/package.sh --android; ASURA_ABIS=arm64-v8a for one;
+#                               needs the Android SDK in $ANDROID_HOME or ~/Android/Sdk;
+#                               the first one also cross-builds DXC, ~8 min per ABI:
+#                               tools/build_dxc_android.sh)
 #
 # CPU flags: the SDK core uses SSSE3/SSE4.1 intrinsics but only adds -msse4.1
 # to app targets, so the flags are passed here for everything, SDK included.
@@ -53,10 +56,16 @@ if $ANDROID; then
   [ -f android/local.properties ] ||
     printf 'sdk.dir=%s\ncmake.dir=%s\n' "$ANDROID_HOME" "$(dirname "$(dirname "$(command -v cmake)")")" \
       > android/local.properties
+  # DXC for the on-phone shader build (mantra_shadergen in the APK).
+  tools/build_dxc_android.sh $(echo "${ASURA_ABIS:-arm64-v8a,x86_64}" | tr ',' ' ')
   task=assembleRelease
   [ "$CONFIG" = debug ] && task=assembleDebug
-  (cd android && ./gradlew "$task")
-  echo "[+] APK: android/app/build/outputs/apk/$( [ "$task" = assembleDebug ] && echo debug || echo release )/"
+  (cd android && ./gradlew ${ASURA_ABIS:+-Pasura.abis=$ASURA_ABIS} "$task")
+  kind=release; [ "$task" = assembleDebug ] && kind=debug || true
+  for apk in android/app/build/outputs/apk/$kind/app-*-$kind.apk; do
+    echo "[+] APK: $apk ($(du -h "$apk" | cut -f1))"
+  done
+  echo "[+] tools/package.sh --android copies them to out/package/ with checksums"
   exit 0
 fi
 

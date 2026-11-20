@@ -12,6 +12,20 @@
     <uses-feature android:name="android.hardware.type.pc" android:required="false" />
 
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- The on-phone shader build (ShaderBuildService): runs in the
+         background with a progress notification, CPU kept awake. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- The game folder the player picks is read by path (the game's file
+         layer opens paths, not content:// links): "All files access" on
+         Android 11+, the storage permissions on Android 10. -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
 
     <application
         android:label="@string/app_name"
@@ -21,24 +35,42 @@
         android:hasFragileUserData="true"
         android:isGame="true"
         android:appCategory="game"
-        android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
+        android:requestLegacyExternalStorage="true"
+        android:theme="@style/Theme.AsurasWrath"
         android:enableOnBackInvokedCallback="false"
         android:hardwareAccelerated="true">
 
+        <!-- The launcher: settings, folders, Play. No native code. -->
         <activity
-            android:name=".MainActivity"
+            android:name=".LauncherActivity"
             android:label="@string/app_name"
             android:exported="true"
-            android:alwaysRetainTaskState="true"
-            android:launchMode="singleInstance"
-            android:screenOrientation="fullUser"
-            android:resizeableActivity="true"
-            android:configChanges="layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
-            android:preferMinimalPostProcessing="true">
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- The game (SDL's activity, libasura_wrath.so), in a process of its
+             own: each Play starts the native runtime fresh, and quitting
+             ends that process. -->
+        <activity
+            android:name=".GameActivity"
+            android:label="@string/app_name"
+            android:exported="false"
+            android:process=":game"
+            android:theme="@style/Theme.AsurasWrath.Game"
+            android:screenOrientation="sensorLandscape"
+            android:resizeableActivity="true"
+            android:configChanges="layoutDirection|locale|grammaticalGender|fontScale|fontWeightAdjustment|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|keyboard|keyboardHidden|navigation"
+            android:preferMinimalPostProcessing="true" />
+
+        <!-- The shader cache build (mantra_shadergen, lib/<abi>/libmantra_shadergen.so). -->
+        <service
+            android:name=".ShaderBuildService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 </manifest>

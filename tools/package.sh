@@ -15,9 +15,12 @@
 #   tools/package.sh --clean         delete earlier packages in out/package first
 #   tools/package.sh --windows       package the Windows build made on Linux
 #                                    (./build.sh --windows) as a .zip instead
+#   tools/package.sh --android       the APKs from ./build.sh --android instead
+#                                    (universal, arm64-v8a, x86_64)
 #
 # Writes out/package/asuras-wrath-recomp-<version>-linux-x86_64.tar.gz (and
-# .AppImage) plus SHA256SUMS; the staging folders are removed afterwards.
+# .AppImage) plus SHA256SUMS (SHA256SUMS-windows, SHA256SUMS-android for the
+# others); the staging folders are removed afterwards.
 #
 # The default build is tuned for your CPU (-march=native) and may crash on
 # other CPUs: build with ./build.sh --portable first for a package to share.
@@ -29,6 +32,7 @@ APPIMAGE=false
 STRIP=true
 CLEAN=false
 WINDOWS=false
+ANDROID=false
 BUILD_DIR_SET=false
 VERSION=""
 while [ $# -gt 0 ]; do
@@ -37,9 +41,10 @@ while [ $# -gt 0 ]; do
     --no-strip) STRIP=false ;;
     --build-dir) BUILD_DIR="$(cd "$2" && pwd)"; BUILD_DIR_SET=true; shift ;;
     --windows) WINDOWS=true ;;
+    --android) ANDROID=true ;;
     --version) VERSION="$2"; shift ;;
     --clean) CLEAN=true ;;
-    -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
     *) echo "[!] Unknown argument: $1" >&2; exit 1 ;;
   esac
   shift
@@ -61,6 +66,25 @@ BASE="$NAME-$VERSION-linux-x86_64"
 $CLEAN && rm -rf "$OUT"
 mkdir -p "$OUT"
 trap 'rm -rf "$WORK"' EXIT
+
+# --- Android (.apk) ---------------------------------------------------------------
+# Gradle already packs and signs them: copied under the package names.
+if $ANDROID; then
+  APK_DIR="$REPO_ROOT/android/app/build/outputs/apk/release"
+  apks=("$APK_DIR"/app-*-release.apk)
+  [ -e "${apks[0]}" ] || { echo "[!] No APKs in $APK_DIR (run ./build.sh --android)" >&2; exit 1; }
+  names=()
+  for apk in "${apks[@]}"; do
+    abi=${apk##*/app-}; abi=${abi%-release.apk}
+    dest="$NAME-$VERSION-android-$abi.apk"
+    cp "$apk" "$OUT/$dest"
+    names+=("$dest")
+    echo "[+] $OUT/$dest ($(du -h "$OUT/$dest" | cut -f1))"
+  done
+  (cd "$OUT" && sha256sum "${names[@]}" > "SHA256SUMS-android")
+  echo "[+] $OUT/SHA256SUMS-android"
+  exit 0
+fi
 
 # --- Windows (.zip) ---------------------------------------------------------------
 if $WINDOWS; then

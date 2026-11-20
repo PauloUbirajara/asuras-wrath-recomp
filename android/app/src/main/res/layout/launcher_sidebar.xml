@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The sidebar (landscape) or drawer (portrait): logo, the pages, Play. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/sidebar"
+    android:layout_width="300dp"
+    android:layout_height="match_parent"
+    android:background="@color/sidebar"
+    android:orientation="vertical"
+    android:clickable="true"
+    android:focusable="false">
+
+    <ImageView
+        android:id="@+id/logo"
+        android:layout_width="match_parent"
+        android:layout_height="96dp"
+        android:layout_marginHorizontal="14dp"
+        android:layout_marginTop="24dp"
+        android:scaleType="fitCenter"
+        android:adjustViewBounds="true"
+        android:contentDescription="@string/app_name" />
+    <TextView
+        android:id="@+id/logo_caption"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:gravity="center"
+        android:letterSpacing="0.5"
+        android:text="RECOMPILED"
+        android:textColor="@color/accent"
+        android:textSize="11sp" />
+
+    <LinearLayout
+        android:id="@+id/menu"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="32dp"
+        android:orientation="vertical"
+        android:showDividers="middle"
+        android:divider="@drawable/menu_gap">
+        <org.asurawrath.recompiled.MenuButton android:id="@+id/menu_game"
+            android:layout_width="match_parent" android:layout_height="48dp"
+            android:text="@string/page_game" />
+        <org.asurawrath.recompiled.MenuButton android:id="@+id/menu_settings"
+            android:layout_width="match_parent" android:layout_height="48dp"
+            android:text="@string/page_settings" />
+        <org.asurawrath.recompiled.MenuButton android:id="@+id/menu_about"
+            android:layout_width="match_parent" android:layout_height="48dp"
+            android:text="@string/page_about" />
+    </LinearLayout>
+
+    <Space
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1" />
+
+    <TextView
+        android:id="@+id/play_notice"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingHorizontal="16dp"
+        android:textColor="@color/accent"
+        android:textSize="15sp"
+        android:visibility="gone" />
+    <Button
+        android:id="@+id/play"
+        style="?android:attr/borderlessButtonStyle"
+        android:layout_width="match_parent"
+        android:layout_height="80dp"
+        android:layout_marginBottom="12dp"
+        android:text="@string/play"
+        android:textAllCaps="false"
+        android:textColor="@color/sidebar_text"
+        android:textSize="30sp" />
+</LinearLayout>

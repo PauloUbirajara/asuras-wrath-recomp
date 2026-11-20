@@ -121,6 +121,8 @@ option(ASURA_BUILD_SHADERGEN "Build the mantra_shadergen tool" ON)
 if(ASURA_BUILD_SHADERGEN AND (CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32))
   add_subdirectory(tools/mantra_shadergen)
   add_subdirectory(tools/xxx_unpack)  # .xxx -> UE3 package bodies (asset extraction)
+elseif(ASURA_BUILD_SHADERGEN AND ANDROID)
+  add_subdirectory(tools/mantra_shadergen)  # the launcher's on-phone build
 endif()
 
 rexglue_setup_target(asura_wrath GPU_PLUGINS xenos mantra)

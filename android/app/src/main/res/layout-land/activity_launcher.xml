@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Landscape (as the desktop launcher): the sidebar beside the panel. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/sidebar"
+    android:fitsSystemWindows="true"
+    android:orientation="horizontal">
+
+    <include
+        layout="@layout/launcher_sidebar"
+        android:layout_width="300dp"
+        android:layout_height="match_parent" />
+
+    <include
+        layout="@layout/launcher_panel"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1" />
+</LinearLayout>

@@ -27,6 +27,7 @@
 #include <rex/ui/keybinds.h>
 #include <rex/ui/window.h>
 #include <imgui.h>
+#include <SDL3/SDL_events.h>
 #include <rex/system/achievement_manager.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/util/xdbf_utils.h>
@@ -53,6 +54,7 @@ REXCVAR_DECLARE(bool, launcher);
 class AsuraWrathApp : public rex::ReXApp {
  public:
   using rex::ReXApp::ReXApp;
+  ~AsuraWrathApp() override { SDL_RemoveEventWatch(&AsuraWrathApp::BackWatch, this); }
 
   static std::unique_ptr<rex::ui::WindowedApp> Create(
       rex::ui::WindowedAppContext& ctx) {
@@ -213,8 +215,9 @@ class AsuraWrathApp : public rex::ReXApp {
   }
   void OnConfigurePaths(rex::PathConfig& paths) override {
     MigrateLegacyFolders(paths);
-    // launcher.cfg stays in the SDK's user folder: it names the Files folder.
-    launcher_settings_path_ = asura::ui::LauncherSettings::PathIn(paths.user_data_root);
+    // launcher.cfg next to the launcher (it names the Files folder, so it
+    // can't live in it).
+    launcher_settings_path_ = asura::ui::LauncherSettings::Locate(paths.user_data_root);
     launcher_settings_.Load(launcher_settings_path_);
     // The Files folder: saves and profile, caches (platform::CacheDir()),
     // logs. Everything that reads it (here, the mantra plugin, the game Play
@@ -286,6 +289,10 @@ class AsuraWrathApp : public rex::ReXApp {
     // saved keys are applied, so a rebound key sticks.
     rex::ui::RegisterBind("bind_launcher", "Escape", "Open the launcher (in game)",
                           [this] { ToggleLauncherInGame(); });
+    // Android's Back (and a keyboard's Back key): Esc's job, without being a
+    // rebindable key. SDL calls the watch on the thread that queues the event
+    // (Android's UI thread), so the work goes to this app's UI thread.
+    SDL_AddEventWatch(&AsuraWrathApp::BackWatch, this);
     // F3 in game: trace the next frame (Game data > Traces). The SDK's
     // performance overlay, F3 by default, gets no key (ApplyLauncherDefaults).
     rex::ui::RegisterBind("bind_trace", "F3", "Trace the next frame (in game)", [this] {
@@ -365,6 +372,25 @@ class AsuraWrathApp : public rex::ReXApp {
     }
   }
 
+  static bool SDLCALL BackWatch(void* self, SDL_Event* e) {
+    if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_AC_BACK &&
+        !e->key.repeat) {
+      auto* app = static_cast<AsuraWrathApp*>(self);
+      app->app_context().CallInUIThreadDeferred([app] { app->OnBack(); });
+    }
+    return true;
+  }
+
+  // Back: the launcher's own Back (drawer, confirmations, resume), or, in
+  // game, opens the launcher.
+  void OnBack() {
+    if (launcher_) {
+      launcher_->Back();
+    } else {
+      ToggleLauncherInGame();
+    }
+  }
+
   // bind_launcher (Esc): opens the launcher over the game, or resumes from it.
   // The game keeps running underneath.
   void ToggleLauncherInGame() {
@@ -372,7 +398,7 @@ class AsuraWrathApp : public rex::ReXApp {
     // Esc also closes the SDK's console and settings overlays.
     if (ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput) return;
     if (launcher_) {
-      launcher_->RequestResume();
+      launcher_->Back();
       return;
     }
     if (window()) window()->SetCursorVisibility(rex::ui::Window::CursorVisibility::kVisible);

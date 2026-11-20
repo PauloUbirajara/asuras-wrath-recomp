@@ -26,8 +26,8 @@ namespace asura::platform {
 std::filesystem::path FilesDir();
 // The SDK's user folder: $XDG_DATA_HOME/asura_wrath_recomp or
 // ~/.local/share/asura_wrath_recomp; Documents\asura_wrath_recomp on Windows.
-// launcher.cfg stays there, as it names the Files folder. Empty when there is
-// no home folder.
+// launcher.cfg is there only when the launcher's folder isn't writable
+// (LauncherDir()). Empty when there is no home folder.
 std::filesystem::path DefaultFilesDir();
 // FilesDir()/cache: shader cache, pipelines, UI art, movies, the trace trigger.
 std::filesystem::path CacheDir();
@@ -38,6 +38,10 @@ inline constexpr const char* kDataDirVariable = "ASURA_DATA_DIR";
 
 // This executable, and the arguments it was started with (argv[0] first).
 std::filesystem::path ExePath();
+// The folder the player sees the launcher in, for launcher.cfg: the
+// executable's (the .AppImage's, not its read-only mount, on Linux; the
+// app's files folder on Android).
+std::filesystem::path LauncherDir();
 std::vector<std::string> ExeArgs();
 
 // Whether Play can start the game as another process of this executable

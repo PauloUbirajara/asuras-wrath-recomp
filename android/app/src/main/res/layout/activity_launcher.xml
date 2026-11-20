@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Portrait (as the desktop launcher's compact layout): the panel fills the
+     screen; the sidebar is a drawer behind the menu button. -->
+<androidx.drawerlayout.widget.DrawerLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/drawer"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/sidebar"
+    android:fitsSystemWindows="true">
+
+    <include layout="@layout/launcher_panel" />
+
+    <include
+        layout="@layout/launcher_sidebar"
+        android:layout_width="300dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="start" />
+</androidx.drawerlayout.widget.DrawerLayout>

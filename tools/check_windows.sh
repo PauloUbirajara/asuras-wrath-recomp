@@ -22,7 +22,7 @@ for line in sys.stdin:
         continue
     a = shlex.split(line)
     src = a[a.index("-c") + 1]
-    if not src.startswith(ours) or src in seen or "platform_posix" in src:
+    if not src.startswith(ours) or src in seen or any(p in src for p in ("platform_posix", "platform_linux", "platform_android")):
         continue
     seen.add(src)
     flags, i = [], 1

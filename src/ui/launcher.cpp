@@ -46,6 +46,7 @@
 #include "fps_counter.h"
 #include "../input/pad_remap.h"
 #include "../mantra_renderer/render_scale.h"
+#include "../game/graphics_effects.h"
 #include "../mantra_renderer/shader_cache_format.h"
 #include "../platform/platform.h"
 #include "about_info.h"
@@ -297,12 +298,36 @@ std::filesystem::path LauncherSettings::PathIn(const std::filesystem::path& user
   return user_data_root / "launcher.cfg";
 }
 
+std::filesystem::path LauncherSettings::Locate(const std::filesystem::path& user_data_root) {
+  namespace fs = std::filesystem;
+  if (const char* env = std::getenv("ASURA_LAUNCHER_CONFIG"); env && *env) return env;
+  const fs::path old = PathIn(user_data_root);
+  const fs::path dir = platform::LauncherDir();
+  if (dir.empty() || !platform::IsWritable(dir)) return old;
+  const fs::path beside = PathIn(dir);
+  std::error_code ec;
+  if (beside != old && !fs::exists(beside, ec) && fs::exists(old, ec)) {
+    fs::rename(old, beside, ec);
+    if (ec) {
+      // Another drive: copy, then remove the original.
+      ec.clear();
+      if (fs::copy_file(old, beside, ec)) fs::remove(old, ec);
+    }
+    if (ec) {
+      REXLOG_WARN("launcher: couldn't move {} next to the launcher: {}", old.string(), ec.message());
+      return old;
+    }
+    REXLOG_INFO("launcher: moved {} to {}", old.string(), beside.string());
+  }
+  return beside;
+}
+
 bool LauncherSettings::Load(const std::filesystem::path& path) {
   std::ifstream in(path);
   if (!in) return false;
   std::string line;
   // Before render_scale: "Higher resolution" + a render height.
-  bool native_render = false, have_scale = false;
+  bool native_render = false, have_scale = false, have_toast_position = false;
   int render_height = 720;
   while (std::getline(in, line)) {
     const size_t eq = line.find('=');
@@ -315,6 +340,7 @@ bool LauncherSettings::Load(const std::filesystem::path& path) {
     else if (key == "exclusive") exclusive = on;
     else if (key == "monitor") monitor = std::clamp(std::atoi(value.c_str()), 0, 16);
     else if (key == "keyboard") keyboard = on;
+    else if (key == "screen_padding") screen_padding = std::clamp(std::atoi(value.c_str()), 0, 64);
     else if (key == "aspect")
       aspect = value == "fill" ? AspectMode::kFill
                : value == "stretch" ? AspectMode::kStretch
@@ -332,6 +358,12 @@ bool LauncherSettings::Load(const std::filesystem::path& path) {
     else if (key == "hide_cursor") hide_cursor = on;
     else if (key == "mute_background") mute_background = on;
     else if (key == "skip_intro") skip_intro = on;
+    else if (key.rfind("fx_", 0) == 0) {
+      for (size_t e = 0; e < game::kGraphicsEffectCount; ++e) {
+        if (key.compare(3, std::string::npos, game::kGraphicsEffects[e].key) != 0) continue;
+        effects_off = on ? effects_off & ~(1u << e) : effects_off | (1u << e);
+      }
+    }
     else if (key == "detailed_logs") detailed_logs = on;
     else if (key == "turbo") {
       turbo = 0;
@@ -349,7 +381,16 @@ bool LauncherSettings::Load(const std::filesystem::path& path) {
       have_scale = true;
     }
     else if (key == "toasts") toasts = on;
-    else if (key == "toast_corner") toast_corner = std::clamp(std::atoi(value.c_str()), 0, 3);
+    else if (key == "toast_position") {
+      toast_position = std::clamp(std::atoi(value.c_str()), 0, 7);
+      have_toast_position = true;
+    } else if (key == "toast_corner" && !have_toast_position) {
+      // Before the 8 positions: top left, top right, bottom left, bottom right.
+      static constexpr int kCorner[] = {0, 2, 5, 7};
+      toast_position = kCorner[std::clamp(std::atoi(value.c_str()), 0, 3)];
+    } else if (key == "toast_size") {
+      toast_size = std::clamp((std::atoi(value.c_str()) + 5) / 10 * 10, 50, 250);
+    }
     else if (key == "toast_seconds")
       toast_seconds = std::clamp(std::strtod(value.c_str(), nullptr), 1.0, 15.0);
     else if (key == "trace_picture") trace_picture = on;
@@ -379,16 +420,20 @@ std::string LauncherSettings::Serialize() const {
   out << "# Asura's Wrath Recompiled launcher settings\n"
       << "gpu=" << gpu << "\nvsync=" << vsync << "\nfullscreen=" << fullscreen << "\nexclusive=" << exclusive
       << "\nmonitor=" << monitor
-      << "\nkeyboard=" << keyboard << "\naspect=" << AspectName(aspect) << "\nwindow="
+      << "\nkeyboard=" << keyboard << "\naspect=" << AspectName(aspect) << "\nscreen_padding=" << screen_padding << "\nwindow="
       << window_width << "x" << window_height << "\nlanguage=" << language
       << "\ngame_data=" << game_data << "\ndata_folder=" << data_folder << "\ndeadzone_left=" << deadzone_left
       << "\ndeadzone_right=" << deadzone_right << "\nvibration=" << vibration
-      << "\nshow_fps=" << show_fps << "\nfps_corner=" << fps_corner << "\nfps_cap=" << fps_cap << "\nrender_scale=" << render_scale << "\ntoasts=" << toasts << "\ntoast_corner=" << toast_corner
+      << "\nshow_fps=" << show_fps << "\nfps_corner=" << fps_corner << "\nfps_cap=" << fps_cap << "\nrender_scale=" << render_scale << "\ntoasts=" << toasts << "\ntoast_position=" << toast_position << "\ntoast_size=" << toast_size
       << "\ntoast_seconds=" << toast_seconds << "\ntrace_picture=" << trace_picture
       << "\ntrace_notice=" << trace_notice << "\ntrace_notice_position=" << trace_notice_position
       << "\nhide_cursor=" << hide_cursor
       << "\nmute_background=" << mute_background << "\nskip_intro=" << skip_intro
-      << "\ndetailed_logs=" << detailed_logs << "\nturbo=";
+      << "\ndetailed_logs=" << detailed_logs;
+  for (size_t e = 0; e < game::kGraphicsEffectCount; ++e) {
+    out << "\nfx_" << game::kGraphicsEffects[e].key << "=" << !(effects_off & (1u << e));
+  }
+  out << "\nturbo=";
   for (int c = 0, n = 0; c < input::kPadControlCount; ++c) {
     if (turbo & (1u << c)) out << (n++ ? "," : "") << input::PadControlName(c);
   }
@@ -428,10 +473,28 @@ bool RenderScaleFromEnvironment() {
 }
 
 
+ToastOptions ToastOptionsFrom(const LauncherSettings& s) {
+  ToastOptions o;
+  o.enabled = s.toasts;
+  o.position = s.toast_position;
+  o.size = s.toast_size / 100.0f;
+  o.seconds = float(s.toast_seconds);
+  return o;
+}
+
 void ApplyLauncherDefaults(const LauncherSettings& s) {
   SetIfUnset("vulkan_device", std::to_string(s.gpu));
-  SetIfUnset("vulkan_allow_present_mode_immediate", s.vsync ? "false" : "true");
-  SetIfUnset("vulkan_allow_present_mode_mailbox", s.vsync ? "false" : "true");
+  // Android always presents in step with the screen (FIFO): without it
+  // (mailbox) the phone's driver queued frames up, and the picture fell
+  // further and further behind, down to 1 fps on screen while the game ran
+  // at 30. Android composes in step with the display anyway.
+#ifdef __ANDROID__
+  const bool vsync = true;
+#else
+  const bool vsync = s.vsync;
+#endif
+  SetIfUnset("vulkan_allow_present_mode_immediate", vsync ? "false" : "true");
+  SetIfUnset("vulkan_allow_present_mode_mailbox", vsync ? "false" : "true");
   SetIfUnset("fullscreen", s.fullscreen ? "true" : "false");
   SetIfUnset("fullscreen_exclusive", s.exclusive ? "true" : "false");
   SetIfUnset("monitor", std::to_string(s.monitor));
@@ -478,7 +541,7 @@ void ApplyLauncherDefaults(const LauncherSettings& s) {
                                                 ? std::to_string(RenderScale(s)).c_str()
                                                 : nullptr);
   }
-  SetToastOptions({s.toasts, s.toast_corner, float(s.toast_seconds)});
+  SetToastOptions(ToastOptionsFrom(s));
   SetFpsCorner(s.fps_corner);
   // The game started by Play inherits it (its own settings set it live too).
   platform::SetEnv("MANTRA_TRACE_CAPTURE", s.trace_picture ? "1" : "0");
@@ -516,7 +579,7 @@ void ApplyLiveSettings(const LauncherSettings& s) {
   input::SetTurboControls(s.turbo);
   game::SetFrameRateCap(s.fps_cap);
   if (!RenderScaleFromEnvironment()) RequestRenderScale(RenderScale(s));
-  SetToastOptions({s.toasts, s.toast_corner, float(s.toast_seconds)});
+  SetToastOptions(ToastOptionsFrom(s));
   SetFpsCorner(s.fps_corner);
   SetTraceOptions({s.trace_notice, s.trace_notice_position, s.trace_picture});
 }
@@ -525,7 +588,8 @@ bool NeedsRestart(const LauncherSettings& before, const LauncherSettings& after)
   return before.gpu != after.gpu || before.vsync != after.vsync ||
          before.monitor != after.monitor ||
          (before.fullscreen && before.exclusive) != (after.fullscreen && after.exclusive) ||
-         (before.aspect == AspectMode::kFill) != (after.aspect == AspectMode::kFill);
+         (before.aspect == AspectMode::kFill) != (after.aspect == AspectMode::kFill) ||
+         before.effects_off != after.effects_off;
 }
 
 void ApplyOrangeAccent(ImGuiStyle& imgui_style, rex::ui::Style& ui_style) {
@@ -884,8 +948,9 @@ std::string LauncherDialog::IsoExtract::Message() {
 // --- Moving the Files folder ---------------------------------------------------
 
 namespace {
-// What moves with the Files folder: everything but launcher.cfg (it stays in
-// the default folder, as it names the Files folder).
+// What moves with the Files folder: everything but launcher.cfg (when an
+// unwritable launcher folder keeps it in the default folder, it names the
+// Files folder and stays).
 std::vector<std::filesystem::path> MovableFiles(const std::filesystem::path& folder) {
   std::vector<std::filesystem::path> out;
   std::error_code ec;
@@ -1142,6 +1207,22 @@ LauncherDialog::Image LauncherDialog::LoadImage(const std::filesystem::path& pat
 
 // The list read from default.xex (game_assets.h), with the unlocks the SDK
 // saves in <user data>/achievements/<title id>.toml.
+rex::system::AchievementEvent LauncherDialog::ToastSample() {
+  if (!achievements_loaded_) LoadAchievements();
+  rex::system::AchievementEvent event;
+  if (!achievements_.empty()) {
+    const Achievement& a = achievements_.front();
+    event.achievement.id = a.id;
+    event.achievement.label = a.name;
+    event.achievement.gamerscore = a.gamerscore;
+    event.achievement.icon_path = (AchievementCacheDir() / (std::to_string(a.id) + ".png")).string();
+  } else {
+    event.achievement.label = T("Achievement name");
+    event.achievement.gamerscore = 20;
+  }
+  return event;
+}
+
 void LauncherDialog::LoadAchievements() {
   achievements_loaded_ = true;
   achievements_.clear();
@@ -1359,6 +1440,21 @@ void LauncherDialog::OnFileDrop(rex::ui::FileDropEvent& e) {
   if (!playing_) UseDroppedPath(e.filename());
 }
 
+void LauncherDialog::Back() {
+  if (playing_) return;
+  last_input_ = std::chrono::steady_clock::now();
+  if (pad_capture_ >= 0) {
+    pad_capture_ = -1;
+  } else if (!capture_flag_.empty()) {
+    capture_flag_.clear();
+  } else if (drawer_open_) {
+    drawer_open_ = false;
+  } else if (in_game_needs_restart_) {
+    // An open confirmation takes it (Cancel), else the launcher resumes.
+    resume_requested_ = true;
+  }
+}
+
 void LauncherDialog::OnKeyDown(rex::ui::KeyEvent& e) {
   if (playing_) return;
   last_input_ = std::chrono::steady_clock::now();
@@ -1408,6 +1504,7 @@ void LauncherDialog::LimitFrameRate(ImGuiIO& io) {
   active |= !capture_flag_.empty() || pad_capture_ >= 0 || page_ == Page::kControls ||
             shader_build_.state == ShaderBuild::kRunning ||
             iso_extract_.state == IsoExtract::kRunning || asset_job_.running;
+  active |= drawer_t_ != (drawer_open_ ? 1.0f : 0.0f);  // the drawer slides
   if (active) last_input_ = now;
   // 60 fps in use, 20 fps after 3 s without input (10 fps while the game
   // runs, to leave it the GPU).
@@ -1457,7 +1554,19 @@ void LauncherDialog::OnDraw(ImGuiIO& io) {
     if (!failed) StartAssetJob();  // the language may have changed meanwhile
   }
   const ImVec2 display = io.DisplaySize;
-  const float scale = std::clamp(std::min(display.y / 720.0f, display.x / 1280.0f), 0.6f, 3.0f);
+  // Portrait or near-square windows (phones, narrow desktop windows): the
+  // sidebar would squeeze the panel, so it becomes a drawer, and the layout
+  // scales for a 720x1280 portrait screen instead of 1280x720.
+  const bool compact = display.x < display.y * 1.25f;
+  // Fitting the layout to the screen keeps text readable on monitors; on a
+  // phone (a small screen with dense pixels) it would be tiny, so the text
+  // keeps a size in the display's own units (Android dp) at least, and the
+  // pages scroll instead.
+  const float density = window_ ? float(window_->GetDpi()) / float(window_->GetMediumDpi()) : 1.0f;
+  const float fit =
+      compact ? std::min(display.x / 720.0f, display.y / 1280.0f)
+              : std::min(display.y / 720.0f, display.x / 1280.0f);
+  const float scale = std::clamp(std::max(fit, 0.85f * density), 0.6f, 4.0f);
   UsePalette(OverGame());
 
   ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
@@ -1469,14 +1578,88 @@ void LauncherDialog::OnDraw(ImGuiIO& io) {
   const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                  ImGuiWindowFlags_NoSavedSettings |
                                  ImGuiWindowFlags_NoBringToFrontOnFocus;
+  if (!compact) drawer_open_ = false, drawer_t_ = 0.0f;
   if (ImGui::Begin("##asura_launcher", nullptr, flags)) {
-    // The launcher has the window to itself: sidebar left, panel right.
-    const float sidebar_w = std::floor(std::max(display.x * 0.21f, 200.0f * scale));
-    DrawSidebar(ImVec2(0, 0), ImVec2(sidebar_w, display.y), scale);
-    DrawPanel(ImVec2(sidebar_w, 0), ImVec2(display.x - sidebar_w, display.y), scale);
+    if (compact) {
+      // The panel has the window; the menu button sits in its top band,
+      // level with the page title.
+      const float button = 44.0f * scale, margin = 12.0f * scale;
+      const float band = DrawPanel(ImVec2(0, 0), display, scale, margin * 2 + button);
+      if (MenuButton(ImVec2(margin, std::floor((band - button) * 0.5f)), button, scale)) {
+        drawer_open_ = !drawer_open_;
+      }
+    } else {
+      // The launcher has the window to itself: sidebar left, panel right.
+      const float sidebar_w = std::floor(std::max(display.x * 0.21f, 200.0f * scale));
+      DrawSidebar(ImVec2(0, 0), ImVec2(sidebar_w, display.y), scale);
+      DrawPanel(ImVec2(sidebar_w, 0), ImVec2(display.x - sidebar_w, display.y), scale);
+    }
   }
   ImGui::End();
   ImGui::PopStyleColor();
+  ImGui::PopStyleVar(3);
+  if (compact) DrawCompact(display, scale);
+}
+
+// The ☰ button: three bars, with a dot when the sidebar has a notice.
+bool LauncherDialog::MenuButton(const ImVec2& at, float size, float scale) {
+  ImGui::SetCursorScreenPos(at);
+  const bool clicked = ImGui::InvisibleButton("##menu", ImVec2(size, size));
+  const bool hovered = ImGui::IsItemHovered();
+  ImDrawList* draw = ImGui::GetWindowDrawList();
+  if (hovered || drawer_open_) {
+    draw->AddRectFilled(at, ImVec2(at.x + size, at.y + size), IM_COL32(255, 255, 255, 24),
+                        4.0f * scale);
+  }
+  const float w = size * 0.56f, h = std::max(2.0f, std::round(size * 0.07f));
+  const float x = at.x + (size - w) * 0.5f;
+  for (int i = -1; i <= 1; ++i) {
+    const float y = std::round(at.y + size * 0.5f + i * size * 0.2f - h * 0.5f);
+    draw->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), U32(kPanelText), h * 0.5f);
+  }
+  if (sidebar_notice_) {
+    draw->AddCircleFilled(ImVec2(at.x + size * 0.82f, at.y + size * 0.2f), size * 0.1f,
+                          U32(ImVec4(0.95f, 0.55f, 0.40f, 1.0f)));
+  }
+  return clicked;
+}
+
+// The sidebar as a drawer, in a window of its own above the panel. It is drawn
+// every frame, off screen when closed: Play/Resume and Esc live in it.
+void LauncherDialog::DrawCompact(const ImVec2& display, float scale) {
+  const ImGuiIO& io = ImGui::GetIO();
+  const float target = drawer_open_ ? 1.0f : 0.0f;
+  const float step = std::min(io.DeltaTime * 8.0f, 1.0f);
+  drawer_t_ = drawer_t_ < target ? std::min(target, drawer_t_ + step)
+                                 : std::max(target, drawer_t_ - step);
+  const float ease = 1.0f - (1.0f - drawer_t_) * (1.0f - drawer_t_);
+  const float w = std::floor(std::min(display.x * 0.82f, 320.0f * scale));
+  const bool shown = drawer_t_ > 0.0f;
+  // Closed: only the sidebar's own rectangle, just left of the screen.
+  ImGui::SetNextWindowPos(shown ? ImVec2(0, 0) : ImVec2(-w, 0), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(shown ? display : ImVec2(w, display.y), ImGuiCond_Always);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+  const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                                 ImGuiWindowFlags_NoSavedSettings |
+                                 ImGuiWindowFlags_NoBackground;
+  if (ImGui::Begin("##asura_drawer", nullptr, flags)) {
+    const float x = shown ? -w * (1.0f - ease) : -w;
+    if (shown) {
+      // Dim the panel; a click or tap beside the drawer closes it.
+      ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(0, 0), display,
+                                                IM_COL32(0, 0, 0, int(140 * ease)));
+      if (drawer_open_ && ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0) &&
+          io.MousePos.x > x + w && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId)) {
+        drawer_open_ = false;
+      }
+    }
+    const Page before = page_;
+    DrawSidebar(ImVec2(x, 0), ImVec2(w, display.y), scale);
+    if (page_ != before) drawer_open_ = false;  // a page was picked (or a notice sent there)
+  }
+  ImGui::End();
   ImGui::PopStyleVar(3);
 }
 
@@ -1719,6 +1902,7 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
     }
     if (!notice.empty()) notice += std::string(" ") + T("Game data > Shaders");
   }
+  sidebar_notice_ = !notice.empty();
   if (!notice.empty()) {
     // In the launcher's font (ImGui's own has no Japanese).
     ImGui::PushFont(font_, 20.0f * scale);
@@ -1897,6 +2081,15 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
     pad_capture_ = -1;
     ClosePad();
     SaveSettings();
+    if (!in_game && play_here_) {
+      // The game takes over this process and its window.
+      message_.clear();
+      play_without_shaders_ = false;
+      playing_ = true;
+      imgui_drawer()->RemoveDialog(this);
+      call_in_ui_thread_deferred_([cb = play_here_, s = settings_] { cb(s); });
+      return;
+    }
     if (!in_game) {
       message_.clear();
       if (std::string error; !game_.Start(&error)) message_ = error;
@@ -1911,7 +2104,8 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
   }
 }
 
-void LauncherDialog::DrawPanel(const ImVec2& pos, const ImVec2& size, float scale) {
+float LauncherDialog::DrawPanel(const ImVec2& pos, const ImVec2& size, float scale,
+                                float title_inset) {
   ImDrawList* draw = ImGui::GetWindowDrawList();
   const ImVec2 end(pos.x + size.x, pos.y + size.y);
   float band = std::floor(size.y * 0.08f);
@@ -1956,6 +2150,7 @@ void LauncherDialog::DrawPanel(const ImVec2& pos, const ImVec2& size, float scal
     draw->AddRectFilled(ImVec2(pos.x, pos.y + band), ImVec2(end.x, end.y - band), U32(kPanel));
   }
 
+  title_x = std::max(title_x, pos.x + title_inset);
   // The page title, centered in the top band.
   const float pad = 36 * scale;
   {
@@ -2022,6 +2217,7 @@ void LauncherDialog::DrawPanel(const ImVec2& pos, const ImVec2& size, float scal
   ImGui::PopFont();
   ImGui::PopStyleVar(2);
   ImGui::PopStyleColor(26);
+  return band;
 }
 
 namespace {
@@ -2337,6 +2533,35 @@ void LauncherDialog::DrawController(float scale, bool test) {
     ImGui::SetTooltip("%s", T("Vibrates the controller at this strength."));
   }
 
+  // Held buttons repeat (controller, after the remap).
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted(T("Turbo"));
+  ImGui::SameLine(label_w);
+  {
+    struct TurboButton {
+      const char* name;
+      input::PadControl control;
+    };
+    static const TurboButton kTurbo[] = {{"A", input::kPadA},   {"B", input::kPadB},
+                                         {"X", input::kPadX},   {"Y", input::kPadY},
+                                         {"LB", input::kPadLB}, {"RB", input::kPadRB}};
+    bool first = true;
+    for (const auto& b : kTurbo) {
+      if (!first) ImGui::SameLine(0, 18 * scale);
+      first = false;
+      bool on = settings_.turbo & (1u << b.control);
+      if (ImGui::Checkbox(b.name, &on)) {
+        settings_.turbo = on ? settings_.turbo | (1u << b.control) : settings_.turbo & ~(1u << b.control);
+        input::SetTurboControls(settings_.turbo);
+        SaveSettings();
+      }
+    }
+  }
+  ImGui::SetCursorPosX(label_w);
+  ImGui::PushTextWrapPos(0);
+  ImGui::TextDisabled("%s", T("Hold a ticked button instead of mashing it (controller only)."));
+  ImGui::PopTextWrapPos();
+
   ImGui::Spacing();
   ImGui::TextDisabled("%s", pad_capture_ >= 0
                                 ? T("Press the controller button to use, Esc to cancel.")
@@ -2392,6 +2617,8 @@ void LauncherDialog::DrawController(float scale, bool test) {
     settings_.deadzone_left = settings_.deadzone_right = 0;
     settings_.vibration = 100;
     input::SetVibrationStrength(100);
+    settings_.turbo = 0;
+    input::SetTurboControls(0);
     SetIfUnset("left_stick_deadzone_percentage", "0");
     SetIfUnset("right_stick_deadzone_percentage", "0");
     SaveSettings();
@@ -2869,8 +3096,8 @@ void LauncherDialog::ApplyPicked() {
 // --- Files folder ----------------------------------------------------------------
 
 void LauncherDialog::SetFilesFolder(const std::filesystem::path& folder) {
-  // The default: the folder launcher.cfg is in (the SDK's user folder).
-  const std::filesystem::path fallback = settings_path_.parent_path().lexically_normal();
+  // The default: the SDK's user folder.
+  const std::filesystem::path fallback = platform::DefaultFilesDir().lexically_normal();
   const std::filesystem::path chosen = folder.empty() ? fallback : folder.lexically_normal();
   settings_.data_folder = chosen == fallback ? "" : chosen.string();
   std::snprintf(files_folder_buffer_, sizeof(files_folder_buffer_), "%s", chosen.string().c_str());
@@ -3020,11 +3247,22 @@ void LauncherDialog::DrawSystem(float scale) {
   label(T("Show achievements"));
   changed |= ImGui::Checkbox("##toasts", &settings_.toasts);
   ImGui::BeginDisabled(!settings_.toasts);
-  label(T("Corner"));
+  label(T("Position"));
   {
-    const char* corners[] = {T("Top left"), T("Top right"), T("Bottom left"), T("Bottom right")};
+    const char* positions[] = {T("Top left"), T("Top"),         T("Top right"),
+                               T("Left"),     T("Right"),       T("Bottom left"),
+                               T("Bottom"),   T("Bottom right")};
     ImGui::SetNextItemWidth(260 * scale);
-    changed |= ImGui::Combo("##corner", &settings_.toast_corner, corners, 4);
+    changed |= ImGui::Combo("##toast_position", &settings_.toast_position, positions, 8);
+  }
+  label(T("Size"));
+  {
+    int size = settings_.toast_size;
+    ImGui::SetNextItemWidth(260 * scale);
+    if (ImGui::SliderInt("##toast_size", &size, 50, 250, "%d%%", ImGuiSliderFlags_AlwaysClamp)) {
+      settings_.toast_size = (size + 5) / 10 * 10;
+      changed = true;
+    }
   }
   label(T("Duration"));
   {
@@ -3036,6 +3274,11 @@ void LauncherDialog::DrawSystem(float scale) {
     }
   }
   ImGui::EndDisabled();
+  ImGui::SetCursorPosX(label_w);
+  if (ImGui::Button(T("Show an example"))) {
+    SetToastOptions(ToastOptionsFrom(settings_));
+    PreviewToast(ToastSample());
+  }
 
   SubHeading(HeadingFont(), T("Frame traces"), scale);
   label(T("Save the picture"));
@@ -3080,7 +3323,8 @@ void LauncherDialog::DrawSystem(float scale) {
   if (ResetButton("settings")) {
     const LauncherSettings defaults;
     settings_.toasts = defaults.toasts;
-    settings_.toast_corner = defaults.toast_corner;
+    settings_.toast_position = defaults.toast_position;
+    settings_.toast_size = defaults.toast_size;
     settings_.toast_seconds = defaults.toast_seconds;
     settings_.trace_picture = defaults.trace_picture;
     settings_.trace_notice = defaults.trace_notice;
@@ -3090,7 +3334,7 @@ void LauncherDialog::DrawSystem(float scale) {
   }
 
   if (changed) {
-    SetToastOptions({settings_.toasts, settings_.toast_corner, float(settings_.toast_seconds)});
+    SetToastOptions(ToastOptionsFrom(settings_));
     SetTraceOptions(
         {settings_.trace_notice, settings_.trace_notice_position, settings_.trace_picture});
     SaveSettings();
@@ -3394,6 +3638,24 @@ void LauncherDialog::DrawSettings(float scale) {
   LockedNote("present_letterbox");
   hint(T("On screens that aren't 16:9 (ultrawide, 16:10, 4:3), how the game's 16:9 picture "
          "fills the rest."));
+
+  // The game's own switches (game/graphics_effects.h), read at start.
+  restart_label(T("Effects"));
+  {
+    bool first = true;
+    for (size_t e = 0; e < game::kGraphicsEffectCount; ++e) {
+      if (!first) ImGui::SetCursorPosX(label_w);
+      first = false;
+      bool on = !(settings_.effects_off & (1u << e));
+      if (ImGui::Checkbox(T(game::kGraphicsEffects[e].label), &on)) {
+        settings_.effects_off =
+            on ? settings_.effects_off & ~(1u << e) : settings_.effects_off | (1u << e);
+        changed = true;
+      }
+    }
+  }
+  hint(T("Turning effects off makes the game lighter for weak graphics cards and phones, or "
+         "the picture cleaner. Shadows baked into the levels stay."));
   restart_legend();
   if (ResetButton("display")) {
     const LauncherSettings defaults;
@@ -3406,6 +3668,7 @@ void LauncherDialog::DrawSettings(float scale) {
     settings_.window_height = defaults.window_height;
     settings_.aspect = defaults.aspect;
     settings_.render_scale = defaults.render_scale;
+    settings_.effects_off = defaults.effects_off;
     changed = true;
   }
   ImGui::EndChild();  // ##tab_body
@@ -3463,29 +3726,6 @@ void LauncherDialog::DrawSettings(float scale) {
     hint(T("Above 30 is experimental: parts of the game may run too fast or behave oddly."));
   }
 
-  // Held buttons repeat (controller, after the remap).
-  label(T("Turbo"));
-  {
-    struct TurboButton {
-      const char* name;
-      input::PadControl control;
-    };
-    static const TurboButton kTurbo[] = {{"A", input::kPadA},   {"B", input::kPadB},
-                                         {"X", input::kPadX},   {"Y", input::kPadY},
-                                         {"LB", input::kPadLB}, {"RB", input::kPadRB}};
-    bool first = true;
-    for (const auto& b : kTurbo) {
-      if (!first) ImGui::SameLine(0, 18 * scale);
-      first = false;
-      bool on = settings_.turbo & (1u << b.control);
-      if (ImGui::Checkbox(b.name, &on)) {
-        settings_.turbo = on ? settings_.turbo | (1u << b.control) : settings_.turbo & ~(1u << b.control);
-        input::SetTurboControls(settings_.turbo);
-        changed = true;
-      }
-    }
-  }
-  hint(T("Hold a ticked button instead of mashing it (controller only)."));
 
   restart_label(T("Intro"));
   changed |= ImGui::Checkbox(T("Skip the logos at start"), &settings_.skip_intro);
@@ -3506,11 +3746,9 @@ void LauncherDialog::DrawSettings(float scale) {
     settings_.show_fps = defaults.show_fps;
     settings_.fps_corner = defaults.fps_corner;
     settings_.fps_cap = defaults.fps_cap;
-    settings_.turbo = defaults.turbo;
     settings_.skip_intro = defaults.skip_intro;
     settings_.hide_cursor = defaults.hide_cursor;
     settings_.mute_background = defaults.mute_background;
-    input::SetTurboControls(settings_.turbo);
     changed = true;
   }
   ImGui::EndChild();  // ##tab_body
@@ -3580,7 +3818,12 @@ uint64_t FolderBytes(const std::filesystem::path& dir, std::filesystem::file_tim
 
 std::string FormatTime(std::filesystem::file_time_type t) {
   if (t == std::filesystem::file_time_type::min()) return "-";
+#ifdef _WIN32
+  // MSVC's file_clock has no to_sys (clock_cast covers it).
   const auto sys = std::chrono::clock_cast<std::chrono::system_clock>(t);
+#else
+  const auto sys = std::chrono::file_clock::to_sys(t);
+#endif
   const std::time_t tt = std::chrono::system_clock::to_time_t(
       std::chrono::time_point_cast<std::chrono::system_clock::duration>(sys));
   const std::tm tm = platform::LocalTime(tt);

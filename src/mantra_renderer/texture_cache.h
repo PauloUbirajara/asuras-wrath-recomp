@@ -177,6 +177,7 @@ class TextureCache {
   const rex::ui::vulkan::VulkanDevice* device_ = nullptr;
   BufferCache* watcher_ = nullptr;
   PFN_vkCmdCopyImage cmd_copy_image_ = nullptr;
+  uint8_t bc_support_ = 0;  // BcSupportBits: BC formats sampled as they are
   ResolvedSurfaces* resolved_ = nullptr;
   std::unordered_map<Key, std::unique_ptr<Texture>, KeyHash> textures_;
   // Images replaced when a texture changes between a resolve copy (render

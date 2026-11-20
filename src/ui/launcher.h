@@ -2,7 +2,7 @@
 // Launcher shown before the game starts (AsuraWrathApp::OnFinalizePaths), in
 // a window: a sidebar (Controls, Achievements, Saves, Settings, About,
 // Play) and a content panel, in the language chosen in Settings
-// (launcher_text.h). Settings are kept in <user data>/launcher.cfg and applied at startup
+// (launcher_text.h). Settings are kept in launcher.cfg next to the launcher (LauncherSettings::Locate) and applied at startup
 // as defaults, so command-line flags and the config TOML still win.
 //
 // Text uses the game's fonts when they were extracted (MediumFont.awf,
@@ -31,6 +31,7 @@
 #include <vector>
 
 #include <imgui.h>
+#include <rex/system/achievement_manager.h>
 #include <rex/ui/imgui_dialog.h>
 #include <rex/ui/style.h>
 #include <rex/ui/window_listener.h>
@@ -63,6 +64,7 @@ struct LauncherSettings {
   int monitor = 0;         // 1-based, 0 = the default one
   bool keyboard = false;  // mnk_mode
   AspectMode aspect = AspectMode::kFit;
+  int screen_padding = 0;  // Android: a black border around the picture, in dp (GameActivity)
   int window_width = 0, window_height = 0;  // windowed size, 0 = default (1280x720)
   uint32_t language = 1;                    // user_language (XLanguage), 1 = English
   bool achievements_grid = false;           // Achievements page: grid instead of list
@@ -76,6 +78,7 @@ struct LauncherSettings {
   int fps_corner = 0;                        // 0 top left, 1 top right, 2 bottom left, 3 bottom right
   int fps_cap = 30;                          // frame rate limit, 30 = the game's, 0 = unlimited
   bool skip_intro = false;                   // skip the logos and the autosave notice at start
+  uint32_t effects_off = 0;                  // bit n = game/graphics_effects.h kGraphicsEffects[n] off (fx_<key>=0)
   bool detailed_logs = false;                // Game data > Logs: log_level debug, for bug reports
   uint32_t turbo = 0;                        // Turbo: held controls repeat (bit = PadControl)
   bool hide_cursor = true;                   // mouse cursor hides while it isn't moving, in game
@@ -83,7 +86,14 @@ struct LauncherSettings {
   // Internal resolution, % of the game's 1280x720 (5..400, steps of 5).
   int render_scale = 100;
   bool toasts = true;                        // achievement pop-ups
-  int toast_corner = 3;                      // 0 top left, 1 top right, 2 bottom left, 3 bottom right
+  // 0 top left, 1 top, 2 top right, 3 left, 4 right, 5 bottom left, 6 bottom,
+  // 7 bottom right (toast_position; the older toast_corner is read too).
+  int toast_position = 7;
+#ifdef __ANDROID__
+  int toast_size = 140;                      // percent; larger on phones' small screens
+#else
+  int toast_size = 100;                      // percent of the 300x70 (at 720p) toast
+#endif
   double toast_seconds = 4.5;                // how long each pop-up stays
   // Settings > Frame traces.
   bool trace_picture = true;                 // save the traced frame as <trace>.png
@@ -91,6 +101,11 @@ struct LauncherSettings {
   int trace_notice_position = 1;             // 0..2 top left/centre/right, 3..5 bottom
 
   static std::filesystem::path PathIn(const std::filesystem::path& user_data_root);
+  // Where launcher.cfg lives: next to the launcher (platform::LauncherDir())
+  // when that folder is writable, else in the SDK user folder. One in the user
+  // folder from an earlier version moves next to the launcher.
+  // $ASURA_LAUNCHER_CONFIG (a file) wins, for test runs.
+  static std::filesystem::path Locate(const std::filesystem::path& user_data_root);
   bool Load(const std::filesystem::path& path);  // false if missing
   bool Save(const std::filesystem::path& path) const;
   std::string Serialize() const;  // the file's text (Save)
@@ -172,8 +187,17 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   // be destroyed by it.
   void SetInGame(std::function<bool(const LauncherSettings&)> needs_restart,
                  std::function<void(const LauncherSettings&, bool restart)> on_resume);
-  // Esc again: like Resume (changes that need a restart wait for the next start).
-  void RequestResume() { resume_requested_ = true; }
+  // Where the game can't run as another process (Android): Play calls
+  // `play` with the chosen settings instead, on the UI thread after the frame
+  // with the click; the launcher is detached by then and may be destroyed.
+  void SetPlayInThisProcess(std::function<void(const LauncherSettings&)> play) {
+    play_here_ = std::move(play);
+  }
+  // Esc / Android's Back: closes what is on top (a key being rebound, the
+  // drawer, a confirmation), else, in game, resumes like Resume (changes that
+  // need a restart wait for the next start). Nothing on the launcher's own
+  // first page.
+  void Back();
   // The game Play started (another process) is running.
   bool PlayRunning() const { return game_.Running(); }
 
@@ -297,13 +321,24 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   void DrawStory(const SaveSummary& progress, float label_w, float scale);
   void DrawSettings(float scale);
   void LoadAchievements();
+  // Settings' "Show an example": the first achievement (its cached icon), or a placeholder.
+  rex::system::AchievementEvent ToastSample();
   void UseDroppedPath(const std::filesystem::path& path);
   // In game: Quit the game (top right) and its confirmation.
   void DrawQuit(float scale);
   // In game: the confirmation before Restart.
   bool DrawRestartConfirm(float scale);
   void DrawSidebar(const ImVec2& pos, const ImVec2& size, float scale);
-  void DrawPanel(const ImVec2& pos, const ImVec2& size, float scale);
+  // title_inset: room kept at the band's left (the compact layout's menu
+  // button). Returns the top band's height.
+  float DrawPanel(const ImVec2& pos, const ImVec2& size, float scale, float title_inset = 0.0f);
+  // Narrow or portrait windows: the sidebar becomes a drawer over the panel,
+  // opened by a menu button in the panel's top band.
+  void DrawCompact(const ImVec2& display, float scale);
+  bool MenuButton(const ImVec2& at, float size, float scale);
+  bool drawer_open_ = false;
+  float drawer_t_ = 0.0f;           // 0 closed .. 1 open (slides)
+  bool sidebar_notice_ = false;     // the sidebar shows a notice (last frame)
   void DrawControls(float scale);
   // test: the live view (Controls > Test); else the bindings and sliders.
   void DrawController(float scale, bool test);
@@ -427,6 +462,7 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
     bool Running() const { return process.Running(); }
   };
   GameProcess game_;
+  std::function<void(const LauncherSettings&)> play_here_;  // SetPlayInThisProcess
   std::filesystem::file_time_type settings_saved_time_{};  // after our last save
   bool playing_ = false;
   bool play_without_shaders_ = false;  // Play was pressed once without a shader cache

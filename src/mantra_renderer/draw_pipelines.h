@@ -24,11 +24,13 @@ namespace rex::ui::vulkan {
 class VulkanDevice;
 }
 
+#include "rendering_backend.h"
+
 namespace mantra {
 
 inline constexpr uint32_t kMaxVertexBindings = 16;
 inline constexpr uint32_t kMaxVertexAttributes = 32;
-inline constexpr uint32_t kMaxColorAttachments = 4;
+inline constexpr uint32_t kMaxColorAttachments = kMaxPassColors;
 
 // Everything a pipeline depends on. Compared and hashed bytewise: always
 // zero-initialize (padding included) before filling.
@@ -78,7 +80,8 @@ struct PipelineKey {
 
 class DrawPipelines {
  public:
-  bool Initialize(const rex::ui::vulkan::VulkanDevice* device, VkPipelineLayout layout);
+  bool Initialize(const rex::ui::vulkan::VulkanDevice* device, VkPipelineLayout layout,
+                  RenderingBackend* rendering);
   void Shutdown();
 
   // Finds or creates the pipeline (VK_NULL_HANDLE if creation failed; failures
@@ -120,6 +123,7 @@ class DrawPipelines {
   };
 
   const rex::ui::vulkan::VulkanDevice* device_ = nullptr;
+  RenderingBackend* rendering_ = nullptr;
   VkPipelineLayout layout_ = VK_NULL_HANDLE;
   VkShaderModule rect_list_gs_ = VK_NULL_HANDLE;
   std::unordered_map<PipelineKey, VkPipeline, KeyHash> pipelines_;

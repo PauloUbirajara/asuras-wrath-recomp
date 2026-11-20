@@ -279,7 +279,14 @@ bool TranslateAll(std::vector<Shader*>& shaders, const fs::path& work, const fs:
                   unsigned jobs, const ChildLimits& limits, size_t base,
                   const std::function<void()>& checkpoint) {
   using Clock = std::chrono::steady_clock;
+#ifdef __ANDROID__
+  // platform::ExePath() is the game's stand-in on Android; this tool is a
+  // real program there (libmantra_shadergen.so in the app's library folder).
+  std::error_code exe_ec;
+  const fs::path exe = fs::read_symlink("/proc/self/exe", exe_ec);
+#else
   const fs::path exe = asura::platform::ExePath();
+#endif
   struct Running {
     std::unique_ptr<asura::platform::Process> process;
     size_t index;

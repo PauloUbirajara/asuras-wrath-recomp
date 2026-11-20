@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The desktop launcher's palette (src/ui/launcher.cpp UsePalette, kAccent). -->
+<resources>
+    <color name="background">#FF1E1E1F</color>
+    <color name="sidebar">#FF19191B</color>
+    <color name="sidebar_text">#FFEBE6DB</color>
+    <color name="sidebar_text_selected">#FFFFEDD6</color>
+    <color name="accent">#FFCC542E</color>
+    <!-- On the parchment panel. -->
+    <color name="panel">#FF998F80</color>
+    <color name="panel_text">#FF211A14</color>
+    <color name="panel_text_dim">#FF453B30</color>
+    <color name="field">#FFC2B8A6</color>
+    <color name="field_pressed">#FFD1C7B5</color>
+    <color name="mark">#FF9E290F</color>
+    <color name="good">#FF2F5E2A</color>
+    <color name="bad">#FF8C1F10</color>
+    <!-- In game: the paused game behind the menu, dimmed; the sidebar over it. -->
+    <color name="in_game_dim">#B3000000</color>
+    <color name="in_game_sidebar">#E619191B</color>
+    <color name="in_game_panel">#EB998F80</color>
+</resources>

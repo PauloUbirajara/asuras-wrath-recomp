@@ -17,6 +17,9 @@
 // time the game needs on integrated GPUs.
 
 #include <chrono>
+#include <filesystem>
+#include <string>
+#include <unordered_map>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -40,11 +43,18 @@ namespace asura::ui {
 // Settings > Achievement pop-ups (from the launcher settings).
 struct ToastOptions {
   bool enabled = true;
-  int corner = 3;  // 0 top left, 1 top right, 2 bottom left, 3 bottom right
+  // 0 top left, 1 top, 2 top right, 3 left, 4 right, 5 bottom left,
+  // 6 bottom, 7 bottom right.
+  int position = 7;
+  float size = 1.0f;  // times the 300x70 (at 720p) toast
   float seconds = 4.5f;
 };
 void SetToastOptions(const ToastOptions& options);
 ToastOptions GetToastOptions();
+
+// Shows `sample` as a toast now (Settings' "Show an example"), on the toast
+// dialog that exists (in game, or the launcher's). False if there is none.
+bool PreviewToast(const rex::system::AchievementEvent& sample);
 
 class GameToastDialog : public rex::ui::AchievementNotificationDialog {
  public:
@@ -55,6 +65,8 @@ class GameToastDialog : public rex::ui::AchievementNotificationDialog {
 
   // Thread-safe (guest threads unlock achievements).
   void Push(const rex::system::AchievementEvent& event) override;
+  // Shown even with the pop-ups turned off (Settings' example).
+  void PushPreview(const rex::system::AchievementEvent& event);
 
  protected:
   void OnDraw(ImGuiIO& io) override;
@@ -67,16 +79,21 @@ class GameToastDialog : public rex::ui::AchievementNotificationDialog {
   struct Pending {
     rex::system::AchievementEvent event;
     std::optional<std::chrono::steady_clock::time_point> visible_since;
+    bool preview = false;
   };
+  void Queue(const rex::system::AchievementEvent& event, bool preview);
 
   static constexpr float kFadeIn = 0.3f, kFadeOut = 0.5f;
 
   Image LoadImage(const char* name);
+  Image LoadImageFile(const std::filesystem::path& path);
 
   rex::ui::ImmediateDrawer* immediate_drawer_;
   ImFont* font_;
   rex::ui::AchievementIconCache icon_cache_;
   Image background_, portrait_;
+  // Icons given as a file (examples from the launcher, before the game runs).
+  std::unordered_map<std::string, Image> file_icons_;
   std::function<void(std::function<void()>)> call_in_ui_thread_;
   // Cleared by the destructor, so attach calls queued before it do nothing.
   std::shared_ptr<bool> alive_ = std::make_shared<bool>(true);

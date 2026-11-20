@@ -58,6 +58,8 @@ add_library(rexgpu-mantra SHARED
     shader_cache.cpp
     vk_image.cpp
     copy_pipelines.cpp
+    rendering_backend_dynamic.cpp
+    rendering_backend_render_pass.cpp
     render_targets.cpp
     shader_interface.cpp
     solid_fill.cpp
@@ -66,8 +68,9 @@ add_library(rexgpu-mantra SHARED
     pipeline_store.cpp
     guest_draw.cpp
     texture_cache.cpp
+    texture_decode_bc.cpp
     memexport.cpp
-    $<IF:$<PLATFORM_ID:Windows>,../platform/platform_win.cpp,../platform/platform_posix.cpp>  # the cache folder
+    ${ASURA_PLATFORM_SOURCES}  # the cache folder
     ${MANTRA_SHADER_INCS}
     ${MANTRA_BASE_SOURCES}
 )

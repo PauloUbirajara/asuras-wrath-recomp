@@ -9,13 +9,13 @@
 #include <string>
 #include <vector>
 
-#include <rex/filesystem/devices/host_path_device.h>
 #include <rex/filesystem/vfs.h>
 #include <rex/logging.h>
 #include <rex/runtime.h>
 
 #include "../platform/platform.h"
 #include "../ui/game_assets.h"
+#include "game_files.h"
 
 namespace asura::game {
 namespace {
@@ -74,11 +74,6 @@ void SkipIntroMovies(rex::Runtime* runtime) {
   namespace fs = std::filesystem;
   auto* vfs = runtime ? runtime->file_system() : nullptr;
   if (!vfs) return;
-  std::string root;
-  if (!vfs->FindSymbolicLink("d:", root)) {
-    REXLOG_WARN("Skip the intro: d: isn't mounted");
-    return;
-  }
   const fs::path movies = runtime->game_data_root() / "BCGame" / "Movies";
   const fs::path cache = asura::ui::GameCacheRoot();
   std::error_code ec;
@@ -86,36 +81,30 @@ void SkipIntroMovies(rex::Runtime* runtime) {
     REXLOG_WARN("Skip the intro: no {} or cache folder", movies.string());
     return;
   }
-  // Rebuilt each start: the game folder may have changed.
+  // Rebuilt each start: the game folder may have changed. Only the cut
+  // movies go in it; each takes the place of the game's own (game_files.h),
+  // so the rest of Movies stays the game's and nothing needs a host symlink.
   const fs::path folder = cache / "movies";
   fs::remove_all(folder, ec);
   fs::create_directories(folder, ec);
-  int linked = 0, skipped = 0;
+  std::vector<std::string> cut;
   for (const auto& entry : fs::directory_iterator(movies, ec)) {
     const std::string name = entry.path().filename().string();
-    if (Skipped(name) && entry.path().extension() == ".bik") {
-      // A missing movie stalls the start (the player waits for it).
-      if (WriteFirstFrameOnly(entry.path(), folder / name)) {
-        ++skipped;
-        continue;
-      }
+    if (!Skipped(name) || entry.path().extension() != ".bik") continue;
+    // A missing movie stalls the start (the player waits for it).
+    if (WriteFirstFrameOnly(entry.path(), folder / name)) {
+      cut.push_back(name);
+    } else {
       REXLOG_WARN("Skip the intro: cannot shorten {}, keeping it", name);
     }
-    if (std::string error; !platform::LinkFile(fs::absolute(entry.path()), folder / name, &error)) {
-      REXLOG_WARN("Skip the intro: cannot link {}: {}", name, error);
-      return;
-    }
-    ++linked;
   }
-  auto device = std::make_unique<rex::filesystem::HostPathDevice>(kDevice, folder, true);
-  if (!device->Initialize() || !vfs->RegisterDevice(std::move(device))) {
-    REXLOG_WARN("Skip the intro: cannot mount {}", folder.string());
+  if (cut.empty()) {
+    REXLOG_WARN("Skip the intro: no startup movies found in {}", movies.string());
     return;
   }
-  // d: is replaced first, then this (links resolve one after the other).
-  vfs->RegisterSymbolicLink(root + "\\BCGame\\Movies", kDevice);
-  REXLOG_INFO("Skip the intro: {} startup movies cut to one frame ({} others linked, in {})", skipped, linked,
-              folder.string());
+  const size_t replaced = ReplaceGameFiles(runtime, kDevice, folder, "BCGame\\Movies", cut);
+  if (!replaced) return;
+  REXLOG_INFO("Skip the intro: {} startup movies cut to one frame (in {})", replaced, folder.string());
 }
 
 }  // namespace asura::game

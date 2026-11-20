@@ -21,6 +21,7 @@
 
 #include <rex/graphics/xenos.h>
 
+#include "rendering_backend.h"
 #include "vk_image.h"
 
 namespace mantra {
@@ -93,7 +94,7 @@ struct ResolvedSurface {
 
 class RenderTargetPool {
  public:
-  bool Initialize(const rex::ui::vulkan::VulkanDevice* device);
+  bool Initialize(const rex::ui::vulkan::VulkanDevice* device, RenderingBackend* rendering);
   void Shutdown();
 
   // Host format of a guest color render-target format; its size class decides
@@ -197,6 +198,7 @@ class RenderTargetPool {
                        const VkRect2D& rect, const VkClearValue& value,
                        VkImageAspectFlags aspects = 0, bool defer = false);
 
+  RenderingBackend* rendering_ = nullptr;
   const rex::ui::vulkan::VulkanDevice* device_ = nullptr;
   VkFormat depth_format_ = VK_FORMAT_UNDEFINED;
   std::unordered_map<uint64_t, std::unique_ptr<RenderTarget>> targets_;

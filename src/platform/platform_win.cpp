@@ -115,6 +115,10 @@ std::filesystem::path ExePath() {
   }
 }
 
+std::filesystem::path LauncherDir() { return ExePath().parent_path(); }
+
+bool CanStartSelf() { return true; }
+
 std::vector<std::string> ExeArgs() {
   std::vector<std::string> args;
   int count = 0;

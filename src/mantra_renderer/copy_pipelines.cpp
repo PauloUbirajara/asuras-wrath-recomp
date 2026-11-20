@@ -25,16 +25,12 @@ const uint32_t kCopyMsFs[] = {
 
 }  // namespace
 
-bool CopyPipelines::Initialize(const rex::ui::vulkan::VulkanDevice* device) {
+bool CopyPipelines::Initialize(const rex::ui::vulkan::VulkanDevice* device,
+                               RenderingBackend* rendering) {
   device_ = device;
+  rendering_ = rendering;
   const auto& dfn = device->functions();
   const VkDevice vk_device = device->device();
-
-  if (!device->properties().dynamicRendering) {
-    MANTRA_ERROR("the Vulkan device has no dynamic rendering (Vulkan 1.3 or "
-                 "VK_KHR_dynamic_rendering is required)");
-    return false;
-  }
 
   vs_ = rex::ui::vulkan::util::CreateShaderModule(device, kFullscreenVs, sizeof(kFullscreenVs));
   fs_ = rex::ui::vulkan::util::CreateShaderModule(device, kCopyFs, sizeof(kCopyFs));
@@ -142,12 +138,15 @@ VkPipeline CopyPipelines::GetPipeline(VkFormat dst_format, bool src_multisampled
   dynamic.dynamicStateCount = 2;
   dynamic.pDynamicStates = dynamic_states;
 
-  VkPipelineRenderingCreateInfo rendering = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-  rendering.colorAttachmentCount = 1;
-  rendering.pColorAttachmentFormats = &dst_format;
-
   VkGraphicsPipelineCreateInfo info = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-  info.pNext = &rendering;
+  PassFormats formats;
+  formats.color_count = 1;
+  formats.color[0] = dst_format;
+  PipelineTarget target;
+  if (!rendering_->PreparePipeline(formats, info, target)) {
+    pipelines_.emplace(key, VK_NULL_HANDLE);
+    return VK_NULL_HANDLE;
+  }
   info.stageCount = 2;
   info.pStages = stages;
   info.pVertexInputState = &vertex_input;
@@ -218,24 +217,20 @@ bool CopyPipelines::Record(VkCommandBuffer cmd, VkDescriptorPool descriptor_pool
   write.pImageInfo = &image_info;
   dfn.vkUpdateDescriptorSets(vk_device, 1, &write, 0, nullptr);
 
-  VkRenderingAttachmentInfo attachment = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-  attachment.imageView = dst_view;
-  attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-  attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-  attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-  VkRenderingInfo rendering = {VK_STRUCTURE_TYPE_RENDERING_INFO};
-  rendering.renderArea.offset = {rect.x, rect.y};
-  rendering.renderArea.extent = {rect.width, rect.height};
-  rendering.layerCount = 1;
-  rendering.colorAttachmentCount = 1;
-  rendering.pColorAttachments = &attachment;
-  dfn.vkCmdBeginRendering(cmd, &rendering);
+  PassBegin pass;
+  pass.formats.color_count = 1;
+  pass.formats.color[0] = dst_format;
+  pass.color[0] = {dst_view, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+  pass.extent = {dst_width, dst_height};
+  pass.area.offset = {rect.x, rect.y};
+  pass.area.extent = {rect.width, rect.height};
+  rendering_->Begin(cmd, pass);
 
   // The viewport spans the whole destination so gl_FragCoord is in
   // destination pixels; the scissor picks the rectangle.
   VkViewport vp = {0.0f, 0.0f, float(dst_width), float(dst_height), 0.0f, 1.0f};
   dfn.vkCmdSetViewport(cmd, 0, 1, &vp);
-  VkRect2D scissor = rendering.renderArea;
+  VkRect2D scissor = pass.area;
   dfn.vkCmdSetScissor(cmd, 0, 1, &scissor);
   dfn.vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
   dfn.vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1, &set,
@@ -243,7 +238,7 @@ bool CopyPipelines::Record(VkCommandBuffer cmd, VkDescriptorPool descriptor_pool
   dfn.vkCmdPushConstants(cmd, pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                          sizeof(constants), &constants);
   dfn.vkCmdDraw(cmd, 3, 1, 0, 0);
-  dfn.vkCmdEndRendering(cmd);
+  rendering_->End(cmd);
   return true;
 }
 

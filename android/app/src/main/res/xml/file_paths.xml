@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Game data › Logs › Share: a log, wherever the Files folder is. -->
+<paths>
+    <root-path name="root" path="." />
+</paths>

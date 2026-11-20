@@ -1,12 +1,13 @@
 #pragma once
 // Texel-copy pipelines (shaders/copy.frag) used for EDRAM resolves and for
 // presenting a resolved frontbuffer. One graphics pipeline per destination
-// format and source sample mode, rendered with dynamic rendering.
+// format and source sample mode, rendered through the RenderingBackend.
 #include <cstdint>
 #include <unordered_map>
 
 #include <rex/ui/vulkan/api.h>
 
+#include "rendering_backend.h"
 #include "vk_image.h"
 
 namespace rex::ui::vulkan {
@@ -38,7 +39,7 @@ struct CopyRect {
 
 class CopyPipelines {
  public:
-  bool Initialize(const rex::ui::vulkan::VulkanDevice* device);
+  bool Initialize(const rex::ui::vulkan::VulkanDevice* device, RenderingBackend* rendering);
   void Shutdown();
 
   VkDescriptorSetLayout descriptor_set_layout() const { return set_layout_; }
@@ -60,6 +61,7 @@ class CopyPipelines {
   VkPipeline GetPipeline(VkFormat dst_format, bool src_multisampled);
 
   const rex::ui::vulkan::VulkanDevice* device_ = nullptr;
+  RenderingBackend* rendering_ = nullptr;
   VkShaderModule vs_ = VK_NULL_HANDLE;
   VkShaderModule fs_ = VK_NULL_HANDLE;
   VkShaderModule fs_ms_ = VK_NULL_HANDLE;

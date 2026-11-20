@@ -1,0 +1,652 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The page on the parchment panel. A page with sections (Game data,
+     Controls, Settings) first shows their list (section_list, filled by
+     LauncherActivity); a section then shows alone, its name after the page's
+     in the title (Game data › Shader cache). One child shows at a time. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:theme="@style/ThemeOverlay.AsurasWrath.Paper"
+    android:paddingVertical="8dp">
+
+    <!-- A page's sections, as rows (LauncherActivity.showList). -->
+    <LinearLayout
+        android:id="@+id/section_list"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:showDividers="middle"
+        android:divider="@drawable/menu_gap" />
+
+    <!-- Game data › Folders: the game, the Files folder under it. -->
+    <LinearLayout
+        android:id="@+id/section_folders"
+        style="@style/Section">
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/game_folder" />
+            <TextView android:id="@+id/game_path" style="@style/Text.Paper.Path"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:textIsSelectable="true" />
+            <TextView android:id="@+id/game_status"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="4dp" android:textSize="15sp" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:text="@string/game_hint" />
+            <Button android:id="@+id/game_choose" style="@style/Widget.Paper.Button"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:text="@string/choose_folder" />
+        </LinearLayout>
+
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/section_files" />
+            <TextView android:id="@+id/files_path" style="@style/Text.Paper.Path"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:textIsSelectable="true" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:text="@string/files_hint" />
+            <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:orientation="horizontal">
+                <Button android:id="@+id/files_choose" style="@style/Widget.Paper.Button"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="@string/choose_folder" />
+                <Button android:id="@+id/files_default" style="@style/Widget.Paper.Button"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp" android:text="@string/use_default" />
+            </LinearLayout>
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Game data › Shader cache: build it here or import one. -->
+    <LinearLayout
+        android:id="@+id/section_shaders"
+        style="@style/Section">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView android:id="@+id/shaders_status"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:textSize="17sp" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:text="@string/shaders_hint" />
+            <!-- The build on the phone (ShaderBuildService): progress, then the buttons. -->
+            <com.google.android.material.progressindicator.LinearProgressIndicator
+                android:id="@+id/shaders_progress"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="10dp" android:visibility="gone"
+                app:indicatorColor="@color/accent" app:trackColor="@color/field" />
+            <TextView android:id="@+id/shaders_build_status" style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="4dp" android:visibility="gone" />
+            <LinearLayout
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="2dp" android:orientation="vertical">
+                <Button android:id="@+id/shaders_build" style="@style/Widget.Paper.Button"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="@string/shaders_build" />
+                <Button android:id="@+id/shaders_start_over" style="@style/Widget.Paper.Button"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="@string/shaders_build_start_over"
+                    android:visibility="gone" />
+                <Button android:id="@+id/shaders_import" style="@style/Widget.Paper.Button"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="@string/shaders_import" />
+            </LinearLayout>
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Label"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/location" />
+            <TextView android:id="@+id/shaders_path" style="@style/Text.Paper.Path"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:textIsSelectable="true" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Game data › Saves: the save (when, size, delete). -->
+    <LinearLayout
+        android:id="@+id/section_saves"
+        style="@style/Section">
+        <TextView style="@style/Text.Paper.Hint"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="@string/saves_hint" />
+        <LinearLayout android:id="@+id/saves_list"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:showDividers="middle"
+            android:divider="@drawable/section_gap" />
+    </LinearLayout>
+
+    <!-- Game data › Progress: the save's story (GameProgress), as the desktop's Saves › Progress. -->
+    <LinearLayout
+        android:id="@+id/section_progress"
+        style="@style/Section">
+        <LinearLayout android:id="@+id/progress_list"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical" />
+    </LinearLayout>
+
+    <!-- Game data › Logs: where they are, detailed logs, the list. -->
+    <LinearLayout
+        android:id="@+id/section_logs"
+        style="@style/Section">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Label"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/location" />
+            <TextView android:id="@+id/logs_path" style="@style/Text.Paper.Path"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:textIsSelectable="true" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:text="@string/logs_hint" />
+            <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginTop="8dp" android:orientation="horizontal">
+                <Button android:id="@+id/logs_open" style="@style/Widget.Paper.Button"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:layout_marginEnd="8dp" android:text="@string/open_folder" />
+                <Button android:id="@+id/logs_delete" style="@style/Widget.Paper.Toggle"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="@string/delete_all" />
+            </LinearLayout>
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/detailed_logs"
+                style="@style/Widget.Paper.Switch" android:text="@string/detailed_logs" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/detailed_logs_hint" />
+        </LinearLayout>
+        <LinearLayout android:id="@+id/logs_list"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:showDividers="middle"
+            android:divider="@drawable/menu_gap" />
+    </LinearLayout>
+
+    <!-- Game data › Traces: one frame's renderer log (and picture) for bug
+         reports, as the desktop's; in game: Back › Trace. -->
+    <LinearLayout
+        android:id="@+id/section_traces"
+        style="@style/Section">
+        <TextView style="@style/Text.Paper.Hint"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="@string/traces_hint" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <Button android:id="@+id/trace_now" style="@style/Widget.Paper.Button"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/trace_now" />
+            <TextView android:id="@+id/trace_status" style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content" />
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Label"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/location" />
+            <TextView android:id="@+id/traces_path" style="@style/Text.Paper.Path"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:textIsSelectable="true" />
+            <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginTop="8dp" android:orientation="horizontal">
+                <Button android:id="@+id/traces_open" style="@style/Widget.Paper.Button"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:layout_marginEnd="8dp" android:text="@string/open_folder" />
+                <Button android:id="@+id/traces_delete" style="@style/Widget.Paper.Toggle"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="@string/delete_all" />
+            </LinearLayout>
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/trace_picture"
+                style="@style/Widget.Paper.Switch" android:text="@string/trace_picture" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/trace_picture_hint" />
+        </LinearLayout>
+        <LinearLayout android:id="@+id/traces_list"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:showDividers="middle"
+            android:divider="@drawable/menu_gap" />
+    </LinearLayout>
+
+    <!-- Controls › Test: what the controller sends, as the game sees it. -->
+    <LinearLayout
+        android:id="@+id/section_test"
+        style="@style/Section">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView android:id="@+id/pad_name" style="@style/Text.Paper.Body"
+                android:layout_width="match_parent" android:layout_height="wrap_content" />
+            <org.asurawrath.recompiled.PadTestView android:id="@+id/pad_test"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="12dp" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="12dp" android:text="@string/pad_test_hint" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Controls › Controller: vibration, the stick deadzones. -->
+    <LinearLayout
+        android:id="@+id/section_controller"
+        style="@style/Section">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/vibration" />
+            <TextView android:id="@+id/vibration_value" style="@style/Text.Paper.Hint"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" />
+            <com.google.android.material.slider.Slider
+                android:id="@+id/vibration"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:valueFrom="0" android:valueTo="200" android:stepSize="10"
+                app:labelBehavior="gone" app:tickVisible="false" />
+            <Button android:id="@+id/vibration_test" style="@style/Widget.Paper.Button"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/vibration_test" />
+        </LinearLayout>
+        <!-- Turbo: held buttons repeat (turbo=a,b,... in launcher.cfg, pad_remap.cpp). -->
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/turbo" />
+            <com.google.android.material.chip.ChipGroup android:id="@+id/turbo_chips"
+                android:layout_width="match_parent" android:layout_height="wrap_content">
+                <com.google.android.material.chip.Chip android:id="@+id/turbo_a" style="@style/Widget.Paper.Chip" android:text="A" />
+                <com.google.android.material.chip.Chip android:id="@+id/turbo_b" style="@style/Widget.Paper.Chip" android:text="B" />
+                <com.google.android.material.chip.Chip android:id="@+id/turbo_x" style="@style/Widget.Paper.Chip" android:text="X" />
+                <com.google.android.material.chip.Chip android:id="@+id/turbo_y" style="@style/Widget.Paper.Chip" android:text="Y" />
+                <com.google.android.material.chip.Chip android:id="@+id/turbo_lb" style="@style/Widget.Paper.Chip" android:text="LB" />
+                <com.google.android.material.chip.Chip android:id="@+id/turbo_rb" style="@style/Widget.Paper.Chip" android:text="RB" />
+            </com.google.android.material.chip.ChipGroup>
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/turbo_hint" />
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/deadzone_left" />
+            <TextView android:id="@+id/deadzone_left_value" style="@style/Text.Paper.Hint"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" />
+            <com.google.android.material.slider.Slider
+                android:id="@+id/deadzone_left"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:valueFrom="0" android:valueTo="50" android:stepSize="1"
+                app:labelBehavior="gone" app:tickVisible="false" />
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginTop="12dp" android:text="@string/deadzone_right" />
+            <TextView android:id="@+id/deadzone_right_value" style="@style/Text.Paper.Hint"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" />
+            <com.google.android.material.slider.Slider
+                android:id="@+id/deadzone_right"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:valueFrom="0" android:valueTo="50" android:stepSize="1"
+                app:labelBehavior="gone" app:tickVisible="false" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/deadzone_hint" />
+        </LinearLayout>
+        <TextView style="@style/Text.Paper.Hint"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="@string/remap_hint" />
+    </LinearLayout>
+
+    <!-- Settings › System: language, achievement pop-ups. -->
+    <LinearLayout
+        android:id="@+id/section_system"
+        style="@style/Section">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <com.google.android.material.textfield.TextInputLayout
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:hint="@string/language"
+                app:boxStrokeColor="@color/panel_text"
+                app:boxCornerRadiusTopStart="0dp" app:boxCornerRadiusTopEnd="0dp"
+                app:boxCornerRadiusBottomStart="0dp" app:boxCornerRadiusBottomEnd="0dp">
+                <com.google.android.material.textfield.MaterialAutoCompleteTextView
+                    android:id="@+id/language"
+                    android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:inputType="none" android:textColor="@color/panel_text" />
+            </com.google.android.material.textfield.TextInputLayout>
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:text="@string/language_hint" />
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/toasts"
+                style="@style/Widget.Paper.Switch" android:text="@string/toasts" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/toasts_hint" />
+        </LinearLayout>
+        <!-- Achievement pop-ups: where, how big, how long (toast_position, toast_size, toast_seconds). -->
+        <LinearLayout android:id="@+id/toast_options" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/toast_position" />
+            <com.google.android.material.chip.ChipGroup android:id="@+id/toast_position"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                app:singleSelection="true" app:selectionRequired="true">
+                <com.google.android.material.chip.Chip android:id="@+id/toast_pos_0" style="@style/Widget.Paper.Chip"
+                    android:text="@string/toast_pos_0" />
+                <com.google.android.material.chip.Chip android:id="@+id/toast_pos_1" style="@style/Widget.Paper.Chip"
+                    android:text="@string/toast_pos_1" />
+                <com.google.android.material.chip.Chip android:id="@+id/toast_pos_2" style="@style/Widget.Paper.Chip"
+                    android:text="@string/toast_pos_2" />
+                <com.google.android.material.chip.Chip android:id="@+id/toast_pos_3" style="@style/Widget.Paper.Chip"
+                    android:text="@string/toast_pos_3" />
+                <com.google.android.material.chip.Chip android:id="@+id/toast_pos_4" style="@style/Widget.Paper.Chip"
+                    android:text="@string/toast_pos_4" />
+                <com.google.android.material.chip.Chip android:id="@+id/toast_pos_5" style="@style/Widget.Paper.Chip"
+                    android:text="@string/toast_pos_5" />
+                <com.google.android.material.chip.Chip android:id="@+id/toast_pos_6" style="@style/Widget.Paper.Chip"
+                    android:text="@string/toast_pos_6" />
+                <com.google.android.material.chip.Chip android:id="@+id/toast_pos_7" style="@style/Widget.Paper.Chip"
+                    android:text="@string/toast_pos_7" />
+            </com.google.android.material.chip.ChipGroup>
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginTop="8dp" android:text="@string/toast_size" />
+            <TextView android:id="@+id/toast_size_value" style="@style/Text.Paper.Hint"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" />
+            <com.google.android.material.slider.Slider
+                android:id="@+id/toast_size"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:valueFrom="50" android:valueTo="250" android:stepSize="10"
+                app:labelBehavior="gone" app:tickVisible="false" />
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/toast_seconds" />
+            <TextView android:id="@+id/toast_seconds_value" style="@style/Text.Paper.Hint"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" />
+            <com.google.android.material.slider.Slider
+                android:id="@+id/toast_seconds"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:valueFrom="1" android:valueTo="15" android:stepSize="0.5"
+                app:labelBehavior="gone" app:tickVisible="false" />
+            <Button android:id="@+id/toast_example" style="@style/Widget.Paper.Button"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/toast_example" />
+            <TextView android:id="@+id/toast_example_hint" style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/toast_example_hint" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Settings › Display: render resolution, wide screens, V-Sync. -->
+    <LinearLayout
+        android:id="@+id/section_display"
+        style="@style/Section">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/render_resolution" />
+            <TextView android:id="@+id/render_scale_value" style="@style/Text.Paper.Hint"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" />
+            <com.google.android.material.slider.Slider
+                android:id="@+id/render_scale"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:valueFrom="5" android:valueTo="400" android:stepSize="5"
+                app:labelBehavior="gone" app:tickVisible="false" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/render_resolution_hint" />
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/aspect" />
+            <TextView android:id="@+id/aspect_screen" style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content" />
+            <!-- A radio list (checked in code: each row has its ⓘ, whose
+                 tooltip says what the option does). -->
+            <LinearLayout android:id="@+id/aspect"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="4dp" android:orientation="vertical">
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:gravity="center_vertical" android:orientation="horizontal">
+                    <RadioButton android:id="@+id/aspect_fit" style="@style/Widget.Paper.Radio"
+                        android:layout_width="0dp" android:layout_weight="1"
+                        android:text="@string/aspect_fit_short" />
+                    <ImageView android:id="@+id/aspect_fit_info"
+                        android:layout_width="44dp" android:layout_height="44dp" android:padding="10dp"
+                        android:src="@drawable/ic_info"
+                        android:background="?android:attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="@string/aspect_fit" />
+                </LinearLayout>
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:gravity="center_vertical" android:orientation="horizontal">
+                    <RadioButton android:id="@+id/aspect_fill" style="@style/Widget.Paper.Radio"
+                        android:layout_width="0dp" android:layout_weight="1"
+                        android:text="@string/aspect_fill_short" />
+                    <ImageView android:id="@+id/aspect_fill_info"
+                        android:layout_width="44dp" android:layout_height="44dp" android:padding="10dp"
+                        android:src="@drawable/ic_info"
+                        android:background="?android:attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="@string/aspect_fill" />
+                </LinearLayout>
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:gravity="center_vertical" android:orientation="horizontal">
+                    <RadioButton android:id="@+id/aspect_stretch" style="@style/Widget.Paper.Radio"
+                        android:layout_width="0dp" android:layout_weight="1"
+                        android:text="@string/aspect_stretch_short" />
+                    <ImageView android:id="@+id/aspect_stretch_info"
+                        android:layout_width="44dp" android:layout_height="44dp" android:padding="10dp"
+                        android:src="@drawable/ic_info"
+                        android:background="?android:attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="@string/aspect_stretch" />
+                </LinearLayout>
+            </LinearLayout>
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/aspect_hint" />
+        </LinearLayout>
+        <!-- Screen padding: a black border around the picture (GameActivity). -->
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/screen_padding" />
+            <TextView android:id="@+id/screen_padding_value" style="@style/Text.Paper.Hint"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" />
+            <com.google.android.material.slider.Slider
+                android:id="@+id/screen_padding"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:valueFrom="0" android:valueTo="64" android:stepSize="4"
+                app:labelBehavior="gone" app:tickVisible="false" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/screen_padding_hint" />
+        </LinearLayout>
+        <!-- Effects: the game's [SystemSettings] switches (src/game/graphics_effects.h), at the next start. -->
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/effects" />
+            <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/fx_bloom"
+                style="@style/Widget.Paper.Switch" android:text="@string/fx_bloom" />
+            <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/fx_depth_of_field"
+                style="@style/Widget.Paper.Switch" android:text="@string/fx_depth_of_field" />
+            <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/fx_motion_blur"
+                style="@style/Widget.Paper.Switch" android:text="@string/fx_motion_blur" />
+            <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/fx_radial_blur"
+                style="@style/Widget.Paper.Switch" android:text="@string/fx_radial_blur" />
+            <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/fx_shadows"
+                style="@style/Widget.Paper.Switch" android:text="@string/fx_shadows" />
+            <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/fx_ambient_occlusion"
+                style="@style/Widget.Paper.Switch" android:text="@string/fx_ambient_occlusion" />
+            <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/fx_light_shafts"
+                style="@style/Widget.Paper.Switch" android:text="@string/fx_light_shafts" />
+            <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/fx_lens_flares"
+                style="@style/Widget.Paper.Switch" android:text="@string/fx_lens_flares" />
+            <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/fx_distortion"
+                style="@style/Widget.Paper.Switch" android:text="@string/fx_distortion" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/effects_hint" />
+        </LinearLayout>
+        <!-- No V-Sync switch: Android always presents in step with the screen (ApplyLauncherDefaults). -->
+    </LinearLayout>
+
+    <!-- Settings › Enhancements: frame rate, intro. -->
+    <LinearLayout
+        android:id="@+id/section_enhancements"
+        style="@style/Section">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/fps_cap" />
+            <TextView android:id="@+id/fps_cap_value" style="@style/Text.Paper.Hint"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" />
+            <!-- 15..240 in steps of 5; the far end (245) is Unlimited. -->
+            <com.google.android.material.slider.Slider
+                android:id="@+id/fps_cap"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:valueFrom="15" android:valueTo="245" android:stepSize="5"
+                app:labelBehavior="gone" app:tickVisible="false" />
+            <!-- Suggestions: a row of chips, scrolling sideways when narrow. -->
+            <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:scrollbars="none">
+                <com.google.android.material.chip.ChipGroup android:id="@+id/fps_chips"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    app:singleLine="true" app:singleSelection="true">
+                    <com.google.android.material.chip.Chip android:id="@+id/fps_30" style="@style/Widget.Paper.Chip"
+                        android:text="30" />
+                    <com.google.android.material.chip.Chip android:id="@+id/fps_60" style="@style/Widget.Paper.Chip"
+                        android:text="60" />
+                    <com.google.android.material.chip.Chip android:id="@+id/fps_120" style="@style/Widget.Paper.Chip"
+                        android:text="120" />
+                    <com.google.android.material.chip.Chip android:id="@+id/fps_unlimited" style="@style/Widget.Paper.Chip"
+                        android:text="@string/fps_unlimited" />
+                </com.google.android.material.chip.ChipGroup>
+            </HorizontalScrollView>
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:text="@string/fps_cap_hint" />
+        </LinearLayout>
+        <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/show_fps"
+            style="@style/Widget.Paper.Switch" android:text="@string/show_fps" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/skip_intro"
+                style="@style/Widget.Paper.Switch" android:text="@string/skip_intro" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/skip_intro_hint" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- About: the build, this device (Copy, for bug reports), the notice. -->
+    <!-- Achievements: the count, a filter, the list (Achievements.kt). -->
+    <LinearLayout
+        android:id="@+id/page_achievements"
+        style="@style/Section">
+        <TextView android:id="@+id/achievements_summary" style="@style/Text.Paper.Body"
+            android:layout_width="match_parent" android:layout_height="wrap_content" />
+        <com.google.android.material.progressindicator.LinearProgressIndicator
+            android:id="@+id/achievements_bar"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            app:trackThickness="8dp" app:trackColor="@color/field" app:indicatorColor="@color/mark" />
+        <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:scrollbars="none">
+            <com.google.android.material.chip.ChipGroup android:id="@+id/achievements_filter"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                app:singleLine="true" app:singleSelection="true" app:selectionRequired="true">
+                <com.google.android.material.chip.Chip android:id="@+id/achievements_all" style="@style/Widget.Paper.Chip"
+                    android:text="@string/filter_all" android:checked="true" />
+                <com.google.android.material.chip.Chip android:id="@+id/achievements_unlocked" style="@style/Widget.Paper.Chip"
+                    android:text="@string/filter_unlocked" />
+                <com.google.android.material.chip.Chip android:id="@+id/achievements_locked" style="@style/Widget.Paper.Chip"
+                    android:text="@string/filter_locked" />
+            </com.google.android.material.chip.ChipGroup>
+        </HorizontalScrollView>
+        <LinearLayout android:id="@+id/achievements_list"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:showDividers="middle"
+            android:divider="@drawable/menu_gap" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/page_about"
+        style="@style/Section">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:textSize="22sp" android:text="@string/app_name" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="4dp" android:text="@string/about_text" />
+            <TextView style="@style/Text.Paper.Label"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginTop="12dp" android:text="@string/about_repository" />
+            <TextView android:id="@+id/about_repository" style="@style/Text.Paper.Link"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" />
+            <LinearLayout android:id="@+id/about_build"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="vertical" />
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/about_device" />
+            <LinearLayout android:id="@+id/about_device"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="vertical" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="8dp" android:gravity="center_vertical"
+                android:orientation="horizontal">
+                <Button android:id="@+id/about_copy" style="@style/Widget.Paper.Button"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="@string/about_copy" />
+                <TextView android:id="@+id/about_copy_note" style="@style/Text.Paper.Hint"
+                    android:layout_width="0dp" android:layout_height="wrap_content"
+                    android:layout_weight="1" android:layout_marginStart="10dp"
+                    android:text="@string/about_copy_hint" />
+            </LinearLayout>
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/about_notice" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="4dp" android:text="@string/about_notice_text" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:text="@string/about_credits" />
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>

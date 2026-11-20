@@ -2,8 +2,10 @@
 // SDK doesn't wrap: per-user cache folder, this executable, child processes,
 // opening a folder or link, environment variables.
 //
-// One implementation per OS (platform_posix.cpp, platform_win.cpp). Built
-// into both the executable and the mantra plugin.
+// One implementation per OS: platform_win.cpp; platform_posix.cpp plus
+// platform_linux.cpp (desktop) or platform_android.cpp. CMake picks them
+// (ASURA_PLATFORM_SOURCES). Built into both the executable and the mantra
+// plugin.
 #pragma once
 
 #include <atomic>
@@ -24,8 +26,8 @@ namespace asura::platform {
 std::filesystem::path FilesDir();
 // The SDK's user folder: $XDG_DATA_HOME/asura_wrath_recomp or
 // ~/.local/share/asura_wrath_recomp; Documents\asura_wrath_recomp on Windows.
-// launcher.cfg stays there, as it names the Files folder. Empty when there is
-// no home folder.
+// launcher.cfg is there only when the launcher's folder isn't writable
+// (LauncherDir()). Empty when there is no home folder.
 std::filesystem::path DefaultFilesDir();
 // FilesDir()/cache: shader cache, pipelines, UI art, movies, the trace trigger.
 std::filesystem::path CacheDir();
@@ -36,10 +38,18 @@ inline constexpr const char* kDataDirVariable = "ASURA_DATA_DIR";
 
 // This executable, and the arguments it was started with (argv[0] first).
 std::filesystem::path ExePath();
+// The folder the player sees the launcher in, for launcher.cfg: the
+// executable's (the .AppImage's, not its read-only mount, on Linux; the
+// app's files folder on Android).
+std::filesystem::path LauncherDir();
 std::vector<std::string> ExeArgs();
 
+// Whether Play can start the game as another process of this executable
+// (desktop). Android can't: there the game starts in the launcher's process.
+bool CanStartSelf();
+
 // Replaces this process with `exe` started with `args` (argv[0] first).
-// Only returns if that fails.
+// Only returns if that fails (always on Android).
 void ReplaceProcess(const std::filesystem::path& exe, const std::vector<std::string>& args);
 
 // Sets (or, with nullptr, removes) an environment variable of this process,

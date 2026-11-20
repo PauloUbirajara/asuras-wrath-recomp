@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A section row: the field colour, lighter while pressed. -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="@color/field_pressed">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/field" />
+            <stroke android:width="1dp" android:color="#33211A14" />
+        </shape>
+    </item>
+</ripple>

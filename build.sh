@@ -10,6 +10,11 @@
 #   ./build.sh --windows        build for Windows x64 from Linux (clang + lld-link with
 #                               Microsoft's SDK from tools/setup_windows_cross.sh;
 #                               needs the Linux build first, for its codegen tool)
+#   ./build.sh --android        the Android APKs (one per ABI plus a universal one;
+#                               tools/package.sh --android; ASURA_ABIS=arm64-v8a for one;
+#                               needs the Android SDK in $ANDROID_HOME or ~/Android/Sdk;
+#                               the first one also cross-builds DXC, ~8 min per ABI:
+#                               tools/build_dxc_android.sh)
 #
 # CPU flags: the SDK core uses SSSE3/SSE4.1 intrinsics but only adds -msse4.1
 # to app targets, so the flags are passed here for everything, SDK included.
@@ -24,6 +29,7 @@ CODEGEN=false
 CLEAN=false
 CPU_CHECK=true
 WINDOWS=false
+ANDROID=false
 for arg in "$@"; do
   case "$arg" in
     --debug) CONFIG=debug ;;
@@ -34,10 +40,34 @@ for arg in "$@"; do
     --clean) CLEAN=true ;;
     --skip-cpu-check) CPU_CHECK=false ;;
     --windows) WINDOWS=true ;;
+    --android) ANDROID=true ;;
     -h|--help) sed -n '2,15p' "$0"; exit 0 ;;
     *) echo "[!] Unknown argument: $arg" >&2; exit 1 ;;
   esac
 done
+
+# Android: Gradle drives the NDK build of the same CMake project (android/).
+if $ANDROID; then
+  export ANDROID_HOME="${ANDROID_HOME:-$HOME/Android/Sdk}"
+  if [ ! -d "$ANDROID_HOME/ndk" ]; then
+    echo "[!] No Android SDK/NDK in $ANDROID_HOME (see android/README.md)" >&2
+    exit 1
+  fi
+  [ -f android/local.properties ] ||
+    printf 'sdk.dir=%s\ncmake.dir=%s\n' "$ANDROID_HOME" "$(dirname "$(dirname "$(command -v cmake)")")" \
+      > android/local.properties
+  # DXC for the on-phone shader build (mantra_shadergen in the APK).
+  tools/build_dxc_android.sh $(echo "${ASURA_ABIS:-arm64-v8a,x86_64}" | tr ',' ' ')
+  task=assembleRelease
+  [ "$CONFIG" = debug ] && task=assembleDebug
+  (cd android && ./gradlew ${ASURA_ABIS:+-Pasura.abis=$ASURA_ABIS} "$task")
+  kind=release; [ "$task" = assembleDebug ] && kind=debug || true
+  for apk in android/app/build/outputs/apk/$kind/app-*-$kind.apk; do
+    echo "[+] APK: $apk ($(du -h "$apk" | cut -f1))"
+  done
+  echo "[+] tools/package.sh --android copies them to out/package/ with checksums"
+  exit 0
+fi
 
 PRESET="linux-amd64-$CONFIG"
 if $WINDOWS; then

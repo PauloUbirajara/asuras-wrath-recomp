@@ -197,9 +197,12 @@ bool NativeCommandProcessor::SetupContext() {
   }
 
   InitializeGpuProfiler();
-  if (!copy_pipelines_.Initialize(vulkan_device_) || !render_targets_.Initialize(vulkan_device_) ||
+  rendering_backend_ = mantra::CreateRenderingBackend(vulkan_device_, kFrameSlots);
+  if (!copy_pipelines_.Initialize(vulkan_device_, rendering_backend_.get()) ||
+      !render_targets_.Initialize(vulkan_device_, rendering_backend_.get()) ||
       !shader_interface_.Initialize(vulkan_device_, kFrameSlots) ||
-      !draw_pipelines_.Initialize(vulkan_device_, shader_interface_.pipeline_layout()) ||
+      !draw_pipelines_.Initialize(vulkan_device_, shader_interface_.pipeline_layout(),
+                                  rendering_backend_.get()) ||
       !buffer_cache_.Initialize(vulkan_device_, memory_) ||
       !texture_cache_.Initialize(vulkan_device_, &buffer_cache_, &resolved_surfaces_)) {
     DestroyFrameResources();
@@ -609,6 +612,8 @@ VkCommandBuffer NativeCommandProcessor::BeginCommands() {
   dfn.vkResetCommandPool(device, slot.command_pool, 0);
   dfn.vkResetDescriptorPool(device, slot.descriptor_pool, 0);
   slot.descriptor_sets_used = 0;
+  // The slot's commands completed: its framebuffers (render pass backend) go.
+  if (rendering_backend_) rendering_backend_->BeginSlot(uint32_t(submission_current_ % kFrameSlots));
   resolved_surfaces_.Collect(submission_completed_);
   render_targets_.Collect(submission_completed_);
 
@@ -758,6 +763,10 @@ void NativeCommandProcessor::DestroyFrameResources() {
   render_targets_.Shutdown();
   copy_pipelines_.Shutdown();
   draw_pipelines_.Shutdown();
+  if (rendering_backend_) {
+    rendering_backend_->Shutdown();
+    rendering_backend_.reset();
+  }
   texture_cache_.Shutdown();
   buffer_cache_.Shutdown();
   DestroyShaderModules();

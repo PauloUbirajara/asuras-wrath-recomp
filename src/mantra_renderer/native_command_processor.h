@@ -25,6 +25,7 @@
 #include "draw_pipelines.h"
 #include "pipeline_store.h"
 #include "render_targets.h"
+#include "rendering_backend.h"
 #include "shader_cache.h"
 #include "shader_interface.h"
 #include "texture_cache.h"
@@ -288,6 +289,12 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
   // CPU-decoded vertex inputs are built here (cached memory), then copied
   // into upload memory at once.
   std::vector<float> expanded_scratch_;
+  // Whether the GPU reads `format` from vertex buffers (asked once per
+  // format). The scaled formats are optional in Vulkan and missing on many
+  // Android GPUs (Adreno 6xx): those inputs are decoded on the CPU instead.
+  // MANTRA_FORCE_VERTEX_DECODE=1 treats every scaled format as missing.
+  bool VertexFormatSupported(VkFormat format);
+  int8_t vertex_format_support_[256] = {};  // 0 unknown, 1 yes, -1 no
 
   // --- Guest shader constants -------------------------------------------------
   // Uploads this draw's VS/PS float constants and shared constants into the
@@ -516,6 +523,8 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
   uint64_t submission_completed_ = 0;
   bool recording_ = false;
 
+  // Dynamic rendering or render passes (rendering_backend.h).
+  std::unique_ptr<mantra::RenderingBackend> rendering_backend_;
   mantra::CopyPipelines copy_pipelines_;
   mantra::DrawPipelines draw_pipelines_;
   // Pipelines from earlier runs (MANTRA_PIPELINE_WARMUP=0 skips building them).

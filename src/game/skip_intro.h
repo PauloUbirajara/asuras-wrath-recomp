@@ -7,11 +7,8 @@
 // copies cut to their first (black) frame. Hiding them doesn't work: the
 // start waits forever for a missing movie.
 //
-// The SDK's VFS applies symbolic links to a file's folder only (OpenFile
-// resolves the parent, then looks the name up in it), so a link per file
-// does nothing. Instead the game's Movies folder is redirected to a folder in
-// the cache holding host symlinks to every other movie, mounted as a
-// device of its own, with the cut copies in place of the logos.
+// Only the cut copies are written (to <cache>/movies); each takes the place
+// of the game's movie of the same name (ReplaceGameFiles, game_files.h).
 #pragma once
 
 namespace rex {
@@ -20,7 +17,7 @@ class Runtime;
 
 namespace asura::game {
 
-// Call once the VFS is set up and before the game opens the movies.
+// Call once the VFS is set up and before the game starts (OnPreLaunchModule).
 void SkipIntroMovies(rex::Runtime* runtime);
 
 }  // namespace asura::game

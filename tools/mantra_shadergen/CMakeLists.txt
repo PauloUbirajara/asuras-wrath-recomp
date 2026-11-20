@@ -12,7 +12,22 @@ if(NOT EXISTS "${XENOS_RECOMP_SRC}/shader_recompiler.cpp" OR NOT EXISTS "${DXC_B
   return()
 endif()
 
-if(NOT TARGET Microsoft::DirectXShaderCompiler)
+if(ANDROID)
+  # No prebuilt DXC for Android: tools/build_dxc_android.sh cross-builds the
+  # prebuilt's version (out/dxc/jniLibs/<abi>/libdxcompiler.so; the APK
+  # packages it from there). The headers are dxc-bin's.
+  set(ASURA_DXC_ANDROID_DIR "${CMAKE_SOURCE_DIR}/out/dxc/jniLibs" CACHE PATH
+      "Cross-built libdxcompiler.so per ABI (tools/build_dxc_android.sh)")
+  set(_dxc_lib "${ASURA_DXC_ANDROID_DIR}/${CMAKE_ANDROID_ARCH_ABI}/libdxcompiler.so")
+  if(NOT EXISTS "${_dxc_lib}")
+    message(FATAL_ERROR "mantra_shadergen: ${_dxc_lib} is missing; run tools/build_dxc_android.sh")
+  endif()
+  add_library(Microsoft::DirectXShaderCompiler SHARED IMPORTED)
+  set_target_properties(Microsoft::DirectXShaderCompiler PROPERTIES
+      IMPORTED_LOCATION "${_dxc_lib}"
+      IMPORTED_NO_SONAME TRUE
+      INTERFACE_INCLUDE_DIRECTORIES "${DXC_BIN_DIR}/inc")
+elseif(NOT TARGET Microsoft::DirectXShaderCompiler)
   add_subdirectory("${DXC_BIN_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/dxc-bin")
 endif()
 
@@ -31,7 +46,7 @@ add_executable(mantra_shadergen
     "${XENOS_RECOMP_SRC}/shader_recompiler.cpp"
     "${XENOS_RECOMP_SRC}/dxc_compiler.cpp"
     # Workers are this tool run again (platform::Process).
-    "${CMAKE_SOURCE_DIR}/src/platform/$<IF:$<PLATFORM_ID:Windows>,platform_win.cpp,platform_posix.cpp>"
+    ${ASURA_PLATFORM_SOURCES}
 )
 
 # XenosRecomp sources expect pch.h to be included first; DXC's WinAdapter.h
@@ -73,12 +88,25 @@ if(WIN32)
           $<TARGET_FILE:Microsoft::DirectXShaderCompiler> $<TARGET_FILE:Microsoft::DXIL>
           $<TARGET_FILE_DIR:mantra_shadergen>
       VERBATIM)
+elseif(ANDROID)
+  # The app starts it as a program (the launcher's Build): Android only lets
+  # an app run files from its native library folder, so it goes in the APK
+  # as libmantra_shadergen.so, next to the libraries, and finds
+  # libdxcompiler.so (gradle's jniLibs) there. The NDK's libc++ keeps
+  # <execution>'s parallel algorithms behind its experimental flag.
+  target_compile_options(mantra_shadergen PRIVATE -fexperimental-library)
+  set_target_properties(mantra_shadergen PROPERTIES
+      PREFIX "lib" SUFFIX ".so"
+      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}"
+      BUILD_RPATH "$ORIGIN")
 else()
   add_custom_command(TARGET mantra_shadergen POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
           $<TARGET_FILE:Microsoft::DirectXShaderCompiler> $<TARGET_FILE_DIR:mantra_shadergen>
       VERBATIM)
 endif()
-set_target_properties(mantra_shadergen PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
-    BUILD_RPATH "$ORIGIN")
+if(NOT ANDROID)
+  set_target_properties(mantra_shadergen PROPERTIES
+      RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+      BUILD_RPATH "$ORIGIN")
+endif()

@@ -15,4 +15,7 @@
     <color name="mark">#FF9E290F</color>
     <color name="good">#FF2F5E2A</color>
     <color name="bad">#FF8C1F10</color>
+    <!-- In game: the paused game behind the menu, dimmed; the sidebar over it. -->
+    <color name="in_game_dim">#B3000000</color>
+    <color name="in_game_sidebar">#E619191B</color>
 </resources>

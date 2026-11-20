@@ -30,6 +30,17 @@
         <item name="android:textColorSecondary">@color/panel_text_dim</item>
     </style>
 
+    <!-- Back in game (InGameMenuActivity): see-through, so the paused game
+         shows behind the menu (dimmed by its layout), without system bars. -->
+    <style name="Theme.AsurasWrath.InGame">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+
     <!-- The game's activity: no system bars, black behind the surface. -->
     <style name="Theme.AsurasWrath.Game" parent="android:Theme.NoTitleBar.Fullscreen">
         <item name="android:windowBackground">@android:color/black</item>
@@ -70,5 +81,58 @@
         <item name="android:textSize">15sp</item>
         <item name="android:textAllCaps">false</item>
         <item name="backgroundTint">@color/paper_toggle</item>
+    </style>
+
+    <!-- A section of a page (launcher_pages.xml): its groups, spaced. -->
+    <style name="Section">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:orientation">vertical</item>
+        <item name="android:showDividers">middle</item>
+        <item name="android:divider">@drawable/section_gap</item>
+        <item name="android:visibility">gone</item>
+    </style>
+    <style name="Text.Paper.Label" parent="TextAppearance.Material3.LabelLarge">
+        <item name="android:textColor">@color/panel_text_dim</item>
+        <item name="android:textSize">14sp</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+    <style name="Text.Paper.Link" parent="TextAppearance.Material3.BodyMedium">
+        <item name="android:textColor">@color/mark</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:minHeight">40dp</item>
+        <item name="android:gravity">center_vertical</item>
+        <item name="android:background">?android:attr/selectableItemBackground</item>
+    </style>
+    <!-- A section row (Game data's list): a beige field, the name and a summary. -->
+    <style name="Text.Paper.RowTitle" parent="TextAppearance.Material3.TitleMedium">
+        <item name="android:textColor">@color/panel_text</item>
+        <item name="android:textSize">18sp</item>
+        <item name="android:textStyle">bold</item>
+    </style>
+    <style name="Widget.Paper.Switch" parent="">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:minHeight">48dp</item>
+        <item name="android:textSize">17sp</item>
+        <item name="android:textColor">@color/panel_text</item>
+    </style>
+    <style name="Widget.Paper.Radio" parent="">
+        <item name="android:layout_width">match_parent</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:minHeight">48dp</item>
+        <item name="android:textSize">16sp</item>
+        <item name="android:textColor">@color/panel_text</item>
+        <item name="buttonTint">@color/mark</item>
+    </style>
+    <!-- A suggestion (Frame rate limit): a beige badge, outlined when chosen. -->
+    <style name="Widget.Paper.Chip" parent="Widget.Material3.Chip.Filter">
+        <item name="android:layout_width">wrap_content</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:textSize">15sp</item>
+        <item name="android:textColor">@color/panel_text</item>
+        <item name="chipBackgroundColor">@color/paper_toggle</item>
+        <item name="chipStrokeColor">@color/panel_text_dim</item>
+        <item name="chipCornerRadius">16dp</item>
     </style>
 </resources>

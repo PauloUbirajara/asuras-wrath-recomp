@@ -28,6 +28,10 @@
 #include <rex/ui/window.h>
 #include <imgui.h>
 #include <SDL3/SDL_events.h>
+#ifdef __ANDROID__
+#include <jni.h>
+#include <SDL3/SDL_system.h>
+#endif
 #include <rex/system/achievement_manager.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/util/xdbf_utils.h>
@@ -373,23 +377,75 @@ class AsuraWrathApp : public rex::ReXApp {
   }
 
   static bool SDLCALL BackWatch(void* self, SDL_Event* e) {
+    auto* app = static_cast<AsuraWrathApp*>(self);
     if (e->type == SDL_EVENT_KEY_DOWN && e->key.scancode == SDL_SCANCODE_AC_BACK &&
         !e->key.repeat) {
-      auto* app = static_cast<AsuraWrathApp*>(self);
       app->app_context().CallInUIThreadDeferred([app] { app->OnBack(); });
     }
+#ifdef __ANDROID__
+    // Back from the Android menu (GameActivity.openMenu): its changes.
+    if (e->type == SDL_EVENT_DID_ENTER_FOREGROUND) {
+      app->app_context().CallInUIThreadDeferred([app] { app->OnMenuClosed(); });
+    }
+#endif
     return true;
   }
 
   // Back: the launcher's own Back (drawer, confirmations, resume), or, in
-  // game, opens the launcher.
+  // game, opens the launcher (on Android, the app's own menu: the Kotlin
+  // launcher over the paused game).
   void OnBack() {
     if (launcher_) {
       launcher_->Back();
     } else {
+#ifdef __ANDROID__
+      if (game_running_) {
+        if (OpenAndroidMenu()) return;
+        REXLOG_WARN("Back: GameActivity.openMenu failed; opening the game menu instead");
+      }
+#endif
       ToggleLauncherInGame();
     }
   }
+
+#ifdef __ANDROID__
+  // GameActivity.openMenu() (InGameMenuActivity, the launcher's pages with
+  // Resume, Restart and Quit). False if the activity has no such method.
+  bool OpenAndroidMenu() {
+    auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
+    if (!env || !activity) return false;
+    jclass cls = env->GetObjectClass(activity);
+    jmethodID open = env->GetMethodID(cls, "openMenu", "()V");
+    if (open) {
+      env->CallVoidMethod(activity, open);
+    }
+    if (env->ExceptionCheck()) {
+      env->ExceptionClear();
+      open = nullptr;
+    }
+    env->DeleteLocalRef(cls);
+    env->DeleteLocalRef(activity);
+    return open != nullptr;
+  }
+
+  // The game is back in front: the menu may have changed launcher.cfg (the
+  // live settings apply now; the others at the next start, as the menu said),
+  // or asked for this game menu (its "Game menu": the button remap,
+  // achievements and the rest), leaving a note next to launcher.cfg.
+  void OnMenuClosed() {
+    if (!game_running_ || launcher_) return;
+    asura::ui::LauncherSettings s;
+    if (s.Load(launcher_settings_path_)) {
+      launcher_settings_ = s;
+      asura::ui::ApplyLiveSettings(s);
+      UpdateFpsCounter();
+    }
+    std::error_code ec;
+    const auto note = launcher_settings_path_.parent_path() / ".open_game_menu";
+    if (std::filesystem::remove(note, ec)) ToggleLauncherInGame();
+  }
+#endif
 
   // bind_launcher (Esc): opens the launcher over the game, or resumes from it.
   // The game keeps running underneath.

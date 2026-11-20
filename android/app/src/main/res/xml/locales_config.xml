@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The launcher's languages (the game's: Settings › System). -->
+<locale-config xmlns:android="http://schemas.android.com/apk/res/android">
+    <locale android:name="en" />
+    <locale android:name="ja" />
+    <locale android:name="de" />
+    <locale android:name="fr" />
+    <locale android:name="es" />
+    <locale android:name="it" />
+</locale-config>

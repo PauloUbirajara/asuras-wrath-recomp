@@ -1,3 +1,6 @@
+import java.text.SimpleDateFormat
+import java.util.Date
+
 // Asura's Wrath Recompiled for Android: a thin Kotlin activity (SDL's
 // SDLActivity) around the same native code as the desktop build. The native
 // part is the repo's own CMakeLists.txt, built by the NDK for each ABI.
@@ -18,6 +21,16 @@ val shaderCacheFormat = File(repoRoot, "src/mantra_renderer/shader_cache_format.
 fun shaderCacheConstant(name: String): String =
     Regex("""constexpr uint32_t $name = (\d+);""").find(shaderCacheFormat)?.groupValues?.get(1)
         ?: error("$name not found in shader_cache_format.h")
+val buildDate: String = SimpleDateFormat("yyyy-MM-dd").format(Date())
+// About: where this build came from (as src/ui/about_info.cpp: git describe,
+// the commit, the build date).
+fun git(vararg args: String): String = try {
+    val p = ProcessBuilder(listOf("git") + args).directory(repoRoot).redirectErrorStream(true).start()
+    val out = p.inputStream.bufferedReader().readText().trim()
+    if (p.waitFor() == 0) out else ""
+} catch (e: Exception) {
+    ""
+}
 
 android {
     namespace = "org.asurawrath.recompiled"
@@ -34,6 +47,12 @@ android {
         versionName = "0.4.2"
         buildConfigField("int", "SHADER_CACHE_VERSION", shaderCacheConstant("kVersion"))
         buildConfigField("int", "SHADER_CACHE_MIN_VERSION", shaderCacheConstant("kMinVersion"))
+        buildConfigField("String", "GIT_VERSION", "\"${git("describe", "--tags", "--always", "--dirty= + changes")}\"")
+        buildConfigField("String", "GIT_COMMIT", "\"${git("rev-parse", "--short", "HEAD")}\"")
+        buildConfigField("String", "GIT_BRANCH", "\"${git("rev-parse", "--abbrev-ref", "HEAD")}\"")
+        buildConfigField("String", "GIT_DATE", "\"${git("log", "-1", "--format=%cs")}\"")
+        buildConfigField("String", "BUILD_DATE", "\"$buildDate\"")
+        buildConfigField("String", "REPOSITORY_URL", "\"https://github.com/PauloUbirajara/asuras-wrath-recomp\"")
         externalNativeBuild {
             cmake {
                 arguments += listOf(

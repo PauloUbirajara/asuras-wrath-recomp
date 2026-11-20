@@ -40,6 +40,9 @@
         <org.asurawrath.recompiled.MenuButton android:id="@+id/menu_game"
             android:layout_width="match_parent" android:layout_height="48dp"
             android:text="@string/page_game" />
+        <org.asurawrath.recompiled.MenuButton android:id="@+id/menu_controls"
+            android:layout_width="match_parent" android:layout_height="48dp"
+            android:text="@string/page_controls" />
         <org.asurawrath.recompiled.MenuButton android:id="@+id/menu_settings"
             android:layout_width="match_parent" android:layout_height="48dp"
             android:text="@string/page_settings" />
@@ -53,6 +56,32 @@
         android:layout_height="0dp"
         android:layout_weight="1" />
 
+    <!-- In game (InGameMenuActivity): Restart and Quit, above Resume. -->
+    <LinearLayout
+        android:id="@+id/in_game_actions"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:visibility="gone">
+        <Button
+            android:id="@+id/restart"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:text="@string/in_game_restart"
+            android:textAllCaps="false"
+            android:textColor="@color/sidebar_text"
+            android:textSize="18sp" />
+        <Button
+            android:id="@+id/quit"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="match_parent"
+            android:layout_height="52dp"
+            android:text="@string/in_game_quit"
+            android:textAllCaps="false"
+            android:textColor="@color/sidebar_text"
+            android:textSize="18sp" />
+    </LinearLayout>
     <TextView
         android:id="@+id/play_notice"
         android:layout_width="match_parent"

@@ -1,5 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The pages on the parchment panel; one shows at a time (LauncherActivity). -->
+<!-- The page on the parchment panel. A page with sections (Game data,
+     Controls, Settings) first shows their list (section_list, filled by
+     LauncherActivity); a section then shows alone, its name after the page's
+     in the title (Game data › Shader cache). One child shows at a time. -->
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
@@ -7,14 +10,19 @@
     android:theme="@style/ThemeOverlay.AsurasWrath.Paper"
     android:paddingVertical="8dp">
 
-    <!-- Game data: the game, the Files folder under it, the shader cache. -->
+    <!-- A page's sections, as rows (LauncherActivity.showList). -->
     <LinearLayout
-        android:id="@+id/page_game"
+        android:id="@+id/section_list"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
         android:showDividers="middle"
-        android:divider="@drawable/section_gap">
+        android:divider="@drawable/menu_gap" />
+
+    <!-- Game data › Folders: the game, the Files folder under it. -->
+    <LinearLayout
+        android:id="@+id/section_folders"
+        style="@style/Section">
 
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
             android:orientation="vertical">
@@ -56,15 +64,17 @@
                     android:layout_marginStart="8dp" android:text="@string/use_default" />
             </LinearLayout>
         </LinearLayout>
+    </LinearLayout>
 
+    <!-- Game data › Shader cache: build it here or import one. -->
+    <LinearLayout
+        android:id="@+id/section_shaders"
+        style="@style/Section">
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
             android:orientation="vertical">
-            <TextView style="@style/Text.Paper.Heading"
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:text="@string/section_shaders" />
             <TextView android:id="@+id/shaders_status"
                 android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:layout_marginTop="6dp" android:textSize="16sp" />
+                android:textSize="17sp" />
             <TextView style="@style/Text.Paper.Hint"
                 android:layout_width="match_parent" android:layout_height="wrap_content"
                 android:layout_marginTop="6dp" android:text="@string/shaders_hint" />
@@ -92,115 +102,357 @@
                     android:text="@string/shaders_import" />
             </LinearLayout>
         </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Label"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/location" />
+            <TextView android:id="@+id/shaders_path" style="@style/Text.Paper.Path"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:textIsSelectable="true" />
+        </LinearLayout>
     </LinearLayout>
 
-    <!-- Settings -->
+    <!-- Game data › Saves: the save (when, size, delete). -->
     <LinearLayout
-        android:id="@+id/page_settings"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:visibility="gone">
-
-        <com.google.android.material.textfield.TextInputLayout
-            style="@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
-            android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:hint="@string/language"
-            app:boxStrokeColor="@color/panel_text"
-            app:boxCornerRadiusTopStart="0dp" app:boxCornerRadiusTopEnd="0dp"
-            app:boxCornerRadiusBottomStart="0dp" app:boxCornerRadiusBottomEnd="0dp">
-            <com.google.android.material.textfield.MaterialAutoCompleteTextView
-                android:id="@+id/language"
-                android:layout_width="match_parent" android:layout_height="wrap_content"
-                android:inputType="none" android:textColor="@color/panel_text" />
-        </com.google.android.material.textfield.TextInputLayout>
-
-        <TextView style="@style/Text.Paper.Heading"
-            android:layout_width="wrap_content" android:layout_height="wrap_content"
-            android:layout_marginTop="24dp" android:text="@string/render_resolution" />
-        <TextView android:id="@+id/render_scale_value" style="@style/Text.Paper.Hint"
-            android:layout_width="wrap_content" android:layout_height="wrap_content" />
-        <com.google.android.material.slider.Slider
-            android:id="@+id/render_scale"
-            android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:valueFrom="25" android:valueTo="200" android:stepSize="5"
-            app:labelBehavior="gone" app:tickVisible="false" />
-
-        <TextView style="@style/Text.Paper.Heading"
-            android:layout_width="wrap_content" android:layout_height="wrap_content"
-            android:layout_marginTop="16dp" android:text="@string/fps_cap" />
-        <com.google.android.material.button.MaterialButtonToggleGroup
-            android:id="@+id/fps_cap"
-            android:layout_width="wrap_content" android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            app:singleSelection="true" app:selectionRequired="true">
-            <Button android:id="@+id/fps_30" style="@style/Widget.Paper.Toggle"
-                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="30" />
-            <Button android:id="@+id/fps_60" style="@style/Widget.Paper.Toggle"
-                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="60" />
-            <Button android:id="@+id/fps_120" style="@style/Widget.Paper.Toggle"
-                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="120" />
-            <Button android:id="@+id/fps_unlimited" style="@style/Widget.Paper.Toggle"
-                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/fps_unlimited" />
-        </com.google.android.material.button.MaterialButtonToggleGroup>
-
-        <TextView style="@style/Text.Paper.Heading"
-            android:layout_width="wrap_content" android:layout_height="wrap_content"
-            android:layout_marginTop="20dp" android:text="@string/aspect" />
-        <com.google.android.material.button.MaterialButtonToggleGroup
-            android:id="@+id/aspect"
-            android:layout_width="wrap_content" android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            app:singleSelection="true" app:selectionRequired="true">
-            <Button android:id="@+id/aspect_fit" style="@style/Widget.Paper.Toggle"
-                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/aspect_fit" />
-            <Button android:id="@+id/aspect_fill" style="@style/Widget.Paper.Toggle"
-                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/aspect_fill" />
-            <Button android:id="@+id/aspect_stretch" style="@style/Widget.Paper.Toggle"
-                android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/aspect_stretch" />
-        </com.google.android.material.button.MaterialButtonToggleGroup>
-
-        <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/vsync"
-            android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:layout_marginTop="20dp" android:textSize="16sp" android:text="@string/vsync" />
-        <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/show_fps"
-            android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:textSize="16sp" android:text="@string/show_fps" />
-        <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/skip_intro"
-            android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:textSize="16sp" android:text="@string/skip_intro" />
-        <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/toasts"
-            android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:textSize="16sp" android:text="@string/toasts" />
-
-        <TextView style="@style/Text.Paper.Heading"
-            android:layout_width="wrap_content" android:layout_height="wrap_content"
-            android:layout_marginTop="20dp" android:text="@string/vibration" />
-        <TextView android:id="@+id/vibration_value" style="@style/Text.Paper.Hint"
-            android:layout_width="wrap_content" android:layout_height="wrap_content" />
-        <com.google.android.material.slider.Slider
-            android:id="@+id/vibration"
-            android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:valueFrom="0" android:valueTo="200" android:stepSize="10"
-            app:labelBehavior="gone" app:tickVisible="false" />
-
+        android:id="@+id/section_saves"
+        style="@style/Section">
         <TextView style="@style/Text.Paper.Hint"
             android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:layout_marginTop="16dp" android:text="@string/settings_more" />
+            android:text="@string/saves_hint" />
+        <LinearLayout android:id="@+id/saves_list"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:showDividers="middle"
+            android:divider="@drawable/section_gap" />
     </LinearLayout>
 
-    <!-- About -->
+    <!-- Game data › Logs: where they are, detailed logs, the list. -->
+    <LinearLayout
+        android:id="@+id/section_logs"
+        style="@style/Section">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Label"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/location" />
+            <TextView android:id="@+id/logs_path" style="@style/Text.Paper.Path"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:textIsSelectable="true" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:text="@string/logs_hint" />
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/detailed_logs"
+                style="@style/Widget.Paper.Switch" android:text="@string/detailed_logs" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/detailed_logs_hint" />
+        </LinearLayout>
+        <LinearLayout android:id="@+id/logs_list"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:showDividers="middle"
+            android:divider="@drawable/menu_gap" />
+    </LinearLayout>
+
+    <!-- Controls › Test: what the controller sends, as the game sees it. -->
+    <LinearLayout
+        android:id="@+id/section_test"
+        style="@style/Section">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView android:id="@+id/pad_name" style="@style/Text.Paper.Body"
+                android:layout_width="match_parent" android:layout_height="wrap_content" />
+            <org.asurawrath.recompiled.PadTestView android:id="@+id/pad_test"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="12dp" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="12dp" android:text="@string/pad_test_hint" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Controls › Controller: vibration, the stick deadzones. -->
+    <LinearLayout
+        android:id="@+id/section_controller"
+        style="@style/Section">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/vibration" />
+            <TextView android:id="@+id/vibration_value" style="@style/Text.Paper.Hint"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" />
+            <com.google.android.material.slider.Slider
+                android:id="@+id/vibration"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:valueFrom="0" android:valueTo="200" android:stepSize="10"
+                app:labelBehavior="gone" app:tickVisible="false" />
+            <Button android:id="@+id/vibration_test" style="@style/Widget.Paper.Button"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/vibration_test" />
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/deadzone_left" />
+            <TextView android:id="@+id/deadzone_left_value" style="@style/Text.Paper.Hint"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" />
+            <com.google.android.material.slider.Slider
+                android:id="@+id/deadzone_left"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:valueFrom="0" android:valueTo="50" android:stepSize="1"
+                app:labelBehavior="gone" app:tickVisible="false" />
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginTop="12dp" android:text="@string/deadzone_right" />
+            <TextView android:id="@+id/deadzone_right_value" style="@style/Text.Paper.Hint"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" />
+            <com.google.android.material.slider.Slider
+                android:id="@+id/deadzone_right"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:valueFrom="0" android:valueTo="50" android:stepSize="1"
+                app:labelBehavior="gone" app:tickVisible="false" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/deadzone_hint" />
+        </LinearLayout>
+        <TextView style="@style/Text.Paper.Hint"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="@string/remap_hint" />
+    </LinearLayout>
+
+    <!-- Settings › System: language, achievement pop-ups. -->
+    <LinearLayout
+        android:id="@+id/section_system"
+        style="@style/Section">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <com.google.android.material.textfield.TextInputLayout
+                style="@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:hint="@string/language"
+                app:boxStrokeColor="@color/panel_text"
+                app:boxCornerRadiusTopStart="0dp" app:boxCornerRadiusTopEnd="0dp"
+                app:boxCornerRadiusBottomStart="0dp" app:boxCornerRadiusBottomEnd="0dp">
+                <com.google.android.material.textfield.MaterialAutoCompleteTextView
+                    android:id="@+id/language"
+                    android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:inputType="none" android:textColor="@color/panel_text" />
+            </com.google.android.material.textfield.TextInputLayout>
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:text="@string/language_hint" />
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/toasts"
+                style="@style/Widget.Paper.Switch" android:text="@string/toasts" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/toasts_hint" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Settings › Display: render resolution, wide screens, V-Sync. -->
+    <LinearLayout
+        android:id="@+id/section_display"
+        style="@style/Section">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/render_resolution" />
+            <TextView android:id="@+id/render_scale_value" style="@style/Text.Paper.Hint"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" />
+            <com.google.android.material.slider.Slider
+                android:id="@+id/render_scale"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:valueFrom="25" android:valueTo="200" android:stepSize="5"
+                app:labelBehavior="gone" app:tickVisible="false" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/render_resolution_hint" />
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/aspect" />
+            <TextView android:id="@+id/aspect_screen" style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content" />
+            <!-- A radio list (checked in code: each row has its ⓘ, whose
+                 tooltip says what the option does). -->
+            <LinearLayout android:id="@+id/aspect"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="4dp" android:orientation="vertical">
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:gravity="center_vertical" android:orientation="horizontal">
+                    <RadioButton android:id="@+id/aspect_fit" style="@style/Widget.Paper.Radio"
+                        android:layout_width="0dp" android:layout_weight="1"
+                        android:text="@string/aspect_fit_short" />
+                    <ImageView android:id="@+id/aspect_fit_info"
+                        android:layout_width="44dp" android:layout_height="44dp" android:padding="10dp"
+                        android:src="@drawable/ic_info"
+                        android:background="?android:attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="@string/aspect_fit" />
+                </LinearLayout>
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:gravity="center_vertical" android:orientation="horizontal">
+                    <RadioButton android:id="@+id/aspect_fill" style="@style/Widget.Paper.Radio"
+                        android:layout_width="0dp" android:layout_weight="1"
+                        android:text="@string/aspect_fill_short" />
+                    <ImageView android:id="@+id/aspect_fill_info"
+                        android:layout_width="44dp" android:layout_height="44dp" android:padding="10dp"
+                        android:src="@drawable/ic_info"
+                        android:background="?android:attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="@string/aspect_fill" />
+                </LinearLayout>
+                <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                    android:gravity="center_vertical" android:orientation="horizontal">
+                    <RadioButton android:id="@+id/aspect_stretch" style="@style/Widget.Paper.Radio"
+                        android:layout_width="0dp" android:layout_weight="1"
+                        android:text="@string/aspect_stretch_short" />
+                    <ImageView android:id="@+id/aspect_stretch_info"
+                        android:layout_width="44dp" android:layout_height="44dp" android:padding="10dp"
+                        android:src="@drawable/ic_info"
+                        android:background="?android:attr/selectableItemBackgroundBorderless"
+                        android:contentDescription="@string/aspect_stretch" />
+                </LinearLayout>
+            </LinearLayout>
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/aspect_hint" />
+        </LinearLayout>
+        <!-- Screen padding: a black border around the picture (GameActivity). -->
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/screen_padding" />
+            <TextView android:id="@+id/screen_padding_value" style="@style/Text.Paper.Hint"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" />
+            <com.google.android.material.slider.Slider
+                android:id="@+id/screen_padding"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:valueFrom="0" android:valueTo="64" android:stepSize="4"
+                app:labelBehavior="gone" app:tickVisible="false" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/screen_padding_hint" />
+        </LinearLayout>
+        <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/vsync"
+            style="@style/Widget.Paper.Switch" android:text="@string/vsync" />
+        <TextView style="@style/Text.Paper.Hint"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:text="@string/next_start" />
+    </LinearLayout>
+
+    <!-- Settings › Enhancements: frame rate, intro. -->
+    <LinearLayout
+        android:id="@+id/section_enhancements"
+        style="@style/Section">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/fps_cap" />
+            <TextView android:id="@+id/fps_cap_value" style="@style/Text.Paper.Hint"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" />
+            <!-- 15..240 in steps of 5; the far end (245) is Unlimited. -->
+            <com.google.android.material.slider.Slider
+                android:id="@+id/fps_cap"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:valueFrom="15" android:valueTo="245" android:stepSize="5"
+                app:labelBehavior="gone" app:tickVisible="false" />
+            <!-- Suggestions: a row of chips, scrolling sideways when narrow. -->
+            <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:scrollbars="none">
+                <com.google.android.material.chip.ChipGroup android:id="@+id/fps_chips"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    app:singleLine="true" app:singleSelection="true">
+                    <com.google.android.material.chip.Chip android:id="@+id/fps_30" style="@style/Widget.Paper.Chip"
+                        android:text="30" />
+                    <com.google.android.material.chip.Chip android:id="@+id/fps_60" style="@style/Widget.Paper.Chip"
+                        android:text="60" />
+                    <com.google.android.material.chip.Chip android:id="@+id/fps_120" style="@style/Widget.Paper.Chip"
+                        android:text="120" />
+                    <com.google.android.material.chip.Chip android:id="@+id/fps_unlimited" style="@style/Widget.Paper.Chip"
+                        android:text="@string/fps_unlimited" />
+                </com.google.android.material.chip.ChipGroup>
+            </HorizontalScrollView>
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:text="@string/fps_cap_hint" />
+        </LinearLayout>
+        <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/show_fps"
+            style="@style/Widget.Paper.Switch" android:text="@string/show_fps" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/skip_intro"
+                style="@style/Widget.Paper.Switch" android:text="@string/skip_intro" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/skip_intro_hint" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- About: the build, this device (Copy, for bug reports), the notice. -->
     <LinearLayout
         android:id="@+id/page_about"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:visibility="gone">
-        <TextView style="@style/Text.Paper.Body"
-            android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:text="@string/about_text" />
-        <TextView android:id="@+id/about_version" style="@style/Text.Paper.Hint"
-            android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:layout_marginTop="12dp" />
+        style="@style/Section">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:textSize="22sp" android:text="@string/app_name" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="4dp" android:text="@string/about_text" />
+            <TextView style="@style/Text.Paper.Label"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginTop="12dp" android:text="@string/about_repository" />
+            <TextView android:id="@+id/about_repository" style="@style/Text.Paper.Link"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" />
+            <LinearLayout android:id="@+id/about_build"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="vertical" />
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/about_device" />
+            <LinearLayout android:id="@+id/about_device"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="vertical" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="8dp" android:gravity="center_vertical"
+                android:orientation="horizontal">
+                <Button android:id="@+id/about_copy" style="@style/Widget.Paper.Button"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="@string/about_copy" />
+                <TextView android:id="@+id/about_copy_note" style="@style/Text.Paper.Hint"
+                    android:layout_width="0dp" android:layout_height="wrap_content"
+                    android:layout_weight="1" android:layout_marginStart="10dp"
+                    android:text="@string/about_copy_hint" />
+            </LinearLayout>
+        </LinearLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/about_notice" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="4dp" android:text="@string/about_notice_text" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:text="@string/about_credits" />
+        </LinearLayout>
     </LinearLayout>
 </FrameLayout>

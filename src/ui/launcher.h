@@ -63,6 +63,7 @@ struct LauncherSettings {
   int monitor = 0;         // 1-based, 0 = the default one
   bool keyboard = false;  // mnk_mode
   AspectMode aspect = AspectMode::kFit;
+  int screen_padding = 0;  // Android: a black border around the picture, in dp (GameActivity)
   int window_width = 0, window_height = 0;  // windowed size, 0 = default (1280x720)
   uint32_t language = 1;                    // user_language (XLanguage), 1 = English
   bool achievements_grid = false;           // Achievements page: grid instead of list

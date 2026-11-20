@@ -42,6 +42,11 @@ object LauncherArt {
         null
     }
 
+    fun regularFont(context: Context): Typeface? {
+        if (regular == null) regular = font(context, "NotoSerif-Regular.ttf")
+        return regular
+    }
+
     /** Noto Serif (the desktop launcher's font) on every text under `view`. */
     fun applyFonts(view: View) {
         val context = view.context

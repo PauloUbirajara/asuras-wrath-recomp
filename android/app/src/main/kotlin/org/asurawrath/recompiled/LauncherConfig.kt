@@ -21,6 +21,7 @@ class LauncherConfig private constructor(private val file: File, private val lin
     }
 
     fun int(key: String, default: Int): Int = this[key]?.trim()?.toIntOrNull() ?: default
+    fun double(key: String, default: Double = 0.0): Double = this[key]?.trim()?.toDoubleOrNull() ?: default
     fun bool(key: String, default: Boolean): Boolean =
         this[key]?.let { it == "1" || it == "true" } ?: default
     fun setBool(key: String, value: Boolean) = set(key, if (value) "1" else "0")

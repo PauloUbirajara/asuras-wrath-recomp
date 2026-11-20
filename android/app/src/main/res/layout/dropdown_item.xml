@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A dropdown's item (Settings › System › Language): dark text on the
+     parchment field, as the rest of the panel. -->
+<TextView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:minHeight="48dp"
+    android:gravity="center_vertical"
+    android:paddingStart="16dp"
+    android:paddingEnd="16dp"
+    android:background="@drawable/row_background"
+    android:textColor="@color/panel_text"
+    android:textSize="17sp"
+    android:ellipsize="end"
+    android:maxLines="1" />

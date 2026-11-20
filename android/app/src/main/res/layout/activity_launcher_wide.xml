@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- In game, landscape (InGameMenuActivity), as the desktop launcher over
+     the running game: the paused game dimmed behind, the sidebar docked on
+     the left, the parchment page beside it. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/in_game_dim"
+    android:orientation="horizontal">
+
+    <include
+        layout="@layout/launcher_sidebar"
+        android:layout_width="280dp"
+        android:layout_height="match_parent" />
+
+    <include
+        layout="@layout/launcher_panel"
+        android:layout_width="0dp"
+        android:layout_height="match_parent"
+        android:layout_weight="1"
+        android:layout_margin="20dp" />
+</LinearLayout>

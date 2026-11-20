@@ -339,6 +339,7 @@ bool LauncherSettings::Load(const std::filesystem::path& path) {
     else if (key == "exclusive") exclusive = on;
     else if (key == "monitor") monitor = std::clamp(std::atoi(value.c_str()), 0, 16);
     else if (key == "keyboard") keyboard = on;
+    else if (key == "screen_padding") screen_padding = std::clamp(std::atoi(value.c_str()), 0, 64);
     else if (key == "aspect")
       aspect = value == "fill" ? AspectMode::kFill
                : value == "stretch" ? AspectMode::kStretch
@@ -403,7 +404,7 @@ std::string LauncherSettings::Serialize() const {
   out << "# Asura's Wrath Recompiled launcher settings\n"
       << "gpu=" << gpu << "\nvsync=" << vsync << "\nfullscreen=" << fullscreen << "\nexclusive=" << exclusive
       << "\nmonitor=" << monitor
-      << "\nkeyboard=" << keyboard << "\naspect=" << AspectName(aspect) << "\nwindow="
+      << "\nkeyboard=" << keyboard << "\naspect=" << AspectName(aspect) << "\nscreen_padding=" << screen_padding << "\nwindow="
       << window_width << "x" << window_height << "\nlanguage=" << language
       << "\ngame_data=" << game_data << "\ndata_folder=" << data_folder << "\ndeadzone_left=" << deadzone_left
       << "\ndeadzone_right=" << deadzone_right << "\nvibration=" << vibration

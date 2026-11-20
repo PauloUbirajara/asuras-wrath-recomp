@@ -69,7 +69,8 @@ import java.util.Locale
  *               imported), Saves, Logs; Traces and Progress listed, not yet
  *               on Android
  *   Controls    Test (the controller live), Controller (vibration, deadzones)
- *   Settings    System (language: also this launcher's), Display, Enhancements
+ *   Settings    System (language: also this launcher's), Display, Enhancements,
+ *               GPU driver (Snapdragon phones: GpuDrivers)
  *   About       the build, this device (Copy), the notice
  *
  * It edits launcher.cfg (LauncherConfig) and starts GameActivity; the button
@@ -82,6 +83,7 @@ open class LauncherActivity : AppCompatActivity() {
 
     private lateinit var folders: AppFolders
     private lateinit var config: LauncherConfig
+    private lateinit var drivers: GpuDrivers
     private var binding = false  // filling the views: their listeners don't save
     private var drawer: DrawerLayout? = null  // portrait only
 
@@ -98,6 +100,7 @@ open class LauncherActivity : AppCompatActivity() {
         SYSTEM(R.id.section_system, R.string.section_system),
         DISPLAY(R.id.section_display, R.string.section_display),
         ENHANCEMENTS(R.id.section_enhancements, R.string.section_enhancements),
+        GPU(R.id.section_gpu, R.string.gpu_driver),  // Android only; listed where GpuDrivers.supported
     }
 
     private enum class Page(val menu: Int, val title: Int, val sections: List<Section>, val view: Int = 0) {
@@ -105,7 +108,7 @@ open class LauncherActivity : AppCompatActivity() {
             listOf(Section.FOLDERS, Section.SHADERS, Section.SAVES, Section.LOGS, Section.TRACES, Section.PROGRESS)),
         CONTROLS(R.id.menu_controls, R.string.page_controls, listOf(Section.TEST, Section.CONTROLLER)),
         ACHIEVEMENTS(R.id.menu_achievements, R.string.page_achievements, emptyList(), R.id.page_achievements),
-        SETTINGS(R.id.menu_settings, R.string.page_settings, listOf(Section.SYSTEM, Section.DISPLAY, Section.ENHANCEMENTS)),
+        SETTINGS(R.id.menu_settings, R.string.page_settings, listOf(Section.SYSTEM, Section.DISPLAY, Section.ENHANCEMENTS, Section.GPU)),
         ABOUT(R.id.menu_about, R.string.page_about, emptyList(), R.id.page_about),
     }
     private var page = Page.GAME
@@ -132,11 +135,15 @@ open class LauncherActivity : AppCompatActivity() {
     private val pickShaders = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let(::importShaders)
     }
+    private val pickDriver = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let(::installDriver)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         folders = AppFolders(this)
         folders.prepare()
+        drivers = GpuDrivers(this)
         config = LauncherConfig.load(folders.config)
         // The launcher's language is the game's (Settings › System); set
         // again at each start (Android before 13 doesn't keep it).
@@ -268,7 +275,7 @@ open class LauncherActivity : AppCompatActivity() {
     private fun showPage(p: Page, s: Section? = null) {
         if (inGame) setOverlay(false)
         page = p
-        section = s?.takeIf { it in p.sections && it.enabled }
+        section = s?.takeIf { it in p.sections && it.enabled && (it != Section.GPU || GpuDrivers.supported) }
         for (other in Page.entries) findViewById<MenuButton>(other.menu).current = other == p
         val shown = section?.view ?: p.view.takeIf { it != 0 } ?: R.id.section_list
         val pages = findViewById<ViewGroup>(R.id.section_list).parent as ViewGroup
@@ -307,7 +314,7 @@ open class LauncherActivity : AppCompatActivity() {
         val list = findViewById<LinearLayout>(R.id.section_list)
         list.removeAllViews()
         summaries.clear()
-        for (s in page.sections) {
+        for (s in page.sections.filter { it != Section.GPU || GpuDrivers.supported }) {
             list.addView(row(getString(s.title), summary(s), s.enabled, { summaries[s] = it }) { showPage(page, s) })
         }
         if (inGame && (page == Page.SETTINGS || page == Page.CONTROLS)) {
@@ -392,6 +399,7 @@ open class LauncherActivity : AppCompatActivity() {
         Section.SYSTEM -> languageName()
         Section.DISPLAY -> getString(R.string.summary_display, config.int("render_scale", 100),
             getString(aspectNames.getValue(config["aspect"] ?: "fit")))
+        Section.GPU -> currentDriverLabel()
         Section.ENHANCEMENTS -> config.int("fps_cap", 30).let {
             getString(R.string.summary_enhancements, if (it == 0) getString(R.string.fps_unlimited) else it.toString())
         }
@@ -1153,6 +1161,10 @@ open class LauncherActivity : AppCompatActivity() {
             applyLanguage()
         }
 
+        findViewById<Button>(R.id.gpu_driver_choose).setOnClickListener { chooseDriver() }
+        findViewById<Button>(R.id.gpu_driver_install).setOnClickListener {
+            pickDriver.launch(arrayOf("application/zip", "application/octet-stream", "*/*"))
+        }
         findViewById<Slider>(R.id.render_scale).addOnChangeListener { _, value, fromUser ->
             showRenderScale(value.toInt())
             if (fromUser && !binding) {
@@ -1306,6 +1318,59 @@ open class LauncherActivity : AppCompatActivity() {
         }
     }
 
+    // Settings › Display › GPU driver (GpuDrivers.kt).
+    private fun driverLabel(d: GpuDrivers.Driver) =
+        listOf(d.name, d.version).filter { it.isNotEmpty() }.joinToString(" ")
+
+    private fun currentDriverLabel() =
+        drivers.find(config["gpu_driver"])?.let(::driverLabel) ?: getString(R.string.gpu_driver_system)
+
+    /** The installed drivers and the phone's own: pick one for the next start, or delete one. */
+    private fun chooseDriver() {
+        val installed = drivers.list()
+        val current = config["gpu_driver"] ?: ""
+        val labels = listOf(getString(R.string.gpu_driver_system)) + installed.map { d ->
+            driverLabel(d) + (if (d.author.isNotEmpty()) " · " + d.author else "")
+        }
+        var picked = installed.indexOfFirst { it.id == current } + 1  // 0: the phone's
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.gpu_driver)
+            .setSingleChoiceItems(labels.toTypedArray(), picked) { _, which -> picked = which }
+            .setPositiveButton(R.string.gpu_driver_use) { _, _ ->
+                config["gpu_driver"] = if (picked == 0) "" else installed[picked - 1].id
+                save()
+            }
+            .setNeutralButton(R.string.gpu_driver_delete) { _, _ ->
+                val driver = installed.getOrNull(picked - 1) ?: return@setNeutralButton
+                confirm(R.string.gpu_driver_delete_title, driverLabel(driver), R.string.gpu_driver_delete) {
+                    drivers.delete(driver.id)
+                    if (current == driver.id) config["gpu_driver"] = ""
+                    save()
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    /** Unpacks a driver .zip (off the UI thread) and picks it. */
+    private fun installDriver(uri: Uri) {
+        val button = findViewById<Button>(R.id.gpu_driver_install)
+        button.isEnabled = false
+        Thread {
+            val result = runCatching { drivers.install(uri) }
+            runOnUiThread {
+                button.isEnabled = true
+                result.onSuccess { d ->
+                    config["gpu_driver"] = d.id
+                    save()
+                    toast(getString(R.string.gpu_driver_installed, driverLabel(d)))
+                }.onFailure { e ->
+                    toast(getString(R.string.gpu_driver_install_failed, e.message ?: ""))
+                }
+            }
+        }.start()
+    }
+
     private fun showRenderScale(percent: Int) {
         val width = (1280 * percent + 50) / 100
         val height = (720 * percent + 50) / 100
@@ -1359,6 +1424,7 @@ open class LauncherActivity : AppCompatActivity() {
             val renderScale = config.int("render_scale", 100).coerceIn(5, 400) / 5 * 5
             findViewById<Slider>(R.id.render_scale).value = renderScale.toFloat()
             showRenderScale(config.int("render_scale", 100))
+            findViewById<TextView>(R.id.gpu_driver_value).text = currentDriverLabel()
             val vibration = config.int("vibration", 100).coerceIn(0, 200) / 10 * 10
             findViewById<Slider>(R.id.vibration).value = vibration.toFloat()
             showVibration(vibration)
@@ -1524,6 +1590,7 @@ open class LauncherActivity : AppCompatActivity() {
         return fill(start) != fill(config) ||
             start.int("language", 1) != config.int("language", 1) ||
             (start["game_data"] ?: "") != (config["game_data"] ?: "") ||
+            (start["gpu_driver"] ?: "") != (config["gpu_driver"] ?: "") ||
             switches.any { (_, key) ->
                 key.startsWith("fx_") && start.bool(key, true) != config.bool(key, true)
             }

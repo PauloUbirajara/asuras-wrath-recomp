@@ -152,7 +152,7 @@
     <string name="restart">Neu starten</string>
     <string name="quit">Beenden</string>
     <string name="later">Später</string>
-    <string name="restart_needed">Füllen, die Effekte, die Sprache und der Spielordner ändern sich beim nächsten Spielstart: jetzt neu starten oder später.</string>
+    <string name="restart_needed">Füllen, die Effekte, der GPU-Treiber, die Sprache und der Spielordner ändern sich beim nächsten Spielstart: jetzt neu starten oder später.</string>
     <string name="game_menu">Spielmenü</string>
     <string name="game_menu_summary">Tastenbelegung, Tastatur, Erfolge und die übrigen Einstellungen</string>
     <string name="shaders_in_game">Nicht während das Spiel läuft: zuerst beenden.</string>
@@ -245,4 +245,14 @@
     <string name="toast_pos_5">Unten links</string>
     <string name="toast_pos_6">Unten</string>
     <string name="toast_pos_7">Unten rechts</string>
+    <string name="gpu_driver">GPU-Treiber</string>
+    <string name="gpu_driver_system">Der eigene Treiber des Telefons</string>
+    <string name="gpu_driver_choose">Auswählen…</string>
+    <string name="gpu_driver_install">Aus .zip installieren…</string>
+    <string name="gpu_driver_use">Verwenden</string>
+    <string name="gpu_driver_delete">Löschen</string>
+    <string name="gpu_driver_delete_title">Diesen Treiber löschen?</string>
+    <string name="gpu_driver_installed">%1$s installiert: wird beim nächsten Spielstart verwendet.</string>
+    <string name="gpu_driver_install_failed">Der Treiber konnte nicht installiert werden: %1$s</string>
+    <string name="gpu_driver_hint">Für Snapdragon-Telefone (Adreno-GPUs): ein eigener Vulkan-Treiber wie Mesa Turnip, aus einer Treiber-.zip (wie sie andere Android-Emulatoren nutzen). Er kann schneller sein oder Grafikfehler beheben, oder das Spiel startet damit nicht: dann wieder den eigenen Treiber des Telefons wählen. Gilt ab dem nächsten Spielstart.</string>
 </resources>

@@ -45,6 +45,10 @@ class AppFolders(private val context: Context) {
         Os.setenv("XDG_DATA_HOME", root.absolutePath, true)
         Os.setenv("XDG_CACHE_HOME", context.cacheDir.absolutePath, true)
         Os.setenv("HOME", root.absolutePath, true)
+        // Custom GPU drivers (GpuDrivers.kt, src/platform/gpu_driver.cpp):
+        // where they're installed, and where libadrenotools' hooks are.
+        Os.setenv("ASURA_GPU_DRIVERS", GpuDrivers(context).dir.absolutePath, true)
+        Os.setenv("ASURA_NATIVE_LIB_DIR", context.applicationInfo.nativeLibraryDir, true)
         unpackAssets()
     }
 

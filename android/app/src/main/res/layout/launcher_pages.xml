@@ -515,6 +515,31 @@
         <!-- No V-Sync switch: Android always presents in step with the screen (ApplyLauncherDefaults). -->
     </LinearLayout>
 
+    <!-- Settings › GPU driver (Android only): a custom Vulkan driver for
+         Snapdragon phones (GpuDrivers.kt); listed only where one can load. -->
+    <LinearLayout
+        android:id="@+id/section_gpu"
+        style="@style/Section">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView android:id="@+id/gpu_driver_value" style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="4dp" android:orientation="horizontal">
+                <Button android:id="@+id/gpu_driver_choose" style="@style/Widget.Paper.Button"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:layout_marginEnd="8dp"
+                    android:text="@string/gpu_driver_choose" />
+                <Button android:id="@+id/gpu_driver_install" style="@style/Widget.Paper.Button"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="@string/gpu_driver_install" />
+            </LinearLayout>
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/gpu_driver_hint" />
+        </LinearLayout>
+    </LinearLayout>
+
     <!-- Settings › Enhancements: frame rate, intro. -->
     <LinearLayout
         android:id="@+id/section_enhancements"

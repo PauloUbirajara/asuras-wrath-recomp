@@ -152,7 +152,7 @@
     <string name="restart">Redémarrer</string>
     <string name="quit">Quitter</string>
     <string name="later">Plus tard</string>
-    <string name="restart_needed">Remplir, les effets, la langue et le dossier du jeu changent au prochain lancement : redémarrez maintenant, ou plus tard.</string>
+    <string name="restart_needed">Remplir, les effets, le pilote GPU, la langue et le dossier du jeu changent au prochain lancement : redémarrez maintenant, ou plus tard.</string>
     <string name="game_menu">Menu du jeu</string>
     <string name="game_menu_summary">Réaffectation des boutons, clavier, succès et autres paramètres</string>
     <string name="shaders_in_game">Pas pendant que le jeu tourne : quittez-le d\'abord.</string>
@@ -245,4 +245,14 @@
     <string name="toast_pos_5">En bas à gauche</string>
     <string name="toast_pos_6">En bas</string>
     <string name="toast_pos_7">En bas à droite</string>
+    <string name="gpu_driver">Pilote GPU</string>
+    <string name="gpu_driver_system">Le pilote du téléphone</string>
+    <string name="gpu_driver_choose">Choisir…</string>
+    <string name="gpu_driver_install">Installer depuis un .zip…</string>
+    <string name="gpu_driver_use">Utiliser</string>
+    <string name="gpu_driver_delete">Supprimer</string>
+    <string name="gpu_driver_delete_title">Supprimer ce pilote ?</string>
+    <string name="gpu_driver_installed">%1$s installé : utilisé au prochain lancement du jeu.</string>
+    <string name="gpu_driver_install_failed">Impossible d\'installer le pilote : %1$s</string>
+    <string name="gpu_driver_hint">Pour les téléphones Snapdragon (GPU Adreno) : un pilote Vulkan personnalisé comme Mesa Turnip, depuis un .zip de pilote (comme ceux des autres émulateurs Android). Il peut être plus rapide ou corriger l\'image, ou le jeu peut ne pas démarrer avec : rechoisissez alors le pilote du téléphone. S\'applique au prochain lancement du jeu.</string>
 </resources>

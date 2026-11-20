@@ -152,7 +152,7 @@
     <string name="restart">再起動</string>
     <string name="quit">終了する</string>
     <string name="later">あとで</string>
-    <string name="restart_needed">切り取り表示、エフェクト、言語、ゲームフォルダは次にゲームを起動したときに変わります。今すぐ再起動するか、あとで行ってください。</string>
+    <string name="restart_needed">切り取り表示、エフェクト、GPU ドライバー、言語、ゲームフォルダは次にゲームを起動したときに変わります。今すぐ再起動するか、あとで行ってください。</string>
     <string name="game_menu">ゲームメニュー</string>
     <string name="game_menu_summary">ボタンの割り当て、キーボード、実績などの設定</string>
     <string name="shaders_in_game">ゲーム中はできません。先にゲームを終了してください。</string>
@@ -242,4 +242,14 @@
     <string name="toast_pos_5">左下</string>
     <string name="toast_pos_6">下</string>
     <string name="toast_pos_7">右下</string>
+    <string name="gpu_driver">GPU ドライバー</string>
+    <string name="gpu_driver_system">端末標準のドライバー</string>
+    <string name="gpu_driver_choose">選ぶ…</string>
+    <string name="gpu_driver_install">.zip からインストール…</string>
+    <string name="gpu_driver_use">使う</string>
+    <string name="gpu_driver_delete">削除</string>
+    <string name="gpu_driver_delete_title">このドライバーを削除しますか?</string>
+    <string name="gpu_driver_installed">%1$s をインストールしました。次にゲームを起動したときに使われます。</string>
+    <string name="gpu_driver_install_failed">ドライバーをインストールできませんでした: %1$s</string>
+    <string name="gpu_driver_hint">Snapdragon 端末(Adreno GPU)向け: Mesa Turnip などのカスタム Vulkan ドライバーを、ドライバーの .zip(ほかの Android エミュレーターと同じ形式)から使えます。速くなったり表示が直ったりしますが、ゲームが起動しないこともあります。その場合は端末標準のドライバーに戻してください。次にゲームを起動したときから適用されます。</string>
 </resources>

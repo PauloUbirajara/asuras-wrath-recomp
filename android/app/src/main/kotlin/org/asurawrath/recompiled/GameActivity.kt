@@ -3,6 +3,7 @@ package org.asurawrath.recompiled
 import android.content.Intent
 import android.os.Bundle
 import android.os.Process
+import java.io.File
 import org.libsdl.app.SDLActivity
 
 /**
@@ -20,6 +21,9 @@ class GameActivity : SDLActivity() {
         // The settings the game started with: the menu's Resume asks for a
         // restart when one that only applies at start has changed.
         startConfig = LauncherConfig.load(folders.config)
+        // Notes from the in-game menu (LauncherActivity openGameMenu, the toast
+        // example) are for the game they were left in: none from an earlier one.
+        for (note in listOf(".open_game_menu", ".toast_example")) File(folders.root, note).delete()
         current = this
         super.onCreate(savedInstanceState)
     }

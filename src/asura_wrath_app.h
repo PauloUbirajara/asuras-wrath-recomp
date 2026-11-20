@@ -37,6 +37,7 @@
 #include <rex/system/util/xdbf_utils.h>
 
 #include "platform/platform.h"
+#include "platform/gpu_driver.h"
 
 #include <rex/input/input_system.h>
 
@@ -132,6 +133,10 @@ class AsuraWrathApp : public rex::ReXApp {
     // game itself runs at 30 fps, so vsync costs nothing.
     asura::ui::ApplyLauncherDefaults(launcher_settings_);
     startup_settings_ = launcher_settings_;
+#ifdef __ANDROID__
+    // Settings > GPU driver (Android: a custom one: before the GPU is set up).
+    asura::platform::LoadCustomGpuDriver(launcher_settings_.gpu_driver);
+#endif
     // The launcher opens in a window; Play applies the fullscreen setting.
     if (LauncherWanted()) {
       asura::ui::UseWindowForLauncher();
@@ -478,6 +483,13 @@ class AsuraWrathApp : public rex::ReXApp {
   // or asked for this game menu (its "Game menu": the button remap,
   // achievements and the rest), leaving a note next to launcher.cfg.
   void OnMenuClosed() {
+    std::error_code ec;
+    const auto dir = launcher_settings_path_.parent_path();
+    // Each note is for this close only: one left over (the game wasn't
+    // running, or this menu was already open) must not open it on a later
+    // Back.
+    const bool open_game_menu = std::filesystem::remove(dir / ".open_game_menu", ec);
+    const bool toast_example = std::filesystem::remove(dir / ".toast_example", ec);
     if (!game_running_ || launcher_) return;
     asura::ui::LauncherSettings s;
     if (s.Load(launcher_settings_path_)) {
@@ -485,14 +497,12 @@ class AsuraWrathApp : public rex::ReXApp {
       asura::ui::ApplyLiveSettings(s);
       UpdateFpsCounter();
     }
-    std::error_code ec;
-    const auto note = launcher_settings_path_.parent_path() / ".open_game_menu";
-    if (std::filesystem::remove(note, ec)) {
+    if (open_game_menu) {
       REXLOG_INFO("Android menu closed: opening the game menu");
       ToggleLauncherInGame(/*game_menu=*/true);
     }
     // Settings' "Show an example": the first achievement, as a toast.
-    if (std::filesystem::remove(launcher_settings_path_.parent_path() / ".toast_example", ec)) {
+    if (toast_example) {
       rex::system::AchievementEvent sample;
       const auto list = achievements().ListAchievements();
       if (!list.empty()) {

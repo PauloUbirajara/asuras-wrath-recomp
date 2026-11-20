@@ -348,6 +348,7 @@ bool LauncherSettings::Load(const std::filesystem::path& path) {
     else if (key == "window") std::sscanf(value.c_str(), "%dx%d", &window_width, &window_height);
     else if (key == "game_data") game_data = value;
     else if (key == "data_folder") data_folder = value;
+    else if (key == "gpu_driver") gpu_driver = value;
     else if (key == "language") language = uint32_t(std::strtoul(value.c_str(), nullptr, 10));
     else if (key == "achievements_view") achievements_grid = value == "grid";
     else if (key == "deadzone_left") deadzone_left = std::strtod(value.c_str(), nullptr);
@@ -422,7 +423,7 @@ std::string LauncherSettings::Serialize() const {
       << "\nmonitor=" << monitor
       << "\nkeyboard=" << keyboard << "\naspect=" << AspectName(aspect) << "\nscreen_padding=" << screen_padding << "\nwindow="
       << window_width << "x" << window_height << "\nlanguage=" << language
-      << "\ngame_data=" << game_data << "\ndata_folder=" << data_folder << "\ndeadzone_left=" << deadzone_left
+      << "\ngame_data=" << game_data << "\ndata_folder=" << data_folder << "\ngpu_driver=" << gpu_driver << "\ndeadzone_left=" << deadzone_left
       << "\ndeadzone_right=" << deadzone_right << "\nvibration=" << vibration
       << "\nshow_fps=" << show_fps << "\nfps_corner=" << fps_corner << "\nfps_cap=" << fps_cap << "\nrender_scale=" << render_scale << "\ntoasts=" << toasts << "\ntoast_position=" << toast_position << "\ntoast_size=" << toast_size
       << "\ntoast_seconds=" << toast_seconds << "\ntrace_picture=" << trace_picture

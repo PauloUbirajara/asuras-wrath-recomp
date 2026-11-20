@@ -70,6 +70,7 @@ struct LauncherSettings {
   bool achievements_grid = false;           // Achievements page: grid instead of list
   std::string game_data;                    // game_data_root, empty = flag / default
   std::string data_folder;                  // where the game's files go (platform::CacheDir), empty = default
+  std::string gpu_driver;                   // Android: a custom Vulkan driver (gpu_driver.h), empty = the system's
   std::map<std::string, std::string> binds;  // keybind_* flag -> keys
   std::map<std::string, std::string> pad;    // controller remap: target -> source (pad_remap.h)
   double deadzone_left = 0, deadzone_right = 0;  // stick deadzones, fraction of the range

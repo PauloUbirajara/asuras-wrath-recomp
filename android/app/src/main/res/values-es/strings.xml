@@ -152,7 +152,7 @@
     <string name="restart">Reiniciar</string>
     <string name="quit">Salir</string>
     <string name="later">Más tarde</string>
-    <string name="restart_needed">Rellenar, los efectos, el idioma y la carpeta del juego cambian al volver a iniciarlo: reinícialo ahora o más tarde.</string>
+    <string name="restart_needed">Rellenar, los efectos, el controlador de GPU, el idioma y la carpeta del juego cambian al volver a iniciarlo: reinícialo ahora o más tarde.</string>
     <string name="game_menu">Menú del juego</string>
     <string name="game_menu_summary">Reasignación de botones, teclado, logros y demás ajustes</string>
     <string name="shaders_in_game">No mientras el juego está en marcha: sal de él primero.</string>
@@ -245,4 +245,14 @@
     <string name="toast_pos_5">Abajo a la izquierda</string>
     <string name="toast_pos_6">Abajo</string>
     <string name="toast_pos_7">Abajo a la derecha</string>
+    <string name="gpu_driver">Controlador de GPU</string>
+    <string name="gpu_driver_system">El controlador del teléfono</string>
+    <string name="gpu_driver_choose">Elegir…</string>
+    <string name="gpu_driver_install">Instalar desde .zip…</string>
+    <string name="gpu_driver_use">Usar</string>
+    <string name="gpu_driver_delete">Eliminar</string>
+    <string name="gpu_driver_delete_title">¿Eliminar este controlador?</string>
+    <string name="gpu_driver_installed">%1$s instalado: se usará la próxima vez que se inicie el juego.</string>
+    <string name="gpu_driver_install_failed">No se pudo instalar el controlador: %1$s</string>
+    <string name="gpu_driver_hint">Para teléfonos Snapdragon (GPU Adreno): un controlador Vulkan propio como Mesa Turnip, desde un .zip de controlador (como los que usan otros emuladores de Android). Puede ir más rápido o corregir la imagen, o puede que el juego no arranque con él: entonces vuelve a elegir el controlador del teléfono. Se aplica la próxima vez que se inicie el juego.</string>
 </resources>

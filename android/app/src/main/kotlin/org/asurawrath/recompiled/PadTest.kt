@@ -20,7 +20,8 @@ import kotlin.math.sqrt
 
 /**
  * Controls › Test: the controller as the launcher sees it through Android's
- * input events (the game sees it through SDL, with the same Xbox layout).
+ * input events (the game sees it through SDL, with the same Xbox layout); a
+ * controller set up in Controls › Controller setup, through that setup.
  * Controls are numbered as the game's PadControl (src/input/pad_remap.h).
  */
 class PadState {
@@ -36,8 +37,48 @@ class PadState {
         buttons = if (on) buttons or (1 shl control) else buttons and (1 shl control).inv()
     }
 
+    /** Controls › Controller setup's mappings: a controller set up there reads through its own. */
+    var setups: SdlPad.Setups? = null
+        set(value) { field = value; setupFor = -1 }
+    private val raw = SdlPad.Raw()
+    private var setupFor = -1
+    private var setup: Map<String, String>? = null
+
+    /** The setups changed (Controller setup saved one). */
+    fun reloadSetup() { setupFor = -1 }
+
+    private fun setupOf(d: InputDevice?): Map<String, String>? {
+        if (d == null) return null
+        if (d.id != setupFor) {
+            setupFor = d.id
+            setup = setups?.fields(d)
+        }
+        return setup
+    }
+
+    // The controls from the raw inputs, through the controller's setup (as the game reads it).
+    private fun applySetup(f: Map<String, String>) {
+        fun r(field: String) = raw.read(f[field])
+        for ((control, field) in SETUP_FIELDS.withIndex()) set(control, r(field) > 0.5f)
+        lt = r("lefttrigger")
+        rt = r("righttrigger")
+        set(LT, lt > TRIGGER_THRESHOLD)
+        set(RT, rt > TRIGGER_THRESHOLD)
+        lx = r("+leftx") - r("-leftx")
+        ly = r("-lefty") - r("+lefty")
+        rx = r("+rightx") - r("-rightx")
+        ry = r("-righty") - r("+righty")
+    }
+
     /** A gamepad key: true if it is one of the pad's controls. */
     fun onKey(event: KeyEvent): Boolean {
+        if (raw.onKey(event)) {
+            setupOf(event.device)?.let {
+                device = event.device
+                applySetup(it)
+                return true
+            }
+        }
         val control = KEYS[event.keyCode] ?: return false
         if (!isPad(event.device)) return false
         device = event.device
@@ -69,6 +110,12 @@ class PadState {
         if (!event.isFromSource(InputDevice.SOURCE_JOYSTICK) || event.action != MotionEvent.ACTION_MOVE) return false
         val d = event.device
         device = d
+        if (raw.onMotion(event)) {
+            setupOf(d)?.let {
+                applySetup(it)
+                return true
+            }
+        }
         lx = event.getAxisValue(MotionEvent.AXIS_X)
         ly = -event.getAxisValue(MotionEvent.AXIS_Y)
         if (d != null) axes.learn(d, event)
@@ -132,6 +179,9 @@ class PadState {
             MotionEvent.AXIS_RX to MotionEvent.AXIS_RY,
         )
         private const val TRIGGER_THRESHOLD = 30f / 255f  // XINPUT_GAMEPAD_TRIGGER_THRESHOLD
+        /** SDL's mapping field for each control (PadControl order). */
+        private val SETUP_FIELDS = listOf("a", "b", "x", "y", "leftshoulder", "rightshoulder", "lefttrigger",
+            "righttrigger", "back", "start", "leftstick", "rightstick", "dpup", "dpdown", "dpleft", "dpright")
 
         private val KEYS = mapOf(
             KeyEvent.KEYCODE_BUTTON_A to A, KeyEvent.KEYCODE_BUTTON_B to B,

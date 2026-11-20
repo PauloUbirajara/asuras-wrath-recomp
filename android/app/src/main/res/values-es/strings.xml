@@ -36,7 +36,6 @@
     <string name="summary_enhancements">Límite de fotogramas: %1$s</string>
     <string name="notice_game">Elige la carpeta del juego: Datos del juego › Carpetas</string>
     <string name="notice_shaders">Los shaders aún no están creados: Datos del juego › Caché de shaders</string>
-    <string name="settings_more">Reasignación de botones, logros y demás ajustes: durante el juego, Atrás › Ajustes › Menú del juego.</string>
     <string name="game_folder">Carpeta del juego</string>
     <string name="game_not_chosen">Aún sin elegir</string>
     <string name="game_found">default.xex encontrado</string>
@@ -98,7 +97,6 @@
     <string name="deadzone_left">Zona muerta stick izquierdo</string>
     <string name="deadzone_right">Zona muerta stick derecho</string>
     <string name="deadzone_hint">Cuánto se mueve un stick antes de que el juego lo note: súbela si la cámara o el personaje se mueven solos.</string>
-    <string name="remap_hint">Los botones se reasignan durante el juego: Atrás › Controles › Menú del juego.</string>
     <string name="language">Idioma</string>
     <string name="language_hint">Menús y subtítulos del juego, los logros y este lanzador.</string>
     <string name="toasts">Avisos de logros</string>
@@ -153,8 +151,6 @@
     <string name="quit">Salir</string>
     <string name="later">Más tarde</string>
     <string name="restart_needed">Rellenar, los efectos, el controlador de GPU, el idioma y la carpeta del juego cambian al volver a iniciarlo: reinícialo ahora o más tarde.</string>
-    <string name="game_menu">Menú del juego</string>
-    <string name="game_menu_summary">Reasignación de botones, teclado, logros y demás ajustes</string>
     <string name="shaders_in_game">No mientras el juego está en marcha: sal de él primero.</string>
     <string name="access_title">Permitir el acceso a tus archivos</string>
     <string name="access_text">El juego lee sus archivos directamente de la carpeta que elijas. Android pide permitir «Acceso a todos los archivos» para ello.</string>
@@ -264,6 +260,99 @@
     <string name="touch_status_none">No hay ningún mando conectado.</string>
     <string name="touch_size">Tamaño</string>
     <string name="touch_opacity">Opacidad</string>
-    <string name="touch_hint">Dos sticks, A B X Y, los botones superiores y gatillos, Back y Start sobre el juego. Funcionan junto a un mando, con la misma reasignación de botones y Turbo. Se ocultan mientras el menú del propio juego está abierto. Los cambios se aplican al volver al juego.</string>
     <string name="touch_hide_with_pad">Ocultarlos si hay un mando conectado</string>
+    <string name="section_setup">Configurar el mando</string>
+    <string name="setup_none">Sin configurar: asignación propia de SDL</string>
+    <plurals name="setup_some">
+        <item quantity="one">%d mando configurado</item>
+        <item quantity="other">%d mandos configurados</item>
+    </plurals>
+    <string name="setup_text">Para un mando que el juego lee mal (un gatillo mueve la cámara, un stick no hace nada). Toca un control abajo y púlsalo en el mando, o empieza la configuración para que te los pida por turnos. Cada uno espera 10 segundos y se guarda al momento; el juego lo usa al volver.</string>
+    <string name="setup_start">Empezar configuración</string>
+    <string name="setup_forget">Olvidar mi configuración</string>
+    <string name="setup_skip">Omitir</string>
+    <string name="setup_stop">Detener</string>
+    <string name="setup_forgotten">Olvidada: la asignación de SDL se aplica desde el próximo inicio.</string>
+    <string name="setup_no_pad">No se encontró ningún mando. Conecta uno para configurarlo.</string>
+    <string name="setup_uses_yours">%1$s: usa tu configuración.</string>
+    <string name="setup_uses_default">%1$s: usa la asignación propia de SDL.</string>
+    <string name="setup_listening">%1$s (%2$d s)</string>
+    <string name="setup_let_go">Suelta todo primero.</string>
+    <string name="setup_timeout">No se pulsó nada en 10 segundos: detenido.</string>
+    <string name="setup_done">Listo: todos los controles están configurados.</string>
+    <string name="setup_not_set">Sin asignar</string>
+    <string name="setup_input_button">Botón %1$s</string>
+    <string name="setup_input_axis">Eje %1$s</string>
+    <string name="remap">Reasignación de botones</string>
+    <string name="remap_hint">Toca una fila y pulsa el botón del mando que debe hacer de él (10 segundos). Dos botones intercambian su sitio, así todos siguen disponibles. Una pulsación larga restablece una fila.</string>
+    <string name="remap_reset">Restablecer botones</string>
+    <string name="remap_listening">%1$s: pulsa el botón del mando que usarás (%2$d s)</string>
+    <string name="section_touch_layout">Diseño táctil</string>
+    <string name="touch_layout_text">Dónde va cada control táctil y su tamaño: muévelos con el dedo en una pantalla completa como la del juego y cambia el tamaño del que elijas.</string>
+    <string name="touch_layout_edit">Editar diseño</string>
+    <string name="touch_layout_reset">Restablecer</string>
+    <string name="touch_layout_done">Listo</string>
+    <string name="touch_layout_pick">Toca un control para elegirlo y arrástralo para moverlo.</string>
+    <string name="touch_layout_size">%1$s: %2$d %%</string>
+    <string name="touch_layout_default">Predeterminado</string>
+    <string name="touch_left_stick">Stick izquierdo</string>
+    <string name="touch_right_stick">Stick derecho</string>
+    <string name="touch_hide">Ocultar</string>
+    <string name="touch_hint">Dos sticks, A B X Y, los botones superiores y gatillos, Back y Start sobre el juego; Ocultar, entre Back y Start, oculta los demás hasta volver a tocarlo (para las cinemáticas). Funcionan junto a un mando, con la misma reasignación y el mismo Turbo. Los cambios se aplican al volver al juego.</string>
+    <plurals name="touch_layout_changed">
+        <item quantity="one">%d control cambiado</item>
+        <item quantity="other">%d controles cambiados</item>
+    </plurals>
+    <string-array name="setup_labels">
+        <item>A</item>
+        <item>B</item>
+        <item>X</item>
+        <item>Y</item>
+        <item>Botón superior izquierdo</item>
+        <item>Botón superior derecho</item>
+        <item>Gatillo izquierdo</item>
+        <item>Gatillo derecho</item>
+        <item>Back</item>
+        <item>Start</item>
+        <item>Pulsar stick izquierdo</item>
+        <item>Pulsar stick derecho</item>
+        <item>Cruceta arriba</item>
+        <item>Cruceta abajo</item>
+        <item>Cruceta izquierda</item>
+        <item>Cruceta derecha</item>
+        <item>Stick izquierdo arriba</item>
+        <item>Stick izquierdo abajo</item>
+        <item>Stick izquierdo izquierda</item>
+        <item>Stick izquierdo derecha</item>
+        <item>Stick derecho arriba</item>
+        <item>Stick derecho abajo</item>
+        <item>Stick derecho izquierda</item>
+        <item>Stick derecho derecha</item>
+    </string-array>
+    <string-array name="setup_prompts">
+        <item>Pulsa A (el botón de abajo)</item>
+        <item>Pulsa B (el botón de la derecha)</item>
+        <item>Pulsa X (el botón de la izquierda)</item>
+        <item>Pulsa Y (el botón de arriba)</item>
+        <item>Pulsa el botón superior izquierdo (LB / L1)</item>
+        <item>Pulsa el botón superior derecho (RB / R1)</item>
+        <item>Aprieta el gatillo izquierdo (LT / L2)</item>
+        <item>Aprieta el gatillo derecho (RT / R2)</item>
+        <item>Pulsa Back (Select, Vista, Share)</item>
+        <item>Pulsa Start (Menú, Options)</item>
+        <item>Presiona el stick izquierdo (L3)</item>
+        <item>Presiona el stick derecho (R3)</item>
+        <item>Pulsa arriba en la cruceta</item>
+        <item>Pulsa abajo en la cruceta</item>
+        <item>Pulsa izquierda en la cruceta</item>
+        <item>Pulsa derecha en la cruceta</item>
+        <item>Mueve el stick izquierdo hacia arriba</item>
+        <item>Mueve el stick izquierdo hacia abajo</item>
+        <item>Mueve el stick izquierdo a la izquierda</item>
+        <item>Mueve el stick izquierdo a la derecha</item>
+        <item>Mueve el stick derecho hacia arriba</item>
+        <item>Mueve el stick derecho hacia abajo</item>
+        <item>Mueve el stick derecho a la izquierda</item>
+        <item>Mueve el stick derecho a la derecha</item>
+    </string-array>
 </resources>

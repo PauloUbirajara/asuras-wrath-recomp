@@ -20,6 +20,10 @@ class LauncherConfig private constructor(private val file: File, private val lin
         if (index >= 0) lines[index] = "$key=$value" else lines += "$key=$value"
     }
 
+    fun remove(key: String) {
+        lines.removeAll { !it.startsWith("#") && it.substringBefore('=', "") == key }
+    }
+
     fun int(key: String, default: Int): Int = this[key]?.trim()?.toIntOrNull() ?: default
     fun double(key: String, default: Double = 0.0): Double = this[key]?.trim()?.toDoubleOrNull() ?: default
     fun bool(key: String, default: Boolean): Boolean =

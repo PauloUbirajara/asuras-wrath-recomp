@@ -45,14 +45,16 @@ The first build also cross-builds DXC, the shader compiler `mantra_shadergen` us
 - **Game files:** copy the extracted game (the folder with `default.xex`) anywhere on the phone or SD card, then pick it with **Game › Choose folder**. The first pick asks for Android's "All files access", because the game reads its files by path. A game copied to `Android/data/org.asurawrath.recompiled/files/extracted/` is found without picking it and needs no permission.
 - **Shader cache:** **Shader cache › Build the shader cache** runs `mantra_shadergen` on the phone, in the background with a progress notification (Stop is there too; the next build continues). It takes much longer than on a computer, so keep the phone charging. Or build it on any computer (Game data › Shaders) and use **Import**: the cache is SPIR-V, the same for every CPU.
 - **Files:** `launcher.cfg` is in `Android/data/org.asurawrath.recompiled/files/`. Saves, the shader cache and logs go in `asura_wrath_recomp/` next to it, or the folder picked under **Files folder**.
-- **In game:** Back opens the in-game menu. It has the controls, achievements and the other settings, and Quit returns to the launcher. A Restart there (for settings that need one) ends the game, and the launcher starts it again.
-- **Touch controls:** shown over the game, hidden while a controller is connected (Controls › Touch controls).
+- **In game:** Back opens the in-game menu: the launcher's pages over the paused game (InGameMenuActivity), with Resume, Restart and Quit. Settings, the button remap and the controller setup apply when you go back to the game. A Restart (for settings that need one) ends the game, and the launcher starts it again. The desktop's in-game menu (ImGui) isn't used on Android.
+- **Controller setup:** Controls › Controller setup, for a controller the game reads wrongly (often the triggers moving the camera and the right stick doing nothing). Tap a control and press it on the controller (10 seconds), or Start setup to go through them all. The prompts give the Xbox and PlayStation names (LT / L2, LB / L1, L3, R3). It records the input SDL will see (SDL's Android button and axis numbering, `SdlPad.kt`) and saves it per controller model in `controller_setup_android.txt`; the game adds it as an SDL mapping for that controller.
+- **Button remap:** Controls › Controller: tap a button's row, then press the controller button that should act as it.
+- **Touch controls:** shown over the game, hidden while a controller is connected (Controls › Touch controls). Hide, between Back and Start at the top, hides the others until tapped again. Controls › Touch layout › Edit layout opens them full screen: drag one to move it, the slider sets its size.
 - **GPU driver:** Snapdragon phones can load a custom Vulkan driver .zip (Settings › GPU driver, through libadrenotools).
 - **Not here yet:** extracting an `.iso` (do it on a computer).
 
 ## Back button
 
-In game, Back works like Esc. It first closes whatever is on top: a key being rebound, the drawer, or a confirmation. Otherwise it opens the in-game menu, or resumes the game if the menu is already open.
+In game, Back (or Esc, or the controller's menu bind) opens the in-game menu. In the menu, Back closes whatever is on top (the drawer, a section) and then resumes the game.
 
 ## Icons
 

@@ -36,7 +36,6 @@
     <string name="summary_enhancements">フレームレート上限: %1$s</string>
     <string name="notice_game">ゲームフォルダを選んでください: ゲームデータ › フォルダ</string>
     <string name="notice_shaders">シェーダーがまだ作成されていません: ゲームデータ › シェーダーキャッシュ</string>
-    <string name="settings_more">ボタンの割り当て、実績などの設定: ゲーム中に戻る › 設定 › ゲームメニュー。</string>
     <string name="game_folder">ゲームフォルダ</string>
     <string name="game_not_chosen">まだ選ばれていません</string>
     <string name="game_found">default.xex を確認しました</string>
@@ -98,7 +97,6 @@
     <string name="deadzone_left">左スティックのデッドゾーン</string>
     <string name="deadzone_right">右スティックのデッドゾーン</string>
     <string name="deadzone_hint">ゲームが反応するまでのスティックの動きの幅です。カメラやキャラクターが勝手に動くときは上げてください。</string>
-    <string name="remap_hint">ボタンの割り当てはゲーム中に変更できます: 戻る › 操作設定 › ゲームメニュー。</string>
     <string name="language">言語</string>
     <string name="language_hint">ゲームのメニューと字幕、実績、このランチャーの言語です。</string>
     <string name="toasts">実績の通知</string>
@@ -153,8 +151,6 @@
     <string name="quit">終了する</string>
     <string name="later">あとで</string>
     <string name="restart_needed">切り取り表示、エフェクト、GPU ドライバー、言語、ゲームフォルダは次にゲームを起動したときに変わります。今すぐ再起動するか、あとで行ってください。</string>
-    <string name="game_menu">ゲームメニュー</string>
-    <string name="game_menu_summary">ボタンの割り当て、キーボード、実績などの設定</string>
     <string name="shaders_in_game">ゲーム中はできません。先にゲームを終了してください。</string>
     <string name="access_title">ファイルへのアクセスを許可</string>
     <string name="access_text">ゲームは選んだフォルダから直接ファイルを読み込みます。そのため Android で「すべてのファイルへのアクセス」の許可が必要です。</string>
@@ -261,6 +257,99 @@
     <string name="touch_status_none">コントローラーは接続されていません。</string>
     <string name="touch_size">大きさ</string>
     <string name="touch_opacity">不透明度</string>
-    <string name="touch_hint">2 本のスティック、A B X Y、LB/RB と LT/RT、Back と Start をゲームの上に表示します。コントローラーと同時に使え、ボタン割り当てとターボも同じく効きます。ゲーム側のメニューを開いている間は隠れます。変更はゲームに戻ったときに反映されます。</string>
     <string name="touch_hide_with_pad">コントローラー接続中は隠す</string>
+    <string name="section_setup">コントローラー設定</string>
+    <string name="setup_none">未設定: SDL の標準割り当て</string>
+    <plurals name="setup_some">
+        <item quantity="one">%d 台設定済み</item>
+        <item quantity="other">%d 台設定済み</item>
+    </plurals>
+    <string name="setup_text">ゲームが正しく読めないコントローラー向け(トリガーでカメラが動く、スティックが効かないなど)。下の項目をタップしてコントローラーで押すか、「設定を開始」で順番に案内されます。それぞれ 10 秒待ち、すぐに保存されます。ゲームに戻ると使われます。</string>
+    <string name="setup_start">設定を開始</string>
+    <string name="setup_forget">設定を削除</string>
+    <string name="setup_skip">スキップ</string>
+    <string name="setup_stop">中止</string>
+    <string name="setup_forgotten">削除しました。次回の起動から SDL の標準割り当てに戻ります。</string>
+    <string name="setup_no_pad">コントローラーが見つかりません。接続してから設定してください。</string>
+    <string name="setup_uses_yours">%1$s: あなたの設定を使っています。</string>
+    <string name="setup_uses_default">%1$s: SDL の標準割り当てを使っています。</string>
+    <string name="setup_listening">%1$s (%2$d s)</string>
+    <string name="setup_let_go">まずすべてのボタンとスティックを離してください。</string>
+    <string name="setup_timeout">10 秒間何も押されなかったため中止しました。</string>
+    <string name="setup_done">完了: すべての操作を設定しました。</string>
+    <string name="setup_not_set">未設定</string>
+    <string name="setup_input_button">ボタン %1$s</string>
+    <string name="setup_input_axis">軸 %1$s</string>
+    <string name="remap">ボタンの割り当て</string>
+    <string name="remap_hint">行をタップし、その役割をさせたいコントローラーのボタンを押してください(10 秒)。2 つのボタンは入れ替わるので、どれも使えるままです。長押しでその行を元に戻します。</string>
+    <string name="remap_reset">割り当てを元に戻す</string>
+    <string name="remap_listening">%1$s: 使うコントローラーのボタンを押してください(%2$d 秒)</string>
+    <string name="section_touch_layout">タッチ操作の配置</string>
+    <string name="touch_layout_text">各タッチ操作の位置と大きさ: ゲームと同じ全画面で指で動かし、選んだものの大きさを変えられます。</string>
+    <string name="touch_layout_edit">配置を編集</string>
+    <string name="touch_layout_reset">元に戻す</string>
+    <string name="touch_layout_done">完了</string>
+    <string name="touch_layout_pick">操作をタップして選び、ドラッグで動かします。</string>
+    <string name="touch_layout_size">%1$s: %2$d%%</string>
+    <string name="touch_layout_default">標準の配置</string>
+    <string name="touch_left_stick">左スティック</string>
+    <string name="touch_right_stick">右スティック</string>
+    <string name="touch_hide">非表示</string>
+    <string name="touch_hint">2 本のスティック、A B X Y、LB/RB と LT/RT、Back と Start をゲームの上に表示します。Back と Start の間の「非表示」は、もう一度タップするまで他を隠します(ムービー用)。コントローラーと併用でき、ボタンの割り当てと連射も同じです。変更はゲームに戻ると反映されます。</string>
+    <plurals name="touch_layout_changed">
+        <item quantity="one">%d 個の操作を変更</item>
+        <item quantity="other">%d 個の操作を変更</item>
+    </plurals>
+    <string-array name="setup_labels">
+        <item>A</item>
+        <item>B</item>
+        <item>X</item>
+        <item>Y</item>
+        <item>左バンパー</item>
+        <item>右バンパー</item>
+        <item>左トリガー</item>
+        <item>右トリガー</item>
+        <item>Back</item>
+        <item>Start</item>
+        <item>左スティック 押し込み</item>
+        <item>右スティック 押し込み</item>
+        <item>方向パッド 上</item>
+        <item>方向パッド 下</item>
+        <item>方向パッド 左</item>
+        <item>方向パッド 右</item>
+        <item>左スティック 上</item>
+        <item>左スティック 下</item>
+        <item>左スティック 左</item>
+        <item>左スティック 右</item>
+        <item>右スティック 上</item>
+        <item>右スティック 下</item>
+        <item>右スティック 左</item>
+        <item>右スティック 右</item>
+    </string-array>
+    <string-array name="setup_prompts">
+        <item>A を押してください(下のボタン)</item>
+        <item>B を押してください(右のボタン)</item>
+        <item>X を押してください(左のボタン)</item>
+        <item>Y を押してください(上のボタン)</item>
+        <item>LB / L1 を押してください</item>
+        <item>RB / R1 を押してください</item>
+        <item>LT / L2 を引いてください</item>
+        <item>RT / R2 を引いてください</item>
+        <item>BACK を押してください(SELECT、ビュー、SHARE)</item>
+        <item>START を押してください(メニュー、OPTIONS)</item>
+        <item>左スティックを押し込んでください(L3)</item>
+        <item>右スティックを押し込んでください(R3)</item>
+        <item>十字キーの上を押してください</item>
+        <item>十字キーの下を押してください</item>
+        <item>十字キーの左を押してください</item>
+        <item>十字キーの右を押してください</item>
+        <item>左スティックを上に倒してください</item>
+        <item>左スティックを下に倒してください</item>
+        <item>左スティックを左に倒してください</item>
+        <item>左スティックを右に倒してください</item>
+        <item>右スティックを上に倒してください</item>
+        <item>右スティックを下に倒してください</item>
+        <item>右スティックを左に倒してください</item>
+        <item>右スティックを右に倒してください</item>
+    </string-array>
 </resources>

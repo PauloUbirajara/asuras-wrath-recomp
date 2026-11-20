@@ -1444,7 +1444,8 @@ void LauncherDialog::OnFileDrop(rex::ui::FileDropEvent& e) {
 void LauncherDialog::Back() {
   if (playing_) return;
   last_input_ = std::chrono::steady_clock::now();
-  if (pad_capture_ >= 0) {
+  if (setup_ && setup_->Back()) {
+  } else if (pad_capture_ >= 0) {
     pad_capture_ = -1;
   } else if (!capture_flag_.empty()) {
     capture_flag_.clear();
@@ -1462,6 +1463,12 @@ void LauncherDialog::OnKeyDown(rex::ui::KeyEvent& e) {
   if (pad_capture_ >= 0) {
     e.set_handled(true);
     if (e.virtual_key() == rex::ui::VirtualKey::kEscape) pad_capture_ = -1;
+    return;
+  }
+  // Controls > Setup listening: Escape stops it.
+  if (setup_ && setup_->Listening()) {
+    e.set_handled(true);
+    if (e.virtual_key() == rex::ui::VirtualKey::kEscape) setup_->Back();
     return;
   }
   if (capture_flag_.empty()) return;
@@ -2206,6 +2213,8 @@ float LauncherDialog::DrawPanel(const ImVec2& pos, const ImVec2& size, float sca
   ImGui::PushFont(font_, (font_ ? 18.0f : 15.0f) * scale);
   if (ImGui::BeginChild("##panel", ImVec2(content_max.x - content_min.x - 2 * side,
                                           content_max.y - content_min.y - 2 * inner))) {
+    // Controls > Setup holds the controller open only while shown.
+    if (page_ != Page::kControls && setup_) setup_.reset();
     switch (page_) {
       case Page::kControls: DrawControls(scale); break;
       case Page::kAchievements: DrawAchievements(scale); break;
@@ -2394,6 +2403,23 @@ void LauncherDialog::DrawControls(float scale) {
       if (ImGui::BeginChild("##tab_body")) DrawKeyboard(scale);
       ImGui::EndChild();
       ImGui::EndTabItem();
+    }
+    // Setup: maps a controller SDL reads wrongly (controller_setup.h). It
+    // holds the controller open while shown.
+    if (ImGui::BeginTabItem(T("Setup"))) {
+      if (controls_tab_ != 3) {
+        pad_capture_ = -1;
+        capture_flag_.clear();
+        ClosePad();
+      }
+      controls_tab_ = 3;
+      if (!setup_) setup_ = std::make_unique<ControllerSetup>();
+      ImGui::Spacing();
+      if (ImGui::BeginChild("##tab_body")) setup_->Draw(scale);
+      ImGui::EndChild();
+      ImGui::EndTabItem();
+    } else if (setup_) {
+      setup_.reset();
     }
     ImGui::EndTabBar();
   }

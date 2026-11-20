@@ -68,14 +68,17 @@ import java.util.Locale
  *   Game data   Folders, Shader cache (built here by ShaderBuildService or
  *               imported), Saves, Logs; Traces and Progress listed, not yet
  *               on Android
- *   Controls    Test (the controller live), Controller (vibration, deadzones),
- *               Touch controls (TouchControlsView)
+ *   Controls    Test (the controller live), Controller (vibration, Turbo,
+ *               deadzones, the button remap), Controller setup (ControllerSetup:
+ *               what the game reads from each control), Touch controls
+ *               (TouchControlsView), Touch layout (TouchLayoutActivity)
  *   Settings    System (language: also this launcher's), Display, Enhancements,
  *               GPU driver (Snapdragon phones: GpuDrivers)
  *   About       the build, this device (Copy), the notice
  *
- * It edits launcher.cfg (LauncherConfig) and starts GameActivity; the button
- * remap and the other settings are in the in-game menu, which Back opens.
+ * It edits launcher.cfg (LauncherConfig) and starts GameActivity. In game,
+ * Back opens it again (InGameMenuActivity): the game's own menu, as there is
+ * no other on Android.
  */
 open class LauncherActivity : AppCompatActivity() {
 
@@ -99,6 +102,8 @@ open class LauncherActivity : AppCompatActivity() {
         TEST(R.id.section_test, R.string.section_test),
         CONTROLLER(R.id.section_controller, R.string.section_controller),
         TOUCH(R.id.section_touch, R.string.section_touch),
+        SETUP(R.id.section_setup, R.string.section_setup),
+        TOUCH_LAYOUT(R.id.section_touch_layout, R.string.section_touch_layout),
         SYSTEM(R.id.section_system, R.string.section_system),
         DISPLAY(R.id.section_display, R.string.section_display),
         ENHANCEMENTS(R.id.section_enhancements, R.string.section_enhancements),
@@ -108,7 +113,7 @@ open class LauncherActivity : AppCompatActivity() {
     private enum class Page(val menu: Int, val title: Int, val sections: List<Section>, val view: Int = 0) {
         GAME(R.id.menu_game, R.string.page_game,
             listOf(Section.FOLDERS, Section.SHADERS, Section.SAVES, Section.LOGS, Section.TRACES, Section.PROGRESS)),
-        CONTROLS(R.id.menu_controls, R.string.page_controls, listOf(Section.TEST, Section.CONTROLLER, Section.TOUCH)),
+        CONTROLS(R.id.menu_controls, R.string.page_controls, listOf(Section.TEST, Section.CONTROLLER, Section.SETUP, Section.TOUCH, Section.TOUCH_LAYOUT)),
         ACHIEVEMENTS(R.id.menu_achievements, R.string.page_achievements, emptyList(), R.id.page_achievements),
         SETTINGS(R.id.menu_settings, R.string.page_settings, listOf(Section.SYSTEM, Section.DISPLAY, Section.ENHANCEMENTS, Section.GPU)),
         ABOUT(R.id.menu_about, R.string.page_about, emptyList(), R.id.page_about),
@@ -155,9 +160,9 @@ open class LauncherActivity : AppCompatActivity() {
         if (inGame) overGame()
         LauncherArt.applyFonts(window.decorView)
         LauncherArt.bitmap(this, "logo.png")?.let { findViewById<ImageView>(R.id.logo).setImageBitmap(it) }
+        setUpControls()  // before the pages: showing one stops the controls' listening
         setUpPages(savedInstanceState)
         setUpSettings()
-        setUpControls()
         setUpAbout()
         setUpFiles()
         findViewById<ChipGroup>(R.id.achievements_filter).setOnCheckedStateChangeListener { _, _ -> refreshAchievements() }
@@ -276,6 +281,9 @@ open class LauncherActivity : AppCompatActivity() {
     /** Shows a page: its section `s`, else its list (or its own view). */
     private fun showPage(p: Page, s: Section? = null) {
         if (inGame) setOverlay(false)
+        // Listening for a control stops with its section.
+        setup.pause()
+        remap.stop()
         page = p
         section = s?.takeIf { it in p.sections && it.enabled && (it != Section.GPU || GpuDrivers.supported) }
         for (other in Page.entries) findViewById<MenuButton>(other.menu).current = other == p
@@ -302,6 +310,7 @@ open class LauncherActivity : AppCompatActivity() {
             Section.LOGS -> refreshLogs()
             Section.TRACES -> refreshTraces()
             Section.TEST -> refreshPad()
+            Section.SETUP -> setup.refresh()
             else -> if (p == Page.ACHIEVEMENTS) refreshAchievements()
         }
     }
@@ -318,12 +327,6 @@ open class LauncherActivity : AppCompatActivity() {
         summaries.clear()
         for (s in page.sections.filter { it != Section.GPU || GpuDrivers.supported }) {
             list.addView(row(getString(s.title), summary(s), s.enabled, { summaries[s] = it }) { showPage(page, s) })
-        }
-        if (inGame && (page == Page.SETTINGS || page == Page.CONTROLS)) {
-            // What this menu hasn't: the game's own menu, over the game.
-            list.addView(row(getString(R.string.game_menu), getString(R.string.game_menu_summary)) { openGameMenu() })
-        } else if (page == Page.SETTINGS || page == Page.CONTROLS) {
-            list.addView(hint(getString(if (page == Page.SETTINGS) R.string.settings_more else R.string.remap_hint)))
         }
         LauncherArt.applyFonts(list)
     }
@@ -399,6 +402,10 @@ open class LauncherActivity : AppCompatActivity() {
         Section.CONTROLLER -> getString(R.string.summary_controller, config.int("vibration", 100),
             percent(config.double("deadzone_left")), percent(config.double("deadzone_right")))
         Section.TOUCH -> touchSummary()
+        Section.TOUCH_LAYOUT -> touchLayoutSummary()
+        Section.SETUP -> setups.count().let {
+            if (it == 0) getString(R.string.setup_none) else resources.getQuantityString(R.plurals.setup_some, it, it)
+        }
         Section.SYSTEM -> languageName()
         Section.DISPLAY -> getString(R.string.summary_display, config.int("render_scale", 100),
             getString(aspectNames.getValue(config["aspect"] ?: "fit")))
@@ -1052,7 +1059,32 @@ open class LauncherActivity : AppCompatActivity() {
 
     // --- Controls --------------------------------------------------------------
 
+    private lateinit var setups: SdlPad.Setups
+    private lateinit var setup: ControllerSetup
+    private lateinit var remap: ButtonRemap
+
     private fun setUpControls() {
+        setups = SdlPad.Setups(File(folders.root, "controller_setup_android.txt"))
+        pad.setups = setups
+        setup = ControllerSetup(this, setups, ControllerSetup.Views(
+            findViewById(R.id.setup_pad), findViewById(R.id.setup_start), findViewById(R.id.setup_forget),
+            findViewById(R.id.setup_prompt), findViewById(R.id.setup_skip), findViewById(R.id.setup_stop),
+            findViewById(R.id.setup_message), findViewById(R.id.setup_rows),
+        )) { pad.reloadSetup() }
+        remap = ButtonRemap(this, { config }, pad, findViewById(R.id.remap_prompt), findViewById(R.id.remap_rows)) {
+            config.save()
+            refreshPad()
+            remap.show()
+        }
+        findViewById<Button>(R.id.remap_reset).setOnClickListener { remap.resetAll() }
+        // Controls › Touch layout.
+        findViewById<Button>(R.id.touch_layout_edit).setOnClickListener {
+            startActivity(Intent(this, TouchLayoutActivity::class.java))
+        }
+        findViewById<Button>(R.id.touch_layout_default).setOnClickListener {
+            config.remove("touch_layout")
+            save()
+        }
         findViewById<PadTestView>(R.id.pad_test).apply {
             state = pad
             labels = arrayOf("A", "B", "X", "Y", "LB", "RB", "LT", "RT", "Back", "Start", "LS", "RS",
@@ -1106,6 +1138,7 @@ open class LauncherActivity : AppCompatActivity() {
             invalidate()
         }
         if (section == null && page == Page.CONTROLS) showList()
+        if (section == Section.SETUP) setup.refresh()
     }
 
     private fun testing() = section == Section.TEST
@@ -1113,7 +1146,8 @@ open class LauncherActivity : AppCompatActivity() {
     // The controller goes to the test view (and is kept from moving the
     // focus or going Back while it shows).
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
-        if (pad.onMotion(event) && testing()) {
+        if (section == Section.SETUP && setup.onMotion(event)) return true
+        if (pad.onMotion(event) && (testing() || remap.onPad())) {
             findViewById<PadTestView>(R.id.pad_test).invalidate()
             return true
         }
@@ -1121,8 +1155,12 @@ open class LauncherActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // Controller setup listening: every key of the controller is its.
+        if (section == Section.SETUP && setup.onKey(event)) return true
         val wasNamed = pad.device != null
-        if (pad.onKey(event) && testing()) {
+        val padKey = pad.onKey(event)
+        if (padKey && remap.onPad()) return true
+        if (padKey && testing()) {
             if (!wasNamed) refreshPad()
             findViewById<PadTestView>(R.id.pad_test).invalidate()
             return true
@@ -1203,6 +1241,14 @@ open class LauncherActivity : AppCompatActivity() {
             findViewById<Chip>(id).setOnClickListener {
                 config["fps_cap"] = cap.toString()
                 save()
+            }
+        }
+        for ((i, id) in fpsCornerChips.withIndex()) {
+            findViewById<Chip>(id).setOnClickListener {
+                if (!binding) {
+                    config["fps_corner"] = i.toString()
+                    save()
+                }
             }
         }
         // Achievement pop-ups (game_toast.h ToastOptions).
@@ -1304,6 +1350,13 @@ open class LauncherActivity : AppCompatActivity() {
         "fx_distortion" to true, "touch_show" to true, "touch_hide_with_pad" to true,
     )
 
+    /** The Touch layout line: as it comes, or how many are moved or resized. */
+    private fun touchLayoutSummary(): String {
+        val n = (config["touch_layout"] ?: "").split(';').count { it.isNotBlank() }
+        return if (n == 0) getString(R.string.touch_layout_default)
+        else resources.getQuantityString(R.plurals.touch_layout_changed, n, n)
+    }
+
     /** The Touch controls line: off, always, or hidden with a controller. */
     private fun touchSummary() = getString(when {
         !config.bool("touch_show", true) -> R.string.touch_off
@@ -1311,6 +1364,7 @@ open class LauncherActivity : AppCompatActivity() {
         else -> R.string.touch_auto
     })
 
+    private val fpsCornerChips = listOf(R.id.fps_corner_0, R.id.fps_corner_1, R.id.fps_corner_2, R.id.fps_corner_3)
     private val fpsChips = listOf(R.id.fps_30 to 30, R.id.fps_60 to 60, R.id.fps_120 to 120, R.id.fps_unlimited to 0)
     private val aspectRows = mapOf(
         "fit" to (R.id.aspect_fit to R.id.aspect_fit_info),
@@ -1463,6 +1517,12 @@ open class LauncherActivity : AppCompatActivity() {
                 if (cap == 0) FPS_UNLIMITED_SLOT.toFloat() else (cap.coerceAtLeast(15) / 5 * 5).toFloat()
             showFpsCap(cap)
             for ((id, value) in fpsChips) findViewById<Chip>(id).isChecked = value == cap
+            val fpsCorner = config.int("fps_corner", 0).coerceIn(0, 3)
+            for ((i, id) in fpsCornerChips.withIndex()) findViewById<Chip>(id).isChecked = i == fpsCorner
+            findViewById<View>(R.id.fps_corner).isVisible = config.bool("show_fps", false)
+            findViewById<TextView>(R.id.touch_layout_state).text = touchLayoutSummary()
+            findViewById<View>(R.id.touch_layout_default).isEnabled = !config["touch_layout"].isNullOrEmpty()
+            remap.show()
             val touchShown = config.bool("touch_show", true)
             findViewById<View>(R.id.touch_hide_with_pad).isEnabled = touchShown
             findViewById<TextView>(R.id.touch_status).text = getString(
@@ -1505,6 +1565,7 @@ open class LauncherActivity : AppCompatActivity() {
                 Section.LOGS -> refreshLogs()
                 Section.TRACES -> refreshTraces()
                 Section.TEST -> refreshPad()
+                Section.SETUP -> setup.refresh()
                 else -> if (page == Page.ACHIEVEMENTS) refreshAchievements()
             }
         } finally {
@@ -1665,12 +1726,6 @@ open class LauncherActivity : AppCompatActivity() {
         GameActivity.current?.finish()
         finish()
         android.os.Process.killProcess(android.os.Process.myPid())
-    }
-
-    /** The game's own menu (ImGui), opened by the game when it comes back. */
-    private fun openGameMenu() {
-        File(folders.root, ".open_game_menu").writeText("1\n")
-        finish()
     }
 
     // --- Play ------------------------------------------------------------------

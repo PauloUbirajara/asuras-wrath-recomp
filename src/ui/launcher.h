@@ -37,6 +37,7 @@
 #include <rex/ui/window_listener.h>
 
 #include "../platform/platform.h"
+#include "controller_setup.h"
 #include "save_data.h"
 
 struct SDL_Gamepad;
@@ -425,7 +426,8 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   std::string message_;             // shown above Play (validation errors)
   std::string capture_flag_;        // keybind being rebound
   int capture_slot_ = 0;            // 0 = primary key, 1 = alternate
-  int controls_tab_ = 0;            // 0 test, 1 controller, 2 keyboard
+  int controls_tab_ = 0;            // 0 test, 1 controller, 2 keyboard, 3 setup
+  std::unique_ptr<ControllerSetup> setup_;  // while Controls > Setup is shown
   enum { kSettingsSystem, kSettingsDisplay, kSettingsEnhancements };
   enum { kSavesInfo, kSavesProgress, kSavesFolders, kSavesShaders, kSavesLogs, kSavesTraces };
   int settings_tab_request_ = -1;   // Settings tab to open on the next frame

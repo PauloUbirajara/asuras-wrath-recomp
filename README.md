@@ -263,6 +263,7 @@ The launcher opens first:
   - *Traces*: *Trace the next frame* (or F3 in game) writes everything mantra does for one frame to `<Files folder>/traces/<date>_<time>_frame<N>.log`, for picture bugs. The newest 30 are kept.
   - *Info* / *Progress*: your save, achievements and the episodes reached (later ones stay hidden).
 - **Controls**: a live button test, controller remapping, deadzones, vibration and Turbo buttons, keyboard and mouse, key rebinding.
+  - *Setup*: for a controller the game reads wrongly (a trigger moving the camera, a stick doing nothing). Each control (buttons, triggers, D-pad, every stick direction) is a row, named with both the Xbox and PlayStation labels where they differ (LT / L2, LB / L1, L3): *Set* waits up to 10 seconds for you to press it on the controller, and *Start setup* goes through them all in turn. Each answer is saved at once as an SDL mapping for that controller, in `controller_mappings.txt` next to `launcher.cfg`. On Android it's *Controls > Controller setup* (saved in `controller_setup_android.txt`).
 - **Achievements**: list or grid, filtered by unlocked / locked.
 - **Settings**
   - *System*: language (game, achievements and launcher), achievement pop-ups.
@@ -280,12 +281,12 @@ The render resolution is also `MANTRA_RENDER_SCALE` (a factor such as `1.5`, or 
 
 ### Android (experimental)
 
-Runs on Android 10+ with an arm64 (or x86_64) CPU and Vulkan 1.1. On-screen touch controls show over the game; they hide while a controller (USB or Bluetooth) is connected (*Controls > Touch controls*). Snapdragon phones can also load a custom Vulkan driver such as Turnip (*Settings > GPU driver*).
+Runs on Android 10+ with an arm64 (or x86_64) CPU and Vulkan 1.1. On-screen touch controls show over the game; they hide while a controller (USB or Bluetooth) is connected (*Controls > Touch controls*). A Hide button between Back and Start hides the rest until tapped again (for cutscenes), and *Controls > Touch layout* moves and resizes each one. Snapdragon phones can also load a custom Vulkan driver such as Turnip (*Settings > GPU driver*).
 
 1. Install the APK (`…-android-arm64-v8a.apk` for phones, or the universal one).
 2. Copy the extracted game (the folder with `default.xex`) to the phone, then pick it in the launcher (**Game › Choose folder**, which asks for "All files access"). A copy in `Android/data/org.asurawrath.recompiled/files/extracted/` is found without asking. `.iso` extraction isn't available on the phone: extract it on a computer.
 3. **Shader cache**: build it on the phone (slow; keep it charging), or build it on a computer (**Game data > Shaders**) and **Import** the `.mshc` (the same file works on every platform).
-4. **Play**. In game, Back opens the in-game menu (controls, achievements, settings, Quit).
+4. **Play**. In game, Back opens the in-game menu: the launcher's own pages (controls, button remap, controller setup, achievements, settings) with Resume, Restart and Quit. The desktop's in-game menu isn't used on Android.
 
 What to expect: it is slow on mid-range phones (well below 30 fps on a Snapdragon 695 / Adreno 619 class device), and some character voices can drop out in cutscenes when the frame rate is low. Lowering *Render resolution* and turning off some *Effects* (both under *Settings > Display*) helps. Logs and frame traces (under *Game data*) are welcome in bug reports. More details: [android/README.md](android/README.md).
 

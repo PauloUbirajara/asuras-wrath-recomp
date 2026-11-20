@@ -66,6 +66,7 @@ set(ASURAWRATH_SOURCES
     src/game/game_files.cpp
     src/game/graphics_effects.cpp
     src/platform/gpu_driver.cpp
+    src/input/controller_mappings.cpp
     src/input/pad_remap.cpp
     ${ASURA_PLATFORM_SOURCES}
     src/ui/about_info.cpp
@@ -73,6 +74,7 @@ set(ASURAWRATH_SOURCES
     src/ui/game_font.cpp
     src/ui/fps_counter.cpp
     src/ui/game_toast.cpp
+    src/ui/controller_setup.cpp
     src/ui/launcher.cpp
     src/ui/launcher_text.cpp
     src/ui/notice_toast.cpp

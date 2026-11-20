@@ -45,6 +45,7 @@
 #include "game/frame_rate.h"
 #include "game/skip_intro.h"
 #include "game/graphics_effects.h"
+#include "input/controller_mappings.h"
 #include "input/pad_remap.h"
 #include "ui/game_assets.h"
 #include "ui/game_font.h"
@@ -266,6 +267,10 @@ class AsuraWrathApp : public rex::ReXApp {
     // can't live in it).
     launcher_settings_path_ = asura::ui::LauncherSettings::Locate(paths.user_data_root);
     launcher_settings_.Load(launcher_settings_path_);
+    // Controls > Setup's mappings, beside it (SDL reads them when its
+    // gamepad subsystem starts: the launcher's and the game's).
+    asura::input::SetControllerMappingsFile(launcher_settings_path_.parent_path() /
+                                            "controller_mappings.txt");
     // The Files folder: saves and profile, caches (platform::CacheDir()),
     // logs. Everything that reads it (here, the mantra plugin, the game Play
     // starts) takes it from the environment. One set in the shell wins.
@@ -342,6 +347,8 @@ class AsuraWrathApp : public rex::ReXApp {
     SDL_AddEventWatch(&AsuraWrathApp::BackWatch, this);
 #ifdef __ANDROID__
     android_app_ = this;
+    // Controls › Controller setup (the app's menu, ControllerSetup.kt).
+    asura::input::ApplyAndroidControllerSetup(AndroidControllerSetupFile());
 #endif
     // F3 in game: trace the next frame (Game data > Traces). The SDK's
     // performance overlay, F3 by default, gets no key (ApplyLauncherDefaults).
@@ -481,28 +488,23 @@ class AsuraWrathApp : public rex::ReXApp {
   }
 
   // The game is back in front: the menu may have changed launcher.cfg (the
-  // live settings apply now; the others at the next start, as the menu said),
-  // or asked for this game menu (its "Game menu": the button remap,
-  // achievements and the rest), leaving a note next to launcher.cfg.
+  // live settings apply now; the others at the next start, as the menu said)
+  // or the controller setup, or asked for an example toast (a note next to
+  // launcher.cfg).
   void OnMenuClosed() {
     std::error_code ec;
     const auto dir = launcher_settings_path_.parent_path();
-    // Each note is for this close only: one left over (the game wasn't
-    // running, or this menu was already open) must not open it on a later
-    // Back.
-    const bool open_game_menu = std::filesystem::remove(dir / ".open_game_menu", ec);
+    // The note is for this close only: one left over (the game wasn't
+    // running) must not show on a later one.
     const bool toast_example = std::filesystem::remove(dir / ".toast_example", ec);
-    if (!game_running_ || launcher_) return;
+    if (!game_running_) return;
     asura::ui::LauncherSettings s;
     if (s.Load(launcher_settings_path_)) {
       launcher_settings_ = s;
       asura::ui::ApplyLiveSettings(s);
       UpdateFpsCounter();
     }
-    if (open_game_menu) {
-      REXLOG_INFO("Android menu closed: opening the game menu");
-      ToggleLauncherInGame(/*game_menu=*/true);
-    }
+    asura::input::ApplyAndroidControllerSetup(AndroidControllerSetupFile());
     // Settings' "Show an example": the first achievement, as a toast.
     if (toast_example) {
       rex::system::AchievementEvent sample;
@@ -518,11 +520,17 @@ class AsuraWrathApp : public rex::ReXApp {
   }
 #endif
 
+#ifdef __ANDROID__
+  std::filesystem::path AndroidControllerSetupFile() const {
+    return launcher_settings_path_.parent_path() / "controller_setup_android.txt";
+  }
+#endif
+
   // bind_launcher (Esc): opens the launcher over the game, or resumes from it.
   // The game keeps running underneath.
   // On Android every way in (Back, Esc, a pad's bind) opens the app's own
-  // menu; only its "Game menu" row (game_menu) opens this one.
-  void ToggleLauncherInGame(bool game_menu = false) {
+  // menu (InGameMenuActivity) instead: this one isn't used there.
+  void ToggleLauncherInGame() {
     if (!game_running_ || !imgui_drawer()) return;
     // Esc also closes the SDK's console and settings overlays.
     if (ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput) return;
@@ -531,10 +539,8 @@ class AsuraWrathApp : public rex::ReXApp {
       return;
     }
 #ifdef __ANDROID__
-    if (!game_menu) {
-      if (OpenAndroidMenu()) return;
-      REXLOG_WARN("GameActivity.openMenu failed; opening the game menu instead");
-    }
+    if (!OpenAndroidMenu()) REXLOG_WARN("GameActivity.openMenu failed");
+    return;
 #endif
     if (window()) window()->SetCursorVisibility(rex::ui::Window::CursorVisibility::kVisible);
     asura::input::SetTouchControlsSuspended(true);

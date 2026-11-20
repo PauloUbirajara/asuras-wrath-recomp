@@ -30,15 +30,29 @@
 
 #include <SDL3/SDL.h>
 
+#if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
+
 #include "../game/frame_rate.h"
 #include "fps_counter.h"
 #include "../input/pad_remap.h"
+#include "../mantra_renderer/render_scale.h"
 #include "../mantra_renderer/shader_cache_format.h"
 #include "../platform/platform.h"
 #include "about_info.h"
 #include "game_assets.h"
 #include "game_font.h"
 #include "game_toast.h"
+#include "notice_toast.h"
 #include "launcher_text.h"
 
 extern "C" unsigned char* stbi_load_from_memory(const unsigned char* buffer, int len, int* x,
@@ -287,6 +301,9 @@ bool LauncherSettings::Load(const std::filesystem::path& path) {
   std::ifstream in(path);
   if (!in) return false;
   std::string line;
+  // Before render_scale: "Higher resolution" + a render height.
+  bool native_render = false, have_scale = false;
+  int render_height = 720;
   while (std::getline(in, line)) {
     const size_t eq = line.find('=');
     if (eq == std::string::npos || line[0] == '#') continue;
@@ -327,12 +344,23 @@ bool LauncherSettings::Load(const std::filesystem::path& path) {
     else if (key == "native_render") native_render = on;
     else if (key == "fps_cap") fps_cap = std::clamp(std::atoi(value.c_str()), 0, 240);
     else if (key == "render_height") render_height = std::clamp(std::atoi(value.c_str()), 360, 2880);
+    else if (key == "render_scale") {
+      render_scale = std::clamp((std::atoi(value.c_str()) + 2) / 5 * 5, 5, 400);
+      have_scale = true;
+    }
     else if (key == "toasts") toasts = on;
     else if (key == "toast_corner") toast_corner = std::clamp(std::atoi(value.c_str()), 0, 3);
     else if (key == "toast_seconds")
       toast_seconds = std::clamp(std::strtod(value.c_str(), nullptr), 1.0, 15.0);
+    else if (key == "trace_picture") trace_picture = on;
+    else if (key == "trace_notice") trace_notice = on;
+    else if (key == "trace_notice_position")
+      trace_notice_position = std::clamp(std::atoi(value.c_str()), 0, 5);
     else if (key.rfind("pad.", 0) == 0) pad[key.substr(4)] = value;
     else if (key.rfind("flag.", 0) == 0) binds[key.substr(5)] = value;
+  }
+  if (!have_scale && native_render) {
+    render_scale = std::clamp((render_height * 100 / 720 + 2) / 5 * 5, 5, 400);
   }
   return true;
 }
@@ -342,6 +370,12 @@ bool LauncherSettings::Save(const std::filesystem::path& path) const {
   std::filesystem::create_directories(path.parent_path(), ec);
   std::ofstream out(path);
   if (!out) return false;
+  out << Serialize();
+  return bool(out);
+}
+
+std::string LauncherSettings::Serialize() const {
+  std::ostringstream out;
   out << "# Asura's Wrath Recompiled launcher settings\n"
       << "gpu=" << gpu << "\nvsync=" << vsync << "\nfullscreen=" << fullscreen << "\nexclusive=" << exclusive
       << "\nmonitor=" << monitor
@@ -349,8 +383,10 @@ bool LauncherSettings::Save(const std::filesystem::path& path) const {
       << window_width << "x" << window_height << "\nlanguage=" << language
       << "\ngame_data=" << game_data << "\ndata_folder=" << data_folder << "\ndeadzone_left=" << deadzone_left
       << "\ndeadzone_right=" << deadzone_right << "\nvibration=" << vibration
-      << "\nshow_fps=" << show_fps << "\nfps_corner=" << fps_corner << "\nfps_cap=" << fps_cap << "\nrender_height=" << render_height << "\nnative_render=" << native_render << "\ntoasts=" << toasts << "\ntoast_corner=" << toast_corner
-      << "\ntoast_seconds=" << toast_seconds << "\nhide_cursor=" << hide_cursor
+      << "\nshow_fps=" << show_fps << "\nfps_corner=" << fps_corner << "\nfps_cap=" << fps_cap << "\nrender_scale=" << render_scale << "\ntoasts=" << toasts << "\ntoast_corner=" << toast_corner
+      << "\ntoast_seconds=" << toast_seconds << "\ntrace_picture=" << trace_picture
+      << "\ntrace_notice=" << trace_notice << "\ntrace_notice_position=" << trace_notice_position
+      << "\nhide_cursor=" << hide_cursor
       << "\nmute_background=" << mute_background << "\nskip_intro=" << skip_intro
       << "\ndetailed_logs=" << detailed_logs << "\nturbo=";
   for (int c = 0, n = 0; c < input::kPadControlCount; ++c) {
@@ -360,7 +396,28 @@ bool LauncherSettings::Save(const std::filesystem::path& path) const {
       << "\nachievements_view=" << (achievements_grid ? "grid" : "list") << "\n";
   for (const auto& [target, source] : pad) out << "pad." << target << "=" << source << "\n";
   for (const auto& [flag, value] : binds) out << "flag." << flag << "=" << value << "\n";
-  return bool(out);
+  return out.str();
+}
+
+// Changes mantra's render scale in the running game, through the loaded
+// plugin (a shared library; nothing happens if another renderer runs).
+static void RequestRenderScale(double factor) {
+  using SetScale = void (*)(double);
+  static SetScale set = []() -> SetScale {
+#if defined(_WIN32)
+    HMODULE module = GetModuleHandleA("rexgpu-mantra.dll");
+    return module ? reinterpret_cast<SetScale>(GetProcAddress(module, kMantraSetRenderScale))
+                  : nullptr;
+#else
+    void* module = dlopen("librexgpu-mantra.so", RTLD_NOW | RTLD_NOLOAD);
+    return module ? reinterpret_cast<SetScale>(dlsym(module, kMantraSetRenderScale)) : nullptr;
+#endif
+  }();
+  if (set) {
+    set(factor);
+  } else {
+    REXLOG_WARN("launcher: mantra isn't loaded; the render scale applies on the next start");
+  }
 }
 
 // MANTRA_RENDER_SCALE set before the launcher's settings were first applied
@@ -370,11 +427,6 @@ bool RenderScaleFromEnvironment() {
   return from_environment;
 }
 
-// The guest display rate a frame-rate cap needs (0 = the SDK's default, 60).
-static int GuestRefreshRate(int fps_cap) {
-  if (fps_cap == 30) return 0;
-  return fps_cap <= 0 || fps_cap > 120 ? 240 : 2 * fps_cap;
-}
 
 void ApplyLauncherDefaults(const LauncherSettings& s) {
   SetIfUnset("vulkan_device", std::to_string(s.gpu));
@@ -411,23 +463,26 @@ void ApplyLauncherDefaults(const LauncherSettings& s) {
   input::SetVibrationStrength(s.vibration);
   input::SetTurboControls(s.turbo);
   game::SetFrameRateCap(s.fps_cap);
-  // The game also presents only every second guest vblank, so above 30 fps
-  // the (emulated) display needs twice the cap: 60 fps -> 120 Hz. Read once
-  // when the GPU starts, so an in-game cap change takes it on the next start.
-  if (const int hz = GuestRefreshRate(s.fps_cap)) {
-    SetIfUnset("video_mode_refresh_rate", std::to_string(hz));
-  }
-  // mantra reads it when it starts (vk_image.h RenderScale8).
+  // The game presents every second guest vblank, so above 30 fps the
+  // (emulated) display needs twice the cap. The SDK reads the rate once when
+  // the GPU starts, so it is the most any cap needs (240 Hz = 120 presents a
+  // second); the cap itself (GetMaxTickRate) then changes live, 30 included.
+  SetIfUnset("video_mode_refresh_rate", "240");
+  // mantra reads it when it starts (vk_image.h RenderScaleUnits); in game,
+  // ApplyLiveSettings changes it.
   // Unless the environment set it before the first call: the launcher's
   // process applies its start-up settings, and the game process (started by
   // Play) inherits the environment, so a stale value must not stay.
   if (!RenderScaleFromEnvironment()) {
-    platform::SetEnv("MANTRA_RENDER_SCALE", RenderHeight(s) != 720
-                                                ? std::to_string(RenderHeight(s)).c_str()
+    platform::SetEnv("MANTRA_RENDER_SCALE", s.render_scale != 100
+                                                ? std::to_string(RenderScale(s)).c_str()
                                                 : nullptr);
   }
   SetToastOptions({s.toasts, s.toast_corner, float(s.toast_seconds)});
   SetFpsCorner(s.fps_corner);
+  // The game started by Play inherits it (its own settings set it live too).
+  platform::SetEnv("MANTRA_TRACE_CAPTURE", s.trace_picture ? "1" : "0");
+  SetTraceOptions({s.trace_notice, s.trace_notice_position, s.trace_picture});
 }
 
 input::PadMap PadMapFrom(const LauncherSettings& s) {
@@ -460,16 +515,17 @@ void ApplyLiveSettings(const LauncherSettings& s) {
   input::SetVibrationStrength(s.vibration);
   input::SetTurboControls(s.turbo);
   game::SetFrameRateCap(s.fps_cap);
+  if (!RenderScaleFromEnvironment()) RequestRenderScale(RenderScale(s));
   SetToastOptions({s.toasts, s.toast_corner, float(s.toast_seconds)});
   SetFpsCorner(s.fps_corner);
+  SetTraceOptions({s.trace_notice, s.trace_notice_position, s.trace_picture});
 }
 
 bool NeedsRestart(const LauncherSettings& before, const LauncherSettings& after) {
   return before.gpu != after.gpu || before.vsync != after.vsync ||
-         RenderHeight(before) != RenderHeight(after) || before.monitor != after.monitor ||
+         before.monitor != after.monitor ||
          (before.fullscreen && before.exclusive) != (after.fullscreen && after.exclusive) ||
-         (before.aspect == AspectMode::kFill) != (after.aspect == AspectMode::kFill) ||
-         GuestRefreshRate(before.fps_cap) != GuestRefreshRate(after.fps_cap);
+         (before.aspect == AspectMode::kFill) != (after.aspect == AspectMode::kFill);
 }
 
 void ApplyOrangeAccent(ImGuiStyle& imgui_style, rex::ui::Style& ui_style) {
@@ -515,36 +571,6 @@ std::filesystem::path ShadergenPath() {
 #else
   return rex::filesystem::GetExecutableFolder() / "mantra_shadergen";
 #endif
-}
-
-// The exact hashes in the shader cache (read again when the file changes).
-const std::unordered_set<uint64_t>& CachedShaderHashes() {
-  namespace sc = mantra::shader_cache;
-  static std::filesystem::file_time_type time{};
-  static std::unordered_set<uint64_t> hashes;
-  std::error_code ec;
-  const auto cache = ShaderCachePath();
-  const auto written = std::filesystem::last_write_time(cache, ec);
-  if (ec) {
-    hashes.clear();
-    time = {};
-    return hashes;
-  }
-  if (written == time) return hashes;
-  time = written;
-  hashes.clear();
-  std::ifstream in(cache, std::ios::binary);
-  sc::CacheHeader header{};
-  if (!in.read(reinterpret_cast<char*>(&header), sizeof(header)) ||
-      std::memcmp(header.magic, sc::kMagic, 4) != 0) {
-    return hashes;
-  }
-  std::vector<sc::CacheEntry> entries(header.entry_count);
-  if (in.read(reinterpret_cast<char*>(entries.data()),
-              std::streamsize(entries.size() * sizeof(sc::CacheEntry)))) {
-    for (const sc::CacheEntry& e : entries) hashes.insert(e.exact_hash);
-  }
-  return hashes;
 }
 
 size_t ShadersNotInCache() {
@@ -638,11 +664,11 @@ ShaderCacheFit ShaderCacheFitFor(const LauncherSettings& s) {
   namespace sc = mantra::shader_cache;
   const uint32_t version = ShaderCacheVersion();
   if (version < sc::kMinVersion || version > sc::kVersion) return ShaderCacheFit::kMissing;
-  const uint32_t needed = RenderHeight(s) != 720 ? 8 : sc::kMinVersion;
+  const uint32_t needed = s.render_scale != 100 ? 8 : sc::kMinVersion;
   return version < needed ? ShaderCacheFit::kOutdated : ShaderCacheFit::kReady;
 }
 
-int RenderHeight(const LauncherSettings& s) { return s.native_render ? s.render_height : 720; }
+double RenderScale(const LauncherSettings& s) { return s.render_scale / 100.0; }
 
 bool HaveGameFonts() { return HaveExtractedUiFonts(); }
 
@@ -652,9 +678,8 @@ void LauncherDialog::ShaderBuild::Start(const std::filesystem::path& tool,
                                         const std::filesystem::path& game,
                                         const std::filesystem::path& out,
                                         const std::vector<std::filesystem::path>& dumps,
-                                        bool update, bool in_background, bool fresh) {
+                                        bool update, bool fresh) {
   Stop();
-  background = in_background;
   stopping = false;
   this->out = out;
   std::error_code ec;
@@ -668,11 +693,6 @@ void LauncherDialog::ShaderBuild::Start(const std::filesystem::path& tool,
     args.push_back(dir.string());
   }
   if (update) args.push_back("--update");
-  if (in_background) {
-    // Only what the game used, at low priority, next to the running game.
-    args.push_back("--requested-only");
-    args.push_back("--background");
-  }
   if (std::string error; !process.Start(tool, args, /*capture_output=*/true, &error)) {
     std::lock_guard<std::mutex> lock(mutex);
     last_line = T("Could not start ") + tool.string() + ": " + error;
@@ -756,11 +776,6 @@ void LauncherDialog::ShaderBuild::Stop() {
 LauncherDialog::ShaderBuild& LauncherDialog::SharedShaderBuild() {
   static ShaderBuild* build = new ShaderBuild;  // its thread may outlive any launcher
   return *build;
-}
-
-std::unordered_set<uint64_t>& LauncherDialog::ShadersTried() {
-  static auto* tried = new std::unordered_set<uint64_t>;
-  return *tried;
 }
 
 std::string LauncherDialog::ShaderBuild::Line() {
@@ -1076,6 +1091,8 @@ void LauncherDialog::SetInGame(std::function<bool(const LauncherSettings&)> need
                                std::function<void(const LauncherSettings&, bool)> on_resume) {
   in_game_needs_restart_ = std::move(needs_restart);
   on_resume_ = std::move(on_resume);
+  opened_settings_ = settings_;
+  opened_serialized_ = settings_.Serialize();
 }
 
 LauncherDialog::~LauncherDialog() {
@@ -1403,46 +1420,6 @@ void LauncherDialog::LimitFrameRate(ImGuiIO& io) {
   last_frame_ = std::max(clock::now(), last_frame_ + period);
 }
 
-void LauncherDialog::MaybeTranslateForGame() {
-  const double now = ImGui::GetTime();
-  // Not during play: each new cache made the game reload it and swap
-  // shaders mid-game. Over the game (Esc) the picture behind the menu takes
-  // the swap; the launcher that started the game waits for it to close.
-  if (game_.Running() || now - game_shaders_checked_at_ < 2.0) return;
-  game_shaders_checked_at_ = now;
-  if (shader_build_.state == ShaderBuild::kRunning || !GameDataValid()) return;
-  // A cache of another version would be rebuilt whole: leave that to Build.
-  const std::filesystem::path cache = ShaderCachePath();
-  std::error_code ec;
-  const uint32_t version = ShaderCacheVersion();
-  if (std::filesystem::exists(cache, ec) && version != mantra::shader_cache::kVersion) return;
-  // The programs the game kept for the cache build ({vs|ps}_<hash>_<dwords>.mc)
-  // that the cache lacks and no build here tried yet (some have no
-  // counterpart in the game files: they would be tried again and again).
-  const auto& cached = CachedShaderHashes();
-  size_t pending = 0;
-  std::vector<uint64_t> seen;
-  for (const auto& dir : ShaderDumpDirs()) {
-    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
-      const std::string name = entry.path().filename().string();
-      unsigned long long hash = 0;
-      if (entry.path().extension() != ".mc" || name.size() < 20 ||
-          std::sscanf(name.c_str() + 3, "%16llx", &hash) != 1) {
-        continue;
-      }
-      seen.push_back(hash);
-      pending += !cached.count(hash) && !shaders_tried_.count(hash);
-    }
-  }
-  if (!pending) return;
-  const std::filesystem::path tool = ShadergenPath();
-  if (!std::filesystem::is_regular_file(tool, ec)) return;
-  shaders_tried_.insert(seen.begin(), seen.end());
-  REXLOG_INFO("launcher: translating {} shaders the game used that the cache lacks", pending);
-  shader_build_.Start(tool, settings_.game_data, cache, ShaderDumpDirs(), /*update=*/true,
-                      /*background=*/true);
-}
-
 void LauncherDialog::OnDraw(ImGuiIO& io) {
   if (playing_) return;
   LimitFrameRate(io);
@@ -1463,7 +1440,6 @@ void LauncherDialog::OnDraw(ImGuiIO& io) {
     if (failed) message_ = T("The game closed with an error (see the log).");
   }
   shader_build_.Tick();
-  MaybeTranslateForGame();
   if (iso_extract_.state == IsoExtract::kDone) {
     if (iso_extract_.worker.joinable()) iso_extract_.worker.join();
     iso_extract_.state = IsoExtract::kIdle;
@@ -1542,16 +1518,25 @@ bool LauncherDialog::SidebarButton(const char* label, bool selected, float width
 }
 
 // In game: Quit, above Resume, after a confirmation (Esc or Cancel goes back).
-void LauncherDialog::DrawQuit(const ImVec2& pos, const ImVec2& size, float scale) {
+void LauncherDialog::DrawQuit(float scale) {
   ImGui::PushFont(font_, 24.0f * scale);
   ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
   ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.06f));
   ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.12f));
   ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.75f, 0.73f, 0.70f, 1.0f));
-  ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + size.y - 140 * scale));
-  if (ImGui::Button((std::string(T("Quit the game")) + "##quit").c_str(), ImVec2(size.x, 44 * scale))) {
-    ImGui::OpenPopup("##quit_confirm");
+  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(16 * scale, 8 * scale));
+  {
+    // Top right of the window, out of the way of Resume.
+    const std::string text = std::string(T("Quit the game")) + "##quit";
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const ImVec2 button_size(ImGui::CalcTextSize(text.c_str(), nullptr, true).x + 32 * scale,
+                             ImGui::GetFontSize() + 16 * scale);
+    ImGui::SetCursorScreenPos(
+        ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - button_size.x - 24 * scale,
+               viewport->WorkPos.y + 20 * scale));
+    if (ImGui::Button(text.c_str(), button_size)) ImGui::OpenPopup("##quit_confirm");
   }
+  ImGui::PopStyleVar();
   ImGui::PopStyleColor(4);
   ImGui::PopFont();
 
@@ -1586,6 +1571,42 @@ void LauncherDialog::DrawQuit(const ImVec2& pos, const ImVec2& size, float scale
   ImGui::PopStyleColor(2);
   ImGui::PopStyleVar();
   ImGui::PopFont();
+}
+
+bool LauncherDialog::DrawRestartConfirm(float scale) {
+  bool confirmed = false;
+  const ImGuiViewport* viewport = ImGui::GetMainViewport();
+  ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+  ImGui::PushFont(font_, 26.0f * scale);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(28 * scale, 22 * scale));
+  ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.11f, 0.10f, 0.10f, 0.98f));
+  ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, ImVec4(0, 0, 0, 0.55f));
+  restart_confirm_ = ImGui::BeginPopupModal("##restart_confirm", nullptr,
+                                            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
+                                                ImGuiWindowFlags_AlwaysAutoResize);
+  if (restart_confirm_) {
+    ImGui::TextUnformatted(T("Restart the game?"));
+    ImGui::TextDisabled("%s", T("Progress since the last save is lost."));
+    ImGui::Spacing();
+    ImGui::Spacing();
+    const float w = 180 * scale;
+    if (ImGui::Button((std::string(T("Restart")) + "##restart_yes").c_str(), ImVec2(w, 0))) {
+      ImGui::CloseCurrentPopup();
+      confirmed = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();  // Enter = Cancel
+    // Esc (the launcher's own key, which would resume the game) goes back.
+    const bool esc = std::exchange(resume_requested_, false);
+    if (ImGui::Button((std::string(T("Cancel")) + "##restart_no").c_str(), ImVec2(w, 0)) || esc) {
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
+  ImGui::PopStyleColor(2);
+  ImGui::PopStyleVar();
+  ImGui::PopFont();
+  return confirmed;
 }
 
 void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float scale) {
@@ -1680,7 +1701,9 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
   ImGui::PopStyleVar(2);
   ImGui::PopFont();
 
-  // Play, at the bottom.
+  // Play, at the bottom. In game, after a change: Cancel under it, back to
+  // the settings the launcher opened with.
+  const bool can_cancel = OverGame() && settings_.Serialize() != opened_serialized_;
   bool busy = shader_build_.state == ShaderBuild::kRunning ||
               iso_extract_.state == IsoExtract::kRunning;
   // A change that needs the shaders rebuilt (gone again if it's undone),
@@ -1701,8 +1724,8 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
     ImGui::PushFont(font_, 20.0f * scale);
     const float wrap = size.x - 20 * scale;
     const ImVec2 text_size = ImGui::CalcTextSize(notice.c_str(), nullptr, false, wrap);
-    // Above Play, and above Quit in game.
-    const float above = (in_game_needs_restart_ ? 150 : 100) * scale;
+    // Above Play (and Cancel under it).
+    const float above = (can_cancel ? 160 : 100) * scale;
     const ImVec2 at(pos.x + 10 * scale, pos.y + size.y - above - text_size.y);
     ImGui::SetCursorScreenPos(at);
     ImGui::PushTextWrapPos(pos.x + size.x - 10 * scale);
@@ -1723,14 +1746,14 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
   }
   // Over the running game: Resume, or Restart for changes that need one.
   const bool in_game = bool(in_game_needs_restart_);
-  if (in_game) DrawQuit(pos, size, scale);
+  if (in_game) DrawQuit(scale);
   ImGui::PushFont(font_, 34.0f * scale);
   ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
   ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.06f));
   ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.12f));
   ImGui::PushStyleColor(ImGuiCol_Text, busy ? ImVec4(0.5f, 0.5f, 0.5f, 1.0f)
                                             : ImVec4(0.96f, 0.95f, 0.92f, 1.0f));
-  ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + size.y - 90 * scale));
+  ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + size.y - (can_cancel ? 150 : 90) * scale));
   const bool restart = in_game && in_game_needs_restart_(settings_);
   // The game started from here: Stop while it runs.
   const bool stop = !in_game && game_.Running();
@@ -1741,12 +1764,52 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
                                       : T("Resume");
   const bool clicked =
       ImGui::Button((std::string(play_label) + "##play").c_str(), ImVec2(size.x, 64 * scale));
-  const bool esc_resume = std::exchange(resume_requested_, false) && in_game;
-  const bool play = (clicked || esc_resume) && !busy;
-  const bool restart_chosen = clicked && restart;
+  const bool play_hovered = ImGui::IsItemHovered();
   ImGui::PopStyleColor(4);
   ImGui::PopFont();
-  if (ImGui::IsItemHovered() && stop) {
+  bool cancel = false;
+  if (can_cancel) {
+    ImGui::PushFont(font_, 24.0f * scale);
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.06f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.12f));
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.75f, 0.73f, 0.70f, 1.0f));
+    ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + size.y - 80 * scale));
+    cancel = ImGui::Button((std::string(T("Cancel")) + "##cancel").c_str(),
+                           ImVec2(size.x, 48 * scale));
+    ImGui::PopStyleColor(4);
+    ImGui::PopFont();
+    if (ImGui::IsItemHovered()) {
+      ImGui::PushFont(font_, 22.0f * scale);
+      ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14 * scale, 10 * scale));
+      ImGui::BeginTooltip();
+      ImGui::TextUnformatted(T("Undoes the changes made here and goes back to the game."));
+      ImGui::EndTooltip();
+      ImGui::PopStyleVar();
+      ImGui::PopFont();
+    }
+  }
+  // Restart asks first (progress since the last save is lost).
+  if (clicked && restart && !busy) ImGui::OpenPopup("##restart_confirm");
+  const bool restart_confirmed = in_game && DrawRestartConfirm(scale);
+  // Esc while a confirmation is open closes it (it takes the request).
+  const bool esc_resume = std::exchange(resume_requested_, false) && in_game;
+  const bool play = ((clicked && !restart) || restart_confirmed || esc_resume) && !busy;
+  const bool restart_chosen = restart_confirmed;
+  if (cancel) {
+    settings_ = opened_settings_;
+    std::snprintf(game_data_buffer_, sizeof(game_data_buffer_), "%s", settings_.game_data.c_str());
+    capture_flag_.clear();
+    pad_capture_ = -1;
+    ClosePad();
+    SaveSettings();
+    playing_ = true;
+    // After this frame: the callback may destroy the launcher.
+    imgui_drawer()->RemoveDialog(this);
+    call_in_ui_thread_deferred_([cb = on_resume_, s = settings_] { cb(s, false); });
+    return;
+  }
+  if (play_hovered && stop) {
     ImGui::PushFont(font_, 22.0f * scale);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14 * scale, 10 * scale));
     ImGui::BeginTooltip();
@@ -1759,7 +1822,7 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
     ImGui::PopStyleVar();
     ImGui::PopFont();
   }
-  if (ImGui::IsItemHovered() && restart && !busy) {
+  if (play_hovered && restart && !busy) {
     ImGui::PushFont(font_, 22.0f * scale);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14 * scale, 10 * scale));
     ImGui::BeginTooltip();
@@ -1769,7 +1832,7 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
     ImGui::PopStyleVar();
     ImGui::PopFont();
   }
-  if (ImGui::IsItemHovered() && busy) {
+  if (play_hovered && busy) {
     // In the launcher's font and size (tooltips otherwise use ImGui's), with
     // what the task is doing.
     std::string detail;
@@ -2910,7 +2973,13 @@ void LauncherDialog::DrawSystem(float scale) {
   };
 
   SubHeading(HeadingFont(), T("Game"), scale);
-  label(T("Language"));
+  // The game loads its language at start: a change applies on Restart (the
+  // launcher's own text changes right away).
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted(T("Language"));
+  ImGui::SameLine(0, 3 * scale);
+  ImGui::TextColored(kRestartMark, "*");
+  ImGui::SameLine(label_w);
   ImGui::SetNextItemWidth(240 * scale);
   struct Language {
     uint32_t id;
@@ -2942,6 +3011,10 @@ void LauncherDialog::DrawSystem(float scale) {
   LockedNote("user_language");
   ImGui::SetCursorPosX(label_w);
   ImGui::TextDisabled("%s", T("The game's menus and subtitles, the achievements and this launcher."));
+  ImGui::SetCursorPosX(label_w);
+  ImGui::TextColored(kRestartMark, "*");
+  ImGui::SameLine(0, 6 * scale);
+  ImGui::TextDisabled("%s", T("Takes effect the next time the game starts."));
 
   SubHeading(HeadingFont(), T("Achievement pop-ups"), scale);
   label(T("Show achievements"));
@@ -2961,6 +3034,23 @@ void LauncherDialog::DrawSystem(float scale) {
       settings_.toast_seconds = std::round(seconds * 2.0f) / 2.0f;
       changed = true;
     }
+  }
+  ImGui::EndDisabled();
+
+  SubHeading(HeadingFont(), T("Frame traces"), scale);
+  label(T("Save the picture"));
+  changed |= ImGui::Checkbox("##trace_picture", &settings_.trace_picture);
+  ImGui::SameLine();
+  ImGui::TextDisabled("%s", T("The traced frame as a .png next to its trace."));
+  label(T("Show a notice"));
+  changed |= ImGui::Checkbox("##trace_notice", &settings_.trace_notice);
+  ImGui::BeginDisabled(!settings_.trace_notice);
+  label(T("Position"));
+  {
+    const char* positions[] = {T("Top left"),    T("Top"),    T("Top right"),
+                               T("Bottom left"), T("Bottom"), T("Bottom right")};
+    ImGui::SetNextItemWidth(260 * scale);
+    changed |= ImGui::Combo("##trace_position", &settings_.trace_notice_position, positions, 6);
   }
   ImGui::EndDisabled();
 
@@ -2992,12 +3082,17 @@ void LauncherDialog::DrawSystem(float scale) {
     settings_.toasts = defaults.toasts;
     settings_.toast_corner = defaults.toast_corner;
     settings_.toast_seconds = defaults.toast_seconds;
+    settings_.trace_picture = defaults.trace_picture;
+    settings_.trace_notice = defaults.trace_notice;
+    settings_.trace_notice_position = defaults.trace_notice_position;
     changed = true;
     if (!SetElsewhere("user_language")) set_language(1);
   }
 
   if (changed) {
     SetToastOptions({settings_.toasts, settings_.toast_corner, float(settings_.toast_seconds)});
+    SetTraceOptions(
+        {settings_.trace_notice, settings_.trace_notice_position, settings_.trace_picture});
     SaveSettings();
     // The achievement names follow the language.
     if (CachedAchievementLanguage() != settings_.language) StartAssetJob();
@@ -3247,48 +3342,41 @@ void LauncherDialog::DrawSettings(float scale) {
     }
   }
 
-  // Off: the game's own 1280x720, scaled to the window by the presenter (the
-  // rendering before render scaling). On: mantra renders at render_height.
-  restart_label(T("Higher resolution"));
-  if (ImGui::Checkbox(T("Render above the game's 1280 x 720 (experimental)"),
-                      &settings_.native_render)) {
-    changed = true;
-  }
-  hint(T("Some effects can show green areas."));
-
-  restart_label(T("Render resolution"));
+  // mantra's internal resolution, % of the game's 1280x720; changes in game
+  // apply on Resume.
+  label(T("Render resolution"));
   {
-    struct RenderSize {
-      const char* label;
-      int height;
-    };
-    static const RenderSize kRenderSizes[] = {
-        {"3840 x 2160 (16:9)", 2160}, {"2560 x 1440 (16:9)", 1440}, {"1920 x 1080 (16:9)", 1080},
-        {"1600 x 900 (16:9)", 900},   {"1280 x 720 (16:9)", 720},   {"960 x 540 (16:9)", 540},
-    };
-    const int height = RenderHeight(settings_);
-    std::string current = SizeLabel(height * 16 / 9, height);
-    for (const auto& r : kRenderSizes) {
-      if (r.height == height) current = r.label;
+    constexpr int kMin = 5, kMax = 400;
+    int value = std::clamp(settings_.render_scale, kMin, kMax);
+    const int height = (720 * value + 50) / 100, width = (1280 * value + 50) / 100;
+    std::string format =
+        "%d%%  (" + std::to_string(width) + " x " + std::to_string(height);
+    if (value == 100) format += std::string(", ") + T("the game's");
+    format += ")";
+    ImGui::SetNextItemWidth(360 * scale);
+    ImGui::BeginDisabled(RenderScaleFromEnvironment());
+    if (ImGui::SliderInt("##render_scale", &value, kMin, kMax, format.c_str(),
+                         ImGuiSliderFlags_AlwaysClamp)) {
+      settings_.render_scale = std::clamp((value + 2) / 5 * 5, kMin, kMax);
+      changed = true;
     }
-    if (height == 720) current += std::string(" (") + T("the game's") + ")";
-    ImGui::SetNextItemWidth(260 * scale);
-    ImGui::BeginDisabled(!settings_.native_render ||
-                         RenderScaleFromEnvironment());
-    if (ImGui::BeginCombo("##render", current.c_str())) {
-      for (const auto& r : kRenderSizes) {
-        std::string text = r.label;
-        if (r.height == 720) text += std::string(" (") + T("the game's") + ")";
-        if (ImGui::Selectable(text.c_str(), r.height == height)) {
-          settings_.render_height = r.height;
-          changed = true;
-        }
+    // Common scales one click away, under the slider.
+    bool first = true;
+    for (int pct : {50, 75, 100, 150, 200}) {
+      if (first) {
+        ImGui::SetCursorPosX(label_w);
+        first = false;
+      } else {
+        ImGui::SameLine();
       }
-      ImGui::EndCombo();
+      if (ImGui::SmallButton((std::to_string(pct) + "%##rs" + std::to_string(pct)).c_str())) {
+        settings_.render_scale = pct;
+        changed = true;
+      }
     }
     ImGui::EndDisabled();
-    hint(T("Higher is sharper, cutscenes included, and needs a faster graphics card with more "
-           "memory."));
+    hint(T("Lower is faster, for weaker graphics cards (the menus and text stay sharp). Above "
+           "100% is sharper and experimental: some effects can show green areas."));
   }
 
   label(T("Wide screens"));
@@ -3317,8 +3405,7 @@ void LauncherDialog::DrawSettings(float scale) {
     settings_.window_width = defaults.window_width;
     settings_.window_height = defaults.window_height;
     settings_.aspect = defaults.aspect;
-    settings_.render_height = defaults.render_height;
-    settings_.native_render = defaults.native_render;
+    settings_.render_scale = defaults.render_scale;
     changed = true;
   }
   ImGui::EndChild();  // ##tab_body
@@ -3339,7 +3426,7 @@ void LauncherDialog::DrawSettings(float scale) {
   }
   ImGui::EndDisabled();
 
-  restart_label(T("Frame rate limit"));
+  label(T("Frame rate limit"));
   {
     // 30 to 240 in steps of 5; the far right is Unlimited (0).
     constexpr int kMin = 30, kMax = 240, kUnlimited = kMax + 5;
@@ -3665,7 +3752,7 @@ void LauncherDialog::DrawShaders(float scale) {
                     : have_cache  ? T("Rebuild all")
                                   : T("Build (about 10 minutes)"))) {
     shader_build_.Start(tool, settings_.game_data, cache, ShaderDumpDirs(), /*update=*/false,
-                        /*background=*/false, /*fresh=*/true);
+                        /*fresh=*/true);
     message_.clear();
     play_without_shaders_ = false;
   }
@@ -3923,8 +4010,11 @@ void LauncherDialog::DrawTraces(float scale) {
         when[10] = ' ';
         when[13] = when[16] = ':';
       }
-      traces_.push_back({entry.path(), when,
-                         std::strtoull(name.c_str() + at + 6, nullptr, 10), entry.file_size(ec)});
+      std::filesystem::path picture = entry.path();
+      picture.replace_extension(".png");
+      if (!std::filesystem::is_regular_file(picture, ec)) picture.clear();
+      traces_.push_back({entry.path(), when, std::strtoull(name.c_str() + at + 6, nullptr, 10),
+                         entry.file_size(ec), picture});
     }
     std::sort(traces_.begin(), traces_.end(),
               [](const TraceEntry& a, const TraceEntry& b) { return a.when > b.when; });
@@ -3954,7 +4044,7 @@ void LauncherDialog::DrawTraces(float scale) {
     ImGui::TableSetupColumn(T("Frame"), ImGuiTableColumnFlags_WidthFixed, 100 * scale);
     ImGui::TableSetupColumn(T("Size"), ImGuiTableColumnFlags_WidthFixed, 90 * scale);
     ImGui::TableSetupColumn(T("When"), ImGuiTableColumnFlags_WidthFixed, 190 * scale);
-    ImGui::TableSetupColumn("##open", ImGuiTableColumnFlags_WidthFixed, 80 * scale);
+    ImGui::TableSetupColumn("##open", ImGuiTableColumnFlags_WidthFixed, 170 * scale);
     HeadersRow();
     for (size_t i = 0; i < traces_.size(); ++i) {
       const TraceEntry& trace = traces_[i];
@@ -3975,6 +4065,10 @@ void LauncherDialog::DrawTraces(float scale) {
       ImGui::TextUnformatted(trace.when.c_str());
       ImGui::TableNextColumn();
       if (ImGui::SmallButton(T("Open"))) OpenFolder(trace.file);
+      if (!trace.picture.empty()) {
+        ImGui::SameLine();
+        if (ImGui::SmallButton(T("Picture"))) OpenFolder(trace.picture);
+      }
       ImGui::PopID();
     }
     if (traces_.empty()) {

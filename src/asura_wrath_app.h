@@ -362,24 +362,28 @@ class AsuraWrathApp : public rex::ReXApp {
           context->CallInUIThreadDeferred(std::move(f));
         },
         [] { Restart(/*show_launcher=*/true); });
+    // The game folder and language the game runs with (the settings may ask
+    // for others, from the next start): from before any in-game change.
+    if (!running_captured_) {
+      running_game_data_ = launcher_settings_.game_data;
+      running_language_ = launcher_settings_.language;
+      running_captured_ = true;
+    }
     launcher_->SetInGame(
         [this](const asura::ui::LauncherSettings& s) {
           // Fixed once the game runs: the presenter's (NeedsRestart), the
           // game folder and the game's language.
           return asura::ui::NeedsRestart(startup_settings_, s) ||
-                 s.game_data != launcher_settings_.game_data ||
-                 s.language != launcher_settings_.language;
+                 s.game_data != running_game_data_ || s.language != running_language_;
         },
         [this](const asura::ui::LauncherSettings& s, bool restart) {
           launcher_.reset();
           if (restart) Restart(/*show_launcher=*/false);
           // Settings the presenter or the game fixed at start keep their
-          // running values until the next start (they're saved already).
-          const std::string game_data = launcher_settings_.game_data;
-          const uint32_t language = launcher_settings_.language;
+          // running values until the next start; the saved (and next
+          // opened) settings are the chosen ones, so reopening the launcher
+          // doesn't undo them.
           launcher_settings_ = s;
-          launcher_settings_.game_data = game_data;
-          launcher_settings_.language = language;
           asura::ui::ApplyWindowSettings(s);
           asura::ui::ApplyLiveSettings(s);
           UpdateFpsCounter();
@@ -483,16 +487,29 @@ class AsuraWrathApp : public rex::ReXApp {
     if (done.empty() || !imgui_drawer() || trace_watcher_.joinable()) return;
     asura::ui::SetLauncherLanguage(launcher_settings_.language);
     trace_watcher_ = std::jthread([this, done](std::stop_token stop) {
+      // By the frame number in the file, not its time: on filesystems with
+      // coarse timestamps two traces within a second kept the same time and
+      // the second showed nothing.
+      auto read_frame = [&done] {
+        unsigned long long frame = 0;
+        if (std::ifstream in(done); in) in >> frame;
+        return frame;
+      };
+      // (The time still counts: the same frame number can come again in a
+      // later session.)
       std::error_code ec;
-      auto last = std::filesystem::last_write_time(done, ec);
-      if (ec) last = {};
+      unsigned long long last = read_frame();
+      auto last_time = std::filesystem::last_write_time(done, ec);
       while (!stop.stop_requested()) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
         const auto time = std::filesystem::last_write_time(done, ec);
-        if (ec || time <= last) continue;
-        last = time;
-        unsigned long long frame = 0;
-        if (std::ifstream in(done); in) in >> frame;
+        if (ec) continue;
+        const unsigned long long frame = read_frame();
+        if (!frame || (frame == last && time == last_time)) continue;
+        last = frame;
+        last_time = time;
+        // Settings > Frame traces > Show a notice.
+        if (!asura::ui::GetTraceOptions().notice) continue;
         char text[96];
         std::snprintf(text, sizeof(text), asura::ui::T("Frame %llu traced"), frame);
         app_context().CallInUIThread([this, line = std::string(text)] {
@@ -529,6 +546,9 @@ class AsuraWrathApp : public rex::ReXApp {
 
   std::filesystem::path user_data_root_path_;
   asura::ui::LauncherSettings launcher_settings_, startup_settings_;
+  bool running_captured_ = false;
+  std::string running_game_data_;
+  uint32_t running_language_ = 0;
   bool game_running_ = false;
   bool muted_in_background_ = false;  // audio_mute set by OnWindowFocusChanged  // past the launcher (bind_launcher works from then on)
   std::filesystem::path launcher_settings_path_;

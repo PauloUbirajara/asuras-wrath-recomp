@@ -255,8 +255,11 @@ uint32_t InputRemap(uint32_t container, uint32_t runtime) {
   for (uint32_t i = 0; i < 4; ++i) {
     const uint32_t c = (container >> (i * 3)) & 7, r = (runtime >> (i * 3)) & 7;
     // 0..3 = xyzw, 4 = 0, 5 = 1, 6/7 = not written.
-    if (c > 3 || r > 5 || set[c]) continue;
-    source[c] = r;
+    if (c > 3 || set[c]) continue;
+    // Written by the translation but not by the runtime fetch (the driver
+    // narrowed it to the declaration's components): the register keeps its
+    // initial 0 there, not the attribute's default (w = 1).
+    source[c] = r > 5 ? 4 : r;
     set[c] = true;
   }
   const uint32_t remap = source[0] | source[1] << 3 | source[2] << 6 | source[3] << 9;
@@ -265,7 +268,8 @@ uint32_t InputRemap(uint32_t container, uint32_t runtime) {
 }  // namespace
 
 void MantraShader::DecodeVertexInputs(std::span<const uint32_t> packed_elements,
-                                      std::span<const uint32_t> container_swizzles) {
+                                      std::span<const uint32_t> container_swizzles,
+                                      bool container_formats) {
   vertex_inputs.clear();
   const uint32_t* code = ucode_dwords();
   const size_t dword_count = ucode_dword_count();
@@ -335,18 +339,39 @@ void MantraShader::DecodeVertexInputs(std::span<const uint32_t> packed_elements,
     in.usage = element.usage;
     in.is_uint = element.is_uint;
     // The driver may reorder the fetches: find the element's by the register
-    // it writes when the one at its container address writes another.
+    // it writes when the one at its container address writes another. Two
+    // fetches can fill one register (e.g. r2.xy texture UV, r2.zw lightmap
+    // UV), so the components written (v7 container swizzles) must match too:
+    // exactly if possible, else overlapping (the driver can narrow a fetch to
+    // the declaration's components).
+    auto written = [](uint32_t swizzle) {
+      uint32_t mask = 0;
+      for (uint32_t i = 0; i < 4; ++i) mask |= (((swizzle >> (3 * i)) & 7) != 7) << i;
+      return mask;
+    };
+    const uint32_t want =
+        element_index < container_swizzles.size() ? written(container_swizzles[element_index]) : 0;
+    auto fits = [&](const ucode::VertexFetchInstruction& f, bool exact) {
+      if (f.is_dest_relative() || f.dest() != element.dest) return false;
+      if (!want) return true;
+      const uint32_t have = written(f.dest_swizzle());
+      return exact ? have == want : (have & want) != 0;
+    };
     size_t address = element.address;
     ucode::VertexFetchInstruction fetch;
-    if (vertex_fetch_at(address, fetch) && fetch.dest() != element.dest) {
-      for (size_t a = first_instruction; a < instruction_count; ++a) {
-        ucode::VertexFetchInstruction candidate;
-        if (vertex_fetch_at(a, candidate) && !candidate.is_dest_relative() &&
-            candidate.dest() == element.dest) {
-          address = a;
-          break;
+    if (!vertex_fetch_at(address, fetch) || !fits(fetch, true)) {
+      bool found = false;
+      for (int exact = 1; exact >= 0 && !found; --exact) {
+        for (size_t a = first_instruction; a < instruction_count; ++a) {
+          ucode::VertexFetchInstruction candidate;
+          if (vertex_fetch_at(a, candidate) && fits(candidate, exact == 1)) {
+            address = a;
+            found = true;
+            break;
+          }
         }
       }
+      // Else (no fetch writes the register any more) the one at the address.
     }
     if (vertex_fetch_at(address, fetch)) {
       // A mini fetch takes the fetch constant and stride of the previous
@@ -370,7 +395,12 @@ void MantraShader::DecodeVertexInputs(std::span<const uint32_t> packed_elements,
         in.normalized = fetch.is_normalized();
         in.exp_adjust = fetch.exp_adjust();
         if (element_index < container_swizzles.size()) {
-          in.remap = InputRemap(container_swizzles[element_index], fetch.dest_swizzle());
+          const uint32_t container = container_swizzles[element_index];
+          in.remap = InputRemap(container & 0xFFF, fetch.dest_swizzle());
+          if (container_formats) {
+            in.container_packed =
+                (container & mantra::shader_cache::kSwizzlePackedFormat) ? 1 : 0;
+          }
         }
       }
     }
@@ -507,6 +537,29 @@ void NativeCommandProcessor::EndRendering() {
   gpu_profiler_.pass_draws = 0;
 }
 
+uint32_t NativeCommandProcessor::DrawScaleUnits(uint32_t color_mask) const {
+  const RegisterFile& regs = *register_file_;
+  const auto surface_info = regs.Get<reg::RB_SURFACE_INFO>();
+  for (uint32_t i = 0; i < mantra::kMaxColorAttachments; ++i) {
+    if (!((color_mask >> (i * 4)) & 0xF)) continue;
+    const auto info = regs.Get<reg::RB_COLOR_INFO>(reg::RB_COLOR_INFO::rt_register_indices[i]);
+    if (mantra::RenderTargetPool::HostColorFormat(info.color_format) == VK_FORMAT_UNDEFINED) {
+      continue;
+    }
+    mantra::RtKey key{info.color_base & (xenos::kEdramTileCount - 1),
+                      surface_info.surface_pitch, surface_info.msaa_samples,
+                      mantra::RenderTargetPool::HostColorClass(info.color_format)};
+    return render_targets_.ScaleFor(key);
+  }
+  return last_color_rscale_;
+}
+
+uint32_t NativeCommandProcessor::SurfaceScaleUnits() {
+  const uint32_t rscale = mantra::RenderScaleUnits();
+  return rscale < mantra::kScaleOne && mantra::RenderTargetPool::NativeHud() ? mantra::kScaleOne
+                                                                           : rscale;
+}
+
 bool NativeCommandProcessor::BeginDrawRendering(VkCommandBuffer cmd, uint32_t color_mask,
                                                 bool use_depth, mantra::PipelineKey& key,
                                                 VkRect2D& render_area) {
@@ -551,7 +604,13 @@ bool NativeCommandProcessor::BeginDrawRendering(VkCommandBuffer cmd, uint32_t co
                             : nullptr;
     }
     if (use_depth && create) {
-      depth_rt = render_targets_.GetDepth(cmd, depth_base, pitch, msaa, frame);
+      // At the colors' scale (a native HUD pass gets the native twin).
+      uint32_t rscale = 0;
+      for (uint32_t i = 0; i < color_count && !rscale; ++i) {
+        if (color_rts[i]) rscale = color_rts[i]->image.rscale;
+      }
+      if (!rscale) rscale = last_color_rscale_;
+      depth_rt = render_targets_.GetDepth(cmd, depth_base, pitch, msaa, frame, rscale);
     }
   };
   if (same) {
@@ -571,7 +630,8 @@ bool NativeCommandProcessor::BeginDrawRendering(VkCommandBuffer cmd, uint32_t co
                rendering_.color_format[i] == colors[i].host_format;
       }
     }
-    same = same && (use_depth ? key_matches(rendering_.depth, depth_base, mantra::RtClass::kDepth)
+    same = same && (use_depth ? key_matches(rendering_.depth, depth_base, mantra::RtClass::kDepth) &&
+                                    rendering_.depth->image.rscale == rendering_.rscale
                               : !rendering_.depth);
   }
   if (same) {
@@ -582,6 +642,29 @@ bool NativeCommandProcessor::BeginDrawRendering(VkCommandBuffer cmd, uint32_t co
   } else {
     EndRendering();
     lookup(true);
+  }
+
+  // One render scale per pass (a native HUD target with a scaled depth
+  // buffer can't share one): attachments at another scale are left out.
+  uint32_t pass_rscale = 0;
+  for (uint32_t i = 0; i < color_count && !pass_rscale; ++i) {
+    if (color_rts[i]) pass_rscale = color_rts[i]->image.rscale;
+  }
+  if (!pass_rscale) {
+    pass_rscale = depth_rt ? depth_rt->image.rscale : last_color_rscale_;
+  } else {
+    last_color_rscale_ = pass_rscale;
+  }
+  for (uint32_t i = 0; i < color_count; ++i) {
+    if (color_rts[i] && color_rts[i]->image.rscale != pass_rscale) {
+      MANTRA_WARN_ONCE("render scale: a color target at another scale is left out of a pass");
+      color_rts[i] = nullptr;
+    }
+  }
+  if (depth_rt && depth_rt->image.rscale != pass_rscale) {
+    MANTRA_WARN_ONCE("render scale: depth at another scale is left out of a native pass");
+    ++guest_draw_stats_.depth_scale_mismatch;
+    depth_rt = nullptr;
   }
 
   // Pipeline key: attachment formats and samples.
@@ -636,7 +719,7 @@ bool NativeCommandProcessor::BeginDrawRendering(VkCommandBuffer cmd, uint32_t co
   // Guest pixels here and in rendering_.area; the images are larger by the
   // render scale.
   const VkRect2D guest_area = {{0, 0}, {width, height}};
-  info.renderArea = mantra::HostRect(guest_area, mantra::RenderScale8());
+  info.renderArea = mantra::HostRect(guest_area, pass_rscale);
   info.layerCount = 1;
   info.colorAttachmentCount = color_count;
   info.pColorAttachments = color_attachments;
@@ -657,6 +740,7 @@ bool NativeCommandProcessor::BeginDrawRendering(VkCommandBuffer cmd, uint32_t co
   }
   rendering_.depth = depth_rt;
   rendering_.area = guest_area;
+  rendering_.rscale = pass_rscale;
   render_area = guest_area;
   return true;
 }
@@ -899,6 +983,26 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::UploadGeometry(
   };
   Expanded expanded[mantra::kMaxVertexAttributes];
   uint32_t expanded_count = 0;
+  // Packed 10:11:11 normals: the translation decodes the inputs whose
+  // container fetch was packed (one spec constant for all of them). The driver
+  // sets fetch formats per vertex declaration, so a normalized cache match can
+  // get packed data on an input the translation reads as plain floats, and
+  // plain data on one it decodes. Then the decode is turned off and the packed
+  // inputs are decoded on the CPU (their float bits for uint4 inputs).
+  using VF = xenos::VertexFormat;
+  auto runtime_packed = [](const MantraShader::VertexInput& in) {
+    return in.valid && (in.format == VF::k_10_11_11 || in.format == VF::k_11_11_10);
+  };
+  auto shader_decodes = [&](const MantraShader::VertexInput& in) {
+    return in.container_packed >= 0 ? in.container_packed == 1 : runtime_packed(in);
+  };
+  bool decode_mismatch = false;
+  for (const MantraShader::VertexInput& in : vs.vertex_inputs) {
+    if (in.valid && in.is_uint && shader_decodes(in) && !runtime_packed(in)) {
+      decode_mismatch = true;
+    }
+  }
+  bool shader_decode_used = false;
   for (const MantraShader::VertexInput& in : vs.vertex_inputs) {
     if (attribute_count >= mantra::kMaxVertexAttributes) break;
     auto& attr = key.attributes[attribute_count++];
@@ -907,8 +1011,11 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::UploadGeometry(
                                      : VK_FORMAT_UNDEFINED;
     const auto fetch = in.valid ? regs.GetVertexFetch(in.fetch_constant)
                                 : xenos::xe_gpu_vertex_fetch_t{};
-    using VF = xenos::VertexFormat;
     const bool packed_format = in.format == VF::k_10_11_11 || in.format == VF::k_11_11_10;
+    // Packed data the shader won't decode: decoded here instead.
+    const bool cpu_unpack =
+        in.is_uint && packed_format && (decode_mismatch || !shader_decodes(in));
+    if (in.is_uint && packed_format && !cpu_unpack) shader_decode_used = true;
     // XenosRecomp's uint4 inputs (NORMAL, TANGENT, BINORMAL) are asfloat()ed
     // unless they are packed 10:11:11: give them the fetched floats' bits.
     const bool uint_as_float_bits =
@@ -919,7 +1026,8 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::UploadGeometry(
     if (in.valid && fetch.type == xenos::FetchConstantType::kVertex && in.offset_words >= 0 &&
         (vs.vertex_index_divisor > 1 ||
          (!in.is_uint && (packed_format || (in.exp_adjust && VertexElementWords(in.format)))) ||
-         uint_as_float_bits || (in.is_uint && in.exp_adjust && !packed_format &&
+         uint_as_float_bits || cpu_unpack ||
+         (in.is_uint && in.exp_adjust && !packed_format &&
                                 VertexElementWords(in.format)))) {
       // No Vulkan vertex format (10:11:11, a scaled fetch, float bits for a
       // uint input), or fetched at vertex index / divisor: decoded on the
@@ -970,7 +1078,10 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::UploadGeometry(
     attr.format = uint32_t(format);
     attr.offset = uint16_t(in.offset_words * 4);
   }
-  if (packed_normal) {
+  // Only when the shader's decode is wanted (VertexAttributeFormat's
+  // packed_normal also counts inputs unpacked on the CPU).
+  (void)packed_normal;
+  if (shader_decode_used) {
     spec_constants |= 1u << 0;  // SPEC_CONSTANT_R11G11B10_NORMAL
   }
 
@@ -1038,8 +1149,10 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::UploadGeometry(
     // Decodes `count` vertices starting at vertex index `first` into `dest`
     // (upload memory: write-combined, so scattered or repeated writes to it
     // are very slow). Decoded in cached memory first, then copied once.
-    const bool raw_packed = in.is_uint && (in.format == xenos::VertexFormat::k_10_11_11 ||
-                                           in.format == xenos::VertexFormat::k_11_11_10);
+    const bool raw_packed = in.is_uint &&
+                            (in.format == xenos::VertexFormat::k_10_11_11 ||
+                             in.format == xenos::VertexFormat::k_11_11_10) &&
+                            !decode_mismatch && shader_decodes(in);
     auto decode = [&](float* dest, uint64_t first, uint32_t count) {
       const auto decode_start = std::chrono::steady_clock::now();
       expanded_scratch_.resize(size_t(count) * 4);
@@ -1351,7 +1464,8 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
 
   mantra::SharedConstants shared;
   std::copy_n(viewport.ndc_scale, 3, shared.ndc_scale);
-  shared.pixel_scale_inv = 8.0f / float(mantra::RenderScale8());
+  const uint32_t draw_rscale = DrawScaleUnits(color_mask);
+  shared.pixel_scale_inv = float(mantra::kScaleOne) / float(draw_rscale);
   std::copy_n(viewport.ndc_offset, 3, shared.ndc_offset);
   {
     // Fetch results are scaled by 2^exp_adjust in the shader (mantraExpAdjust).
@@ -1389,6 +1503,7 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
   bool uploaded = false;
   for (int attempt = 0; attempt < 2 && !uploaded; ++attempt) {
     if (!BeginCommands()) {
+      draw_fail_reason_ = "commands";
       return DrawResult::kFailed;
     }
     const uint64_t submission = submission_current_;
@@ -1410,7 +1525,8 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
     }
     shared.vertex_index_base = upload.vertex_index_base;
     PhaseNs phase{frame_timing_.phase_ns[2]};
-    if (!PrepareDrawConstants(offsets, shared)) {
+    if (!PrepareDrawConstants(vs, ps, offsets, shared)) {
+      draw_fail_reason_ = "constants";
       return DrawResult::kFailed;
     }
     if (submission_current_ != submission) {
@@ -1426,6 +1542,7 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
     uploaded = true;
   }
   if (!uploaded) {
+    draw_fail_reason_ = "upload";
     return DrawResult::kFailed;
   }
 
@@ -1488,6 +1605,7 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
   }
   if (!pipeline) {
     ++guest_draw_stats_.failed_pipeline;
+    draw_fail_reason_ = "pipeline";
     return DrawResult::kFailed;
   }
 
@@ -1496,7 +1614,7 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
   shader_interface_.Bind(cmd, offsets, texture_set);
 
   // Viewport and scissor (inside the render area).
-  const float render_scale = float(mantra::RenderScale8()) / 8.0f;
+  const float render_scale = float(rendering_.rscale) / float(mantra::kScaleOne);
   VkViewport vk_viewport;
   vk_viewport.x = float(viewport.xy_offset[0]) * render_scale;
   vk_viewport.y = float(viewport.xy_offset[1]) * render_scale;
@@ -1516,8 +1634,18 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
     return DrawResult::kSkipped;
   }
   const VkRect2D vk_scissor =
-      mantra::HostRect({{int32_t(x0), int32_t(y0)}, {x1 - x0, y1 - y0}}, mantra::RenderScale8());
+      mantra::HostRect({{int32_t(x0), int32_t(y0)}, {x1 - x0, y1 - y0}}, rendering_.rscale);
   dfn.vkCmdSetScissor(cmd, 0, 1, &vk_scissor);
+  // Rows this draw can write (scissor, and the viewport plus a guard row for
+  // wide points and lines), for the 7e3 <-> 32bpp conversions.
+  {
+    const float vp_bottom = float(viewport.xy_offset[1]) + float(viewport.xy_extent[1]);
+    const uint32_t bottom =
+        vp_bottom > 0.0f ? std::min<uint32_t>(y1, uint32_t(std::ceil(vp_bottom)) + 1) : y1;
+    for (mantra::RenderTarget* rt : rendering_.color) {
+      if (rt) rt->NoteWritten(bottom);
+    }
+  }
 
   // Depth bias, blend constants, stencil.
   const float constant_scale =

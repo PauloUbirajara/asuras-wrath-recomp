@@ -24,7 +24,7 @@ constexpr Entry kEntries[] = {
     {"Saves", "セーブデータ", "Spielstände", "Sauvegardes", "Partidas", "Salvataggi"},
     {"Game data", "ゲームデータ", "Spieldaten", "Données du jeu", "Datos del juego", "Dati di gioco"},
     {"Settings", "設定", "Einstellungen", "Paramètres", "Ajustes", "Impostazioni"},
-    {"About", "このソフトについて", "Über", "À propos", "Acerca de", "Informazioni"},
+    {"About", "PC情報", "Über", "À propos", "Información", "Informazioni"},
     {"Play", "はじめる", "Spielen", "Jouer", "Jugar", "Gioca"},
     {"Wait for the current task to finish", "実行中の処理が終わるまでお待ちください",
      "Warte, bis die laufende Aufgabe fertig ist", "Attendez la fin de la tâche en cours",
@@ -55,6 +55,8 @@ constexpr Entry kEntries[] = {
      "Impostato da riga di comando o file di configurazione"},
     {"Quit the game", "ゲームを終了", "Spiel beenden", "Quitter le jeu", "Salir del juego",
      "Esci dal gioco"},
+    {"Restart the game?", "ゲームを再起動しますか？", "Spiel neu starten?", "Redémarrer le jeu ?",
+     "¿Reiniciar el juego?", "Riavviare il gioco?"},
     {"Quit the game?", "ゲームを終了しますか？", "Spiel beenden?", "Quitter le jeu ?",
      "¿Salir del juego?", "Uscire dal gioco?"},
     {"Progress since the last save is lost.", "最後のセーブ以降の進行状況は失われます。",
@@ -414,6 +416,22 @@ constexpr Entry kEntries[] = {
     {"Bottom left", "左下", "Unten links", "En bas à gauche", "Abajo a la izquierda", "In basso a sinistra"},
     {"Bottom right", "右下", "Unten rechts", "En bas à droite", "Abajo a la derecha", "In basso a destra"},
     {"Duration", "表示時間", "Dauer", "Durée", "Duración", "Durata"},
+    {"Frame traces", "フレームの記録", "Frame-Traces", "Traces d'image", "Trazas de fotogramas",
+     "Tracce dei fotogrammi"},
+    {"Save the picture", "画像を保存", "Bild speichern", "Enregistrer l'image", "Guardar la imagen",
+     "Salva l'immagine"},
+    {"The traced frame as a .png next to its trace.",
+     "記録したフレームを、記録と同じ場所に.pngで保存します。",
+     "Das getracte Frame als .png neben seinem Trace.",
+     "L'image tracée en .png à côté de sa trace.",
+     "El fotograma trazado como .png junto a su traza.",
+     "Il fotogramma tracciato come .png accanto alla sua traccia."},
+    {"Show a notice", "通知を表示", "Hinweis anzeigen", "Afficher un avis", "Mostrar un aviso",
+     "Mostra un avviso"},
+    {"Position", "表示位置", "Position", "Position", "Posición", "Posizione"},
+    {"Top", "上", "Oben", "En haut", "Arriba", "In alto"},
+    {"Bottom", "下", "Unten", "En bas", "Abajo", "In basso"},
+    {"Picture", "画像", "Bild", "Image", "Imagen", "Immagine"},
     {"%.1f s", "%.1f s", "%.1f s", "%.1f s", "%.1f s", "%.1f s"},
     {"Vibration", "振動", "Vibration", "Vibration", "Vibración", "Vibrazione"},
     {"Off", "オフ", "Aus", "Désactivée", "Desactivada", "Disattivata"},
@@ -539,16 +557,24 @@ constexpr Entry kEntries[] = {
     {"Show achievements", "実績を表示する", "Erfolge anzeigen", "Afficher les succès",
      "Mostrar logros", "Mostra gli obiettivi"},
     {"Enhancements", "拡張設定", "Verbesserungen", "Améliorations", "Mejoras", "Miglioramenti"},
-    {"Higher is sharper, cutscenes included, and needs a faster graphics card with more memory.",
-     "高くするほどムービーも含めてきれいになりますが、より高性能なグラフィックカードとビデオメモリが必要です。",
-     "Höher ist schärfer, auch in Zwischensequenzen, und braucht eine schnellere Grafikkarte mit "
-     "mehr Speicher.",
-     "Plus haut, c'est plus net, cinématiques comprises, mais il faut une carte graphique plus "
-     "rapide avec plus de mémoire.",
-     "Cuanto más alta, más nítida, también en las cinemáticas, y necesita una tarjeta gráfica más "
-     "rápida y con más memoria.",
-     "Più alta è più nitida, filmati compresi, e richiede una scheda grafica più veloce con più "
-     "memoria."},
+    {"Lower is faster, for weaker graphics cards (the menus and text stay sharp). Above 100% is "
+     "sharper and experimental: some effects can show green areas.",
+     "低くすると動作が軽くなります（メニューと文字はきれいなままです）。100% より高くするとよりきれいになりますが、テスト中のため一部の効果が正しく表示されないことがあります。",
+     "Niedriger ist schneller, für schwächere Grafikkarten (Menüs und Text bleiben scharf). Über "
+     "100% ist schärfer und experimentell: manche Effekte können grüne Flächen zeigen.",
+     "Plus bas, c'est plus rapide, pour les cartes graphiques modestes (menus et textes restent "
+     "nets). Au-delà de 100%, c'est plus net mais expérimental : certains effets peuvent afficher "
+     "des zones vertes.",
+     "Más baja es más rápida, para tarjetas gráficas modestas (menús y textos siguen nítidos). Por "
+     "encima del 100% es más nítida y experimental: algunos efectos pueden mostrar zonas verdes.",
+     "Più bassa è più veloce, per schede grafiche meno potenti (menu e testi restano nitidi). Oltre "
+     "il 100% è più nitida e sperimentale: alcuni effetti possono mostrare zone verdi."},
+    {"Undoes the changes made here and goes back to the game.",
+     "ここでの変更を元に戻してゲームに戻ります。",
+     "Macht die hier vorgenommenen Änderungen rückgängig und kehrt zum Spiel zurück.",
+     "Annule les changements faits ici et revient au jeu.",
+     "Deshace los cambios hechos aquí y vuelve al juego.",
+     "Annulla le modifiche fatte qui e torna al gioco."},
     {"On screens that aren't 16:9 (ultrawide, 16:10, 4:3), how the game's 16:9 picture fills the "
      "rest.",
      "16:9 ではない画面（ウルトラワイド、16:10、4:3）で、ゲームの 16:9 の映像をどう表示するか。",

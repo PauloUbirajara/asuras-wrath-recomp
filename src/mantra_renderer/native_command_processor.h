@@ -37,6 +37,10 @@ namespace rex::graphics::native {
 
 // Guest swaps (IssueSwap calls) since start.
 inline std::atomic<uint64_t> g_guest_swaps{0};
+// Whether a traced frame also saves the presented picture next to its log
+// (<trace>.png): -1 = not set yet ($MANTRA_TRACE_CAPTURE, default on), else
+// set by the app (Settings > Frame traces) through mantra_set_trace_capture.
+inline std::atomic<int> g_trace_capture{-1};
 
 
 // A guest shader plus its offline translation (if the cache has one).
@@ -68,6 +72,10 @@ class MantraShader : public Shader {
     // container's the translation reads the input with: the input is rebuilt
     // as SharedConstants::input_remap describes (12 bits; 0 = as fetched).
     uint32_t remap = 0;
+    // Whether the translation decodes this input as packed 10:11:11 (its
+    // container fetch's format; cache v10), or -1 if unknown (then taken to
+    // be the runtime format's).
+    int8_t container_packed = -1;
   };
   std::vector<VertexInput> vertex_inputs;
   std::string vfetch_debug;  // all vfetches + cache elements (trace)
@@ -77,9 +85,11 @@ class MantraShader : public Shader {
   uint32_t vertex_index_divisor = 0;
 
   // `container_swizzles`: per element, its fetch's destination swizzle in the
-  // translated microcode (empty for caches before v7).
+  // translated microcode (empty for caches before v7), with (v10,
+  // `container_formats`) shader_cache::kSwizzlePackedFormat.
   void DecodeVertexInputs(std::span<const uint32_t> packed_elements,
-                          std::span<const uint32_t> container_swizzles);
+                          std::span<const uint32_t> container_swizzles,
+                          bool container_formats = false);
 };
 
 class NativeCommandProcessor : public CommandProcessor, private mantra::TextureCache::Host {
@@ -243,8 +253,18 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
     VkFormat color_format[mantra::kMaxColorAttachments] = {};
     mantra::RenderTarget* depth = nullptr;
     VkRect2D area = {};
+    uint32_t rscale = 40;  // kScaleOne; of all the attachments
   };
   ActiveRendering rendering_;
+  // Render scale a draw with these targets renders at (see
+  // RenderTargetPool::ScaleFor): its first color target's, else the scale.
+  uint32_t DrawScaleUnits(uint32_t color_mask) const;
+  // Depth-only passes render at the scale of the last color pass this frame
+  // (a HUD stencil mask after the native tonemap; the scene's depth prepass
+  // before it): reset to the render scale at each swap.
+  uint32_t last_color_rscale_ = 40;  // kScaleOne
+  // Resolved surfaces: native with a native HUD (resolves upscale the scene).
+  static uint32_t SurfaceScaleUnits();
 
   struct GuestDrawStats {
     uint64_t drawn = 0;
@@ -257,6 +277,7 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
     uint64_t missing_inputs = 0;     // inputs fed zeros (undecodable fetch / format)
     uint64_t expanded_inputs = 0;    // inputs decoded on the CPU (10:11:11 into float)
     uint64_t render_passes = 0;
+    uint64_t depth_scale_mismatch = 0;  // depth left out (native HUD pass)
     uint64_t vertex_bytes = 0;
     uint64_t expand_ns = 0;          // decoding those inputs
     uint64_t index_bytes = 0;
@@ -274,7 +295,8 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
   // registers did not change). `shared` provides the draw-specific shared
   // constants (viewport transform); booleans and the alpha threshold are
   // filled here. Returns false if nothing could be uploaded.
-  bool PrepareDrawConstants(mantra::DrawConstantOffsets& offsets,
+  bool PrepareDrawConstants(const MantraShader* vs, const MantraShader* ps,
+                            mantra::DrawConstantOffsets& offsets,
                             const mantra::SharedConstants& shared);
   bool UploadConstants(const void* data, uint32_t size, uint32_t& offset);
   void DestroyShaderModules();
@@ -314,17 +336,24 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
   // MANTRA_CAPTURE_DIR=<dir>: every 150th swap presented from a resolved
   // surface is read back and written as <dir>/frame_<swap>.ppm (debug aid).
   void CaptureSurface(mantra::ResolvedSurface& surface, uint32_t width, uint32_t height,
-                      uint32_t swizzle, const std::string& name);
+                      uint32_t swizzle, const std::string& name,
+                      const std::filesystem::path& path = {});
   // Reads back a single-sample color image whose texels are `format` and
   // writes <MANTRA_CAPTURE_DIR>/<name>.ppm, logging per-channel mean / max.
+  // With `path`, writes that file instead (.png or .ppm by its extension).
   void CaptureImage(mantra::TrackedImage& image, VkFormat format, uint32_t width,
-                    uint32_t height, uint32_t swizzle, const std::string& name);
+                    uint32_t height, uint32_t swizzle, const std::string& name,
+                    const std::filesystem::path& path = {});
+  // The traced frame's picture: <trace log>.png (g_trace_capture).
+  std::filesystem::path trace_picture_;
+  static bool TraceCaptureEnabled();
   // MANTRA_CAPTURE_DIR + traced frame: dumps each pass's output.
   bool CapturingPasses();
   bool CapturingDraws();
   uint32_t pass_capture_index_ = 0;
   // Set around DrawGuest in a traced frame: logs the draw's fixed-function state.
   bool trace_current_draw_ = false;
+  const char* draw_fail_reason_ = nullptr;  // why the last guest draw failed (trace)
   // Logs a swap summary at most every few seconds (gpu.mantra, info level).
   void ReportSwapStats();
 
@@ -368,7 +397,7 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
   // (and each draw in draw mode); the interval ending at a mark is charged to
   // that mark. Read back when the submission's fence is waited on.
   enum class GpuMarkKind : uint8_t {
-    kStart, kSetup, kPass, kDraw, kFill, kResolve, kPresent, kTail, kCount
+    kStart, kSetup, kPass, kDraw, kFill, kResolve, kPresent, kTail, kConvert, kCount
   };
   struct GpuMark {
     GpuMarkKind kind;
@@ -416,6 +445,7 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
     uint64_t resolves_failed = 0;
     uint64_t color_copies = 0;
     uint64_t float7e3_conversions = 0;
+    uint64_t float7e3_conversions_skipped = 0;  // nothing written since the last one
     uint64_t depth_copies = 0;
     uint64_t depth_copies_skipped = 0;
     uint64_t unsupported_dest_format = 0;

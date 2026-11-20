@@ -44,7 +44,9 @@ class ScriptInputDriver : public rex::input::InputDriver {
       event.action = item.substr(colon + 1);
       event.buttons = Buttons(event.action);
       event.trigger = event.action == "LT" ? 1 : event.action == "RT" ? 2 : 0;
-      if (!event.buttons && !event.trigger && event.action != "TRACE") {
+      // RSLEFT / RSRIGHT: right stick fully left / right (camera turns).
+      event.stick = event.action == "RSLEFT" ? -32767 : event.action == "RSRIGHT" ? 32767 : 0;
+      if (!event.buttons && !event.trigger && !event.stick && event.action != "TRACE") {
         REXLOG_WARN("ASURA_INPUT_SCRIPT: unknown action '{}'", event.action);
         continue;
       }
@@ -73,6 +75,7 @@ class ScriptInputDriver : public rex::input::InputDriver {
         std::chrono::duration<double>(std::chrono::steady_clock::now() - start_).count();
     uint16_t buttons = 0;
     uint8_t lt = 0, rt = 0;
+    int16_t rx = 0;
     for (Event& e : events_) {
       if (now < e.time) continue;
       if (e.action == "TRACE") {
@@ -89,12 +92,14 @@ class ScriptInputDriver : public rex::input::InputDriver {
         buttons |= e.buttons;
         if (e.trigger == 1) lt = 0xFF;
         if (e.trigger == 2) rt = 0xFF;
+        if (e.stick) rx = int16_t(e.stick);
       }
     }
     if (out) {
       std::memset(out, 0, sizeof(*out));
       // A new packet number whenever the state changes.
-      const uint32_t state = buttons | uint32_t(lt) << 16 | uint32_t(rt) << 24;
+      const uint64_t state =
+          buttons | uint64_t(lt) << 16 | uint64_t(rt) << 24 | uint64_t(uint16_t(rx)) << 32;
       if (state != last_state_) {
         last_state_ = state;
         ++packet_;
@@ -103,6 +108,7 @@ class ScriptInputDriver : public rex::input::InputDriver {
       out->gamepad.buttons = buttons;
       out->gamepad.left_trigger = lt;
       out->gamepad.right_trigger = rt;
+      out->gamepad.thumb_rx = rx;
     }
     return X_ERROR_SUCCESS;
   }
@@ -135,6 +141,7 @@ class ScriptInputDriver : public rex::input::InputDriver {
     std::string action;
     uint16_t buttons = 0;
     int trigger = 0;
+    int stick = 0;
     bool done = false;
   };
   static constexpr double kPressSeconds = 0.15;
@@ -168,7 +175,7 @@ class ScriptInputDriver : public rex::input::InputDriver {
 
   std::vector<Event> events_;
   std::chrono::steady_clock::time_point start_;
-  uint32_t last_state_ = 0;
+  uint64_t last_state_ = 0;
   uint32_t packet_ = 0;
 };
 

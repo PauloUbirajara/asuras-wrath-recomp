@@ -1,4 +1,7 @@
 #include "native_command_processor.h"
+#include "render_scale.h"
+
+#include <array>
 #include "memexport.h"
 #include "mantra_log.h"
 #include "shader_key.h"
@@ -79,7 +82,10 @@ std::filesystem::path BeginTraceFile(uint64_t frame) {
     }
   }
   std::sort(old.begin(), old.end());  // the names start with the date
-  for (size_t i = 0; i + kTracesKept <= old.size(); ++i) fs::remove(old[i], ec);
+  for (size_t i = 0; i + kTracesKept <= old.size(); ++i) {
+    fs::remove(old[i], ec);
+    fs::remove(fs::path(old[i]).replace_extension(".png"), ec);  // its picture
+  }
   const std::time_t now = std::time(nullptr);
   char when[32] = "trace";
   if (const std::tm* tm = std::localtime(&now)) {
@@ -213,7 +219,7 @@ bool NativeCommandProcessor::SetupContext() {
   }
   if (!cache_path.empty() && shader_cache_.Load(cache_path)) {
     MANTRA_INFO("shader cache: {} entries from {}", shader_cache_.size(), cache_path.string());
-    if (mantra::RenderScale8() != 8 && shader_cache_.version() < 8) {
+    if (mantra::RenderScaleUnits() != mantra::kScaleOne && shader_cache_.version() < 8) {
       MANTRA_WARN("shader cache v{} predates the render scale: rebuild it (screen-space effects "
                   "will be misplaced)", shader_cache_.version());
     }
@@ -221,9 +227,8 @@ bool NativeCommandProcessor::SetupContext() {
     MANTRA_WARN("no shader cache at {}; run mantra_shadergen --game <extracted> --out <path>",
                 cache_path.string());
   }
-  if (mantra::RenderScale8() != 8) {
-    MANTRA_INFO("render scale {}x ({}/8, MANTRA_RENDER_SCALE)", mantra::RenderScale8() / 8.0,
-                mantra::RenderScale8());
+  if (mantra::RenderScaleUnits() != mantra::kScaleOne) {
+    MANTRA_INFO("render scale {}x", double(mantra::RenderScaleUnits()) / mantra::kScaleOne);
   }
   StartPipelineWarmUp();
   return true;
@@ -506,12 +511,13 @@ void NativeCommandProcessor::ReportGpuProfile(double frames) {
   for (uint64_t ns : p.kind_ns) busy += per_frame(ns);
   busy -= kind(GpuMarkKind::kStart);
   MANTRA_INFO("gpu profile: {:.1f} ms busy per frame: passes {:.1f} (draws {:.1f}, ends {:.1f}), "
-              "pass setup {:.1f}, fills {:.1f}, resolves {:.1f}, present {:.1f}, tail {:.1f}; "
-              "{} marks dropped",
+              "pass setup {:.1f}, 7e3 conversions {:.1f}, fills {:.1f}, resolves {:.1f}, "
+              "present {:.1f}, tail {:.1f}; {} marks dropped; alias clears {} deferred, {} applied",
               busy, kind(GpuMarkKind::kDraw) + kind(GpuMarkKind::kPass),
               kind(GpuMarkKind::kDraw), kind(GpuMarkKind::kPass), kind(GpuMarkKind::kSetup),
-              kind(GpuMarkKind::kFill), kind(GpuMarkKind::kResolve), kind(GpuMarkKind::kPresent),
-              kind(GpuMarkKind::kTail), p.overflows);
+              kind(GpuMarkKind::kConvert), kind(GpuMarkKind::kFill), kind(GpuMarkKind::kResolve),
+              kind(GpuMarkKind::kPresent), kind(GpuMarkKind::kTail), p.overflows,
+              render_targets_.deferred_clears(), render_targets_.flushed_clears());
   using Item = std::pair<const std::tuple<uint8_t, uint64_t, uint64_t>*, const GpuProfileEntry*>;
   std::vector<Item> passes, draws, others;
   for (const auto& [key, entry] : p.entries) {
@@ -543,10 +549,10 @@ void NativeCommandProcessor::ReportGpuProfile(double frames) {
                 per_frame(e->ns), double(e->count) / frames, double(e->n) / frames,
                 std::get<1>(*key), std::get<2>(*key), e->extra & 0xFFFF, e->extra >> 16);
   }
-  for (size_t i = 0; i < std::min<size_t>(others.size(), 6); ++i) {
+  for (size_t i = 0; i < std::min<size_t>(others.size(), 8); ++i) {
     const auto& [key, e] = others[i];
-    static const char* const kNames[] = {"start", "setup", "pass", "draw",
-                                         "fill",  "resolve", "present", "tail"};
+    static const char* const kNames[] = {"start",   "setup",   "pass", "draw",   "fill",
+                                         "resolve", "present", "tail", "convert"};
     MANTRA_INFO("gpu profile:   {} {:.2f} ms ({:.1f}/frame): {:X} {:X}",
                 kNames[std::get<0>(*key)], per_frame(e->ns), double(e->count) / frames,
                 std::get<1>(*key), std::get<2>(*key));
@@ -604,6 +610,7 @@ VkCommandBuffer NativeCommandProcessor::BeginCommands() {
   dfn.vkResetDescriptorPool(device, slot.descriptor_pool, 0);
   slot.descriptor_sets_used = 0;
   resolved_surfaces_.Collect(submission_completed_);
+  render_targets_.Collect(submission_completed_);
 
   VkCommandBufferBeginInfo begin_info = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -709,11 +716,26 @@ mantra::RenderTarget* NativeCommandProcessor::GetColorTarget(
   mantra::CopyRect rect;
   rect.width = std::min(rt->image.width, from->image.width);
   rect.height = std::min(rt->image.height, from->image.height);
+  // Only the rows `from` wrote since the two were last the same (the main
+  // 1280-pitch target is 1328 rows for EDRAM's sake; the game draws 720).
+  // MANTRA_FULL_7E3_CONVERSIONS=1 converts everything.
+  static const bool full_conversions = std::getenv("MANTRA_FULL_7E3_CONVERSIONS") != nullptr;
+  if (!full_conversions) {
+    rect.height = std::min(rect.height, from->dirty_rows);
+  }
+  from->dirty_rows = 0;
+  rt->dirty_rows = 0;
+  if (!rect.height) {
+    ++draw_stats_.float7e3_conversions_skipped;
+    return rt;
+  }
   mantra::CopyPushConstants constants;
   constants.mode = to_32 ? 1 : 2;
   if (copy_pipelines_.Record(cmd, CurrentSlot().descriptor_pool, src_view, false, dst_view,
-                             dst_format, rt->image.width, rt->image.height, rect, constants)) {
+                             dst_format, rt->image.width, rt->image.height, rect, constants,
+                             rt->image.rscale, from->image.rscale)) {
     ++draw_stats_.float7e3_conversions;
+    GpuMarkHere(GpuMarkKind::kConvert, base_tiles, (uint64_t(to_32) << 32) | rect.height);
     if (FirstRoute((uint64_t(base_tiles) << 40) ^ (uint64_t(pitch_px) << 20) ^ (to_32 ? 7 : 3) ^
                    (uint64_t(0x7E3) << 52))) {
       MANTRA_INFO("edram: 7e3 {} 32bpp at base {} pitch {} ({}x{})", to_32 ? "->" : "<-",
@@ -1011,6 +1033,10 @@ bool NativeCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
     const DrawResult result = DrawGuest(prim_type, index_count, index_buffer_info);
     trace_current_draw_ = false;
     outcome = result == DrawResult::kDrawn ? "drawn" : result == DrawResult::kSkipped ? "SKIPPED" : "FAILED";
+    if (result == DrawResult::kFailed && draw_fail_reason_) {
+      MANTRA_FRAME_TRACE("draw failed: {}", draw_fail_reason_);
+    }
+    draw_fail_reason_ = nullptr;
     if (result == DrawResult::kDrawn) {
       ++gpu_profiler_.pass_draws;
       if (gpu_profiler_.mode == 2 && rendering_.active) {
@@ -1172,7 +1198,7 @@ bool NativeCommandProcessor::Resolve() {
       mantra::ResolvedSurface* surface = resolved_surfaces_.Get(
           dest_address, std::max<uint32_t>(dest_pitch.copy_dest_pitch, rect.x + rect.width),
           std::max<uint32_t>(dest_pitch.copy_dest_height, rect.y + rect.height),
-          info.copy_dest_info.copy_dest_format, frame, true);
+          info.copy_dest_info.copy_dest_format, frame, true, SurfaceScaleUnits());
       VkDescriptorPool descriptor_pool = ReserveDescriptorSet();
       cmd = BeginNonDrawCommands();
       if (surface && cmd) resolved_surfaces_.PrepareWrite(cmd, *surface);
@@ -1190,7 +1216,8 @@ bool NativeCommandProcessor::Resolve() {
         if (copy_pipelines_.Record(cmd, descriptor_pool, src_view,
                                    msaa != xenos::MsaaSamples::k1X, surface->view,
                                    VK_FORMAT_R32_SFLOAT, surface->image.width,
-                                   surface->image.height, rect, constants)) {
+                                   surface->image.height, rect, constants,
+                                   surface->image.rscale, rt->image.rscale)) {
           ++draw_stats_.depth_copies;
           surface->write_count = ++resolve_serial_;  // unique: surfaces get recreated
           surface->last_write_frame = frame;
@@ -1235,7 +1262,15 @@ bool NativeCommandProcessor::Resolve() {
       mantra::ResolvedSurface* surface = resolved_surfaces_.Get(
           dest_address, std::max<uint32_t>(dest_pitch.copy_dest_pitch, rect.x + rect.width),
           std::max<uint32_t>(dest_pitch.copy_dest_height, rect.y + rect.height), dest_format,
-          frame);
+          frame, false,
+          // A native-scale target (lookup tables) resolves texel for texel.
+          rt->image.rscale == mantra::kScaleOne ? mantra::kScaleOne : SurfaceScaleUnits());
+      // The target the game presents from keeps the guest resolution (sharp
+      // HUD); everything drawn before it may be scaled.
+      if (last_frontbuffer_.address &&
+          (last_frontbuffer_.address & (kGuestPhysicalMemorySize - 1)) == dest_address) {
+        render_targets_.SetPresentation(rt->key);
+      }
       VkDescriptorPool descriptor_pool = ReserveDescriptorSet();
       cmd = BeginNonDrawCommands();  // may have been submitted to free descriptors
       if (surface && cmd) resolved_surfaces_.PrepareWrite(cmd, *surface);
@@ -1273,7 +1308,8 @@ bool NativeCommandProcessor::Resolve() {
         if (src_view &&
             copy_pipelines_.Record(cmd, descriptor_pool, src_view, msaa != xenos::MsaaSamples::k1X,
                                    surface->view, dest_host_format, surface->image.width,
-                                   surface->image.height, rect, constants)) {
+                                   surface->image.height, rect, constants, surface->image.rscale,
+                                   rt->image.rscale, /*linear=*/true)) {
           ++draw_stats_.color_copies;
           surface->write_count = ++resolve_serial_;  // unique: surfaces get recreated
           surface->last_write_frame = frame;
@@ -1319,6 +1355,10 @@ bool NativeCommandProcessor::Resolve() {
             render_targets_.GetDepth(cmd, info.depth_original_base, pitch_px, msaa, frame)) {
       render_targets_.ClearDepth(cmd, *rt, depth_info.depth_format, clear_rect,
                                  info.rb_depth_clear);
+      if (mantra::RenderTarget* twin = render_targets_.DepthTwin(*rt)) {
+        render_targets_.ClearDepth(cmd, *twin, depth_info.depth_format, clear_rect,
+                                   info.rb_depth_clear);
+      }
       ++draw_stats_.depth_clears;
     }
   }
@@ -1326,6 +1366,17 @@ bool NativeCommandProcessor::Resolve() {
 }
 
 // --- Swap --------------------------------------------------------------------
+
+bool NativeCommandProcessor::TraceCaptureEnabled() {
+  int value = g_trace_capture.load(std::memory_order_relaxed);
+  if (value < 0) {
+    const char* env = std::getenv("MANTRA_TRACE_CAPTURE");
+    value = !env || !*env || *env != '0';
+    int unset = -1;
+    g_trace_capture.compare_exchange_strong(unset, value);
+  }
+  return value != 0;
+}
 
 bool NativeCommandProcessor::CapturingPasses() {
   static const bool enabled = [] {
@@ -1616,6 +1667,21 @@ void NativeCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
   EndFrameTiming();
   ScopedNs swap_timer{frame_timing_.swap_ns};
   ++swap_stats_.swaps;
+  // Testing live scale changes: MANTRA_RENDER_SCALE_SCHEDULE="600:0.5,900:1.5"
+  // (swap number: scale).
+  static const char* schedule = std::getenv("MANTRA_RENDER_SCALE_SCHEDULE");
+  for (const char* p = schedule; p && *p;) {
+    char* end = nullptr;
+    const unsigned long swap = std::strtoul(p, &end, 10);
+    if (*end != ':') break;
+    const double factor = std::strtod(end + 1, &end);
+    if (swap == swap_stats_.swaps) mantra_set_render_scale(factor);
+    p = *end == ',' ? end + 1 : end;
+  }
+  if (mantra::ApplyPendingRenderScale()) {
+    MANTRA_INFO("render scale {}x", double(mantra::RenderScaleUnits()) / mantra::kScaleOne);
+  }
+  last_color_rscale_ = mantra::RenderScaleUnits();
   g_guest_swaps.fetch_add(1, std::memory_order_relaxed);
   // The traced frame (TracingThisFrame) is the one after swap trace_swap_ - 1:
   // its lines go to a file of their own (mantra::TraceLine).
@@ -1626,6 +1692,10 @@ void NativeCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
   }
   if (trace_swap_ && swap_stats_.swaps + 1 == trace_swap_ && trace_file_.empty()) {
     trace_file_ = mantra::BeginTraceFile(trace_swap_);
+    trace_picture_.clear();
+    if (!trace_file_.empty() && TraceCaptureEnabled()) {
+      trace_picture_ = std::filesystem::path(trace_file_).replace_extension(".png");
+    }
   }
   buffer_cache_.FrameEnded();
   ReloadShaderCacheIfChanged();
@@ -1772,6 +1842,12 @@ void NativeCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
         }
       });
     }
+    // Settings > Frame traces > Save the picture: the traced frame as shown,
+    // next to its log.
+    if (presented && !trace_picture_.empty() && swap_stats_.swaps == trace_swap_) {
+      CaptureSurface(*surface, width, height, fetch.swizzle, {}, trace_picture_);
+      trace_picture_.clear();
+    }
   } else {
     // Reject frontbuffers that would read past the end of physical memory.
     const uint32_t last_offset =
@@ -1829,8 +1905,8 @@ bool NativeCommandProcessor::PresentResolvedSurface(mantra::ResolvedSurface& sur
   const uint32_t display_height = std::max(uint32_t(1), uint32_t(video_mode.display_height));
 
   // At the internal resolution: the presenter scales it to the window.
-  const uint32_t output_width = mantra::HostSize(width, surface.image.scale8);
-  const uint32_t output_height = mantra::HostSize(height, surface.image.scale8);
+  const uint32_t output_width = mantra::HostSize(width, surface.image.rscale);
+  const uint32_t output_height = mantra::HostSize(height, surface.image.rscale);
   return presenter->RefreshGuestOutput(
       output_width, output_height, display_width, display_height,
       [&](ui::Presenter::GuestOutputRefreshContext& context) -> bool {
@@ -1862,7 +1938,7 @@ bool NativeCommandProcessor::PresentResolvedSurface(mantra::ResolvedSurface& sur
         const bool recorded = copy_pipelines_.Record(
             cmd, descriptor_pool, surface.view, false, vk_context.image_view(),
             ui::vulkan::VulkanPresenter::kGuestOutputFormat, width, height, rect, constants,
-            surface.image.scale8);
+            surface.image.rscale);
         mantra::TransitionImage(vulkan_device_, cmd, output,
                                 ui::vulkan::VulkanPresenter::kGuestOutputInternalLayout,
                                 ui::vulkan::VulkanPresenter::kGuestOutputInternalStageMask,
@@ -1876,11 +1952,80 @@ bool NativeCommandProcessor::PresentResolvedSurface(mantra::ResolvedSurface& sur
 
 void NativeCommandProcessor::CaptureSurface(mantra::ResolvedSurface& surface, uint32_t width,
                                             uint32_t height, uint32_t swizzle,
-                                            const std::string& name) {
-  CaptureImage(surface.image, surface.image.format, width, height, swizzle, name);
+                                            const std::string& name,
+                                            const std::filesystem::path& path) {
+  CaptureImage(surface.image, surface.image.format, width, height, swizzle, name, path);
 }
 
 namespace {
+
+// 8-bit RGB PNG with stored (uncompressed) deflate blocks: no zlib here, and
+// a 1280x720 frame is 2.7 MB either way.
+bool WritePng(const std::filesystem::path& path, uint32_t width, uint32_t height,
+              const std::vector<uint8_t>& rgb) {
+  static const auto crc_table = [] {
+    std::array<uint32_t, 256> table{};
+    for (uint32_t n = 0; n < 256; ++n) {
+      uint32_t c = n;
+      for (int k = 0; k < 8; ++k) c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+      table[n] = c;
+    }
+    return table;
+  }();
+  auto crc = [&](const uint8_t* data, size_t size, uint32_t c = 0xFFFFFFFFu) {
+    for (size_t i = 0; i < size; ++i) c = crc_table[(c ^ data[i]) & 0xFF] ^ (c >> 8);
+    return c;
+  };
+  auto be32 = [](std::vector<uint8_t>& out, uint32_t v) {
+    for (int s = 24; s >= 0; s -= 8) out.push_back(uint8_t(v >> s));
+  };
+  // Raw scanlines, each with filter type 0.
+  const size_t stride = size_t(width) * 3;
+  std::vector<uint8_t> raw;
+  raw.reserve((stride + 1) * height);
+  for (uint32_t y = 0; y < height; ++y) {
+    raw.push_back(0);
+    raw.insert(raw.end(), rgb.begin() + y * stride, rgb.begin() + (y + 1) * stride);
+  }
+  std::vector<uint8_t> z = {0x78, 0x01};
+  for (size_t at = 0; at < raw.size() || raw.empty();) {
+    const size_t n = std::min<size_t>(65535, raw.size() - at);
+    const bool last = at + n == raw.size();
+    z.push_back(last ? 1 : 0);
+    z.push_back(uint8_t(n));
+    z.push_back(uint8_t(n >> 8));
+    z.push_back(uint8_t(~n));
+    z.push_back(uint8_t(~n >> 8));
+    z.insert(z.end(), raw.begin() + at, raw.begin() + at + n);
+    at += n;
+    if (last) break;
+  }
+  uint32_t a = 1, b = 0;
+  for (uint8_t v : raw) {
+    a = (a + v) % 65521;
+    b = (b + a) % 65521;
+  }
+  be32(z, b << 16 | a);
+  std::vector<uint8_t> png = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
+  auto chunk = [&](const char* type, const std::vector<uint8_t>& data) {
+    be32(png, uint32_t(data.size()));
+    const size_t start = png.size();
+    png.insert(png.end(), type, type + 4);
+    png.insert(png.end(), data.begin(), data.end());
+    be32(png, crc(png.data() + start, png.size() - start) ^ 0xFFFFFFFFu);
+  };
+  std::vector<uint8_t> header;
+  be32(header, width);
+  be32(header, height);
+  header.insert(header.end(), {8, 2, 0, 0, 0});  // 8-bit RGB
+  chunk("IHDR", header);
+  chunk("IDAT", z);
+  chunk("IEND", {});
+  std::FILE* file = std::fopen(path.string().c_str(), "wb");
+  if (!file) return false;
+  const bool ok = std::fwrite(png.data(), 1, png.size(), file) == png.size();
+  return std::fclose(file) == 0 && ok;
+}
 
 float HalfToFloat(uint16_t h) {
   const uint32_t sign = uint32_t(h >> 15) << 31;
@@ -1900,10 +2045,11 @@ float HalfToFloat(uint16_t h) {
 
 void NativeCommandProcessor::CaptureImage(mantra::TrackedImage& image, VkFormat format,
                                           uint32_t width, uint32_t height, uint32_t swizzle,
-                                          const std::string& name) {
+                                          const std::string& name,
+                                          const std::filesystem::path& out_path) {
   // Captures hold the image's real pixels (the render scale included).
-  width = mantra::HostSize(width, image.scale8);
-  height = mantra::HostSize(height, image.scale8);
+  width = mantra::HostSize(width, image.rscale);
+  height = mantra::HostSize(height, image.rscale);
   uint32_t texel_size;
   switch (format) {
     case VK_FORMAT_R8G8B8A8_UNORM:
@@ -1966,13 +2112,19 @@ void NativeCommandProcessor::CaptureImage(mantra::TrackedImage& image, VkFormat 
       range.size = VK_WHOLE_SIZE;
       dfn.vkInvalidateMappedMemoryRanges(device, 1, &range);
       const uint8_t* bytes = static_cast<const uint8_t*>(mapping);
-      const std::filesystem::path path = std::filesystem::path(std::getenv("MANTRA_CAPTURE_DIR")) /
-                                         (name + ".ppm");
+      const char* capture_dir = std::getenv("MANTRA_CAPTURE_DIR");
+      const std::filesystem::path path =
+          !out_path.empty() ? out_path
+                            : std::filesystem::path(capture_dir ? capture_dir : "") / (name + ".ppm");
+      const bool png = path.extension() == ".png";
       std::error_code ec;
       std::filesystem::create_directories(path.parent_path(), ec);
       double sum[4] = {}, peak[4] = {};
-      if (std::FILE* file = std::fopen(path.string().c_str(), "wb")) {
-        std::fprintf(file, "P6\n%u %u\n255\n", width, height);
+      std::FILE* file = png ? nullptr : std::fopen(path.string().c_str(), "wb");
+      if (png || file) {
+        if (file) std::fprintf(file, "P6\n%u %u\n255\n", width, height);
+        std::vector<uint8_t> pixels;  // PNG: the whole picture
+        if (png) pixels.reserve(size_t(width) * height * 3);
         std::vector<uint8_t> row(size_t(width) * 3);
         for (uint32_t y = 0; y < height; ++y) {
           for (uint32_t x = 0; x < width; ++x) {
@@ -2039,16 +2191,25 @@ void NativeCommandProcessor::CaptureImage(mantra::TrackedImage& image, VkFormat 
               row[x * 3 + i] = uint8_t(Swizzled(comps, (swizzle >> (3 * i)) & 7) >> 8);
             }
           }
-          std::fwrite(row.data(), 1, row.size(), file);
+          if (file) {
+            std::fwrite(row.data(), 1, row.size(), file);
+          } else {
+            pixels.insert(pixels.end(), row.begin(), row.end());
+          }
         }
-        std::fclose(file);
+        if (file) std::fclose(file);
+        if (png && !WritePng(path, width, height, pixels)) {
+          MANTRA_WARN("could not write {}", path.string());
+        }
         const double n = double(width) * height;
         MANTRA_INFO("captured {} ({}x{} fmt {}) mean ({:.4g} {:.4g} {:.4g} {:.4g}) max ({:.4g} "
                     "{:.4g} {:.4g} {:.4g})",
                     path.filename().string(), width, height, uint32_t(format), sum[0] / n,
                     sum[1] / n, sum[2] / n, sum[3] / n, peak[0], peak[1], peak[2], peak[3]);
       }
-      if (format == VK_FORMAT_R32_SFLOAT) {
+      if (png) {
+        // The trace's picture: no raw extras.
+      } else if (format == VK_FORMAT_R32_SFLOAT) {
         std::filesystem::path raw = path;
         raw.replace_extension(".f32");
         if (std::FILE* f32 = std::fopen(raw.string().c_str(), "wb")) {
@@ -2062,6 +2223,14 @@ void NativeCommandProcessor::CaptureImage(mantra::TrackedImage& image, VkFormat 
         if (std::FILE* f16 = std::fopen(raw.string().c_str(), "wb")) {
           std::fwrite(bytes, 8, size_t(width) * height, f16);
           std::fclose(f16);
+        }
+      } else if (format == VK_FORMAT_R16G16B16A16_SNORM) {
+        // Raw fixed16 (int16 = value * 32767 / 32): the .ppm clamps to [0, 1].
+        std::filesystem::path raw = path;
+        raw.replace_extension(".rgba16s");
+        if (std::FILE* s16 = std::fopen(raw.string().c_str(), "wb")) {
+          std::fwrite(bytes, 8, size_t(width) * height, s16);
+          std::fclose(s16);
         }
       }
       dfn.vkUnmapMemory(device, memory);
@@ -2420,7 +2589,8 @@ bool NativeCommandProcessor::AttachTranslation(MantraShader& shader,
   shader.ps_outputs = lookup.entry->ps_outputs;
   shader.vertex_index_divisor = lookup.entry->vertex_index_divisor;
   if (!is_pixel) {
-    shader.DecodeVertexInputs(lookup.vertex_elements, lookup.vertex_swizzles);
+    shader.DecodeVertexInputs(lookup.vertex_elements, lookup.vertex_swizzles,
+                              lookup.container_formats);
   }
   std::span<const uint8_t> spirv = lookup.spirv;
   std::vector<uint8_t> remapped;
@@ -2430,7 +2600,8 @@ bool NativeCommandProcessor::AttachTranslation(MantraShader& shader,
     // drawn with: renumber the translation's interpolator outputs to match.
     uint8_t map[16];
     const std::vector<uint32_t> runtime_exports =
-        mantra::shader_key::InterpolatorExports(microcode_be, byte_count);
+        mantra::shader_key::InterpolatorExports(microcode_be, byte_count, nullptr,
+                                                lookup.legacy_exports);
     if (!mantra::shader_key::InterpolatorLocationMap(lookup.exports, runtime_exports, map)) {
       // Identity, or exports that don't correspond (then left as is).
       auto list = [](const std::vector<uint32_t>& exports) {
@@ -2636,10 +2807,11 @@ bool NativeCommandProcessor::UploadConstants(const void* data, uint32_t size, ui
   return BeginCommands() && shader_interface_.Upload(data, size, offset);
 }
 
-bool NativeCommandProcessor::PrepareDrawConstants(mantra::DrawConstantOffsets& offsets,
+bool NativeCommandProcessor::PrepareDrawConstants(const MantraShader* vs, const MantraShader* ps,
+                                                  mantra::DrawConstantOffsets& offsets,
                                                   const mantra::SharedConstants& draw_shared) {
-  auto* vs = static_cast<MantraShader*>(active_vertex_shader());
-  auto* ps = static_cast<MantraShader*>(active_pixel_shader());
+  // vs / ps as the draw uses them: ps is null for a depth-only pass that
+  // drops its untranslated pixel shader (DrawGuest).
   if (!vs || !vs->module || (ps && !ps->module)) {
     ++constant_stats_.no_translation;
     return false;

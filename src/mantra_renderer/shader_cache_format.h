@@ -7,6 +7,7 @@
 //                             SPIR-V, and per vertex shader its VertexElement
 //                             words followed by its interpolator export words
 //                             and (v7) its elements' container swizzles
+//                             and (v9) its export signatures
 
 #include <cstdint>
 
@@ -29,7 +30,23 @@ constexpr char kMagic[4] = {'M', 'S', 'H', 'C'};
 // 8: pixel shaders read SV_Position through SharedConstants::pixel_scale_inv
 //    (render scale); older caches load but screen-space effects misalign
 //    above 1x.
-constexpr uint32_t kVersion = 8;
+// 9: per vertex shader, after the swizzles, one word per export: its
+//    shader_key::InterpolatorExports signature (ALU instruction minus the
+//    destination), so a normalized match takes the game shader whose exports
+//    compute what the runtime code's do. Older caches load (first candidate
+//    that covers the exports, as before).
+// 10: the v7 swizzle words also carry bit 16 = the container fetch's format
+//    is packed 10:11:11 / 11:11:10 (the translation decodes that input in the
+//    shader). The driver sets fetch formats per vertex declaration, so a
+//    normalized match can get packed data on another input (mantra then
+//    decodes on the CPU). Older caches: assumed to match the runtime.
+// 11: a scalar export's interpolator is vector_dest (exports write both
+//    results there); earlier versions recorded scalar_dest, which made
+//    renumbered normalized matches look inconsistent, so they weren't
+//    remapped (wrong particles, atmosphere on a first run). Older caches
+//    load and compare the old way.
+constexpr uint32_t kVersion = 11;
+constexpr uint32_t kSwizzlePackedFormat = 1u << 16;
 constexpr uint32_t kMinVersion = 5;
 
 struct CacheHeader {

@@ -67,8 +67,10 @@ bool ShaderCache::Load(const std::filesystem::path& path) {
 
   for (size_t i = 0; i < entries_.size(); ++i) {
     const CacheEntry& e = entries_[i];
+    const bool vs = !(e.flags & kEntryPixelShader);
     const uint64_t swizzle_words =
-        version_ >= 7 && !(e.flags & kEntryPixelShader) ? e.vertex_element_count : 0;
+        (version_ >= 7 && vs ? e.vertex_element_count : 0) +
+        (version_ >= 9 && vs ? e.export_count : 0);
     if (!(e.flags & kEntryFailed) &&
         (uint64_t(e.spirv_offset) + e.spirv_size > blobs_size_ ||
          uint64_t(e.vertex_elements_offset) +
@@ -111,6 +113,8 @@ ShaderCache::Lookup ShaderCache::Find(const void* microcode_be, size_t byte_coun
                   blobs_ + e.vertex_elements_offset + e.vertex_element_count * sizeof(uint32_t),
                   e.export_count * sizeof(uint32_t));
       if (version_ >= 7 && !(e.flags & kEntryPixelShader)) {
+        result.container_formats = version_ >= 10;
+        result.legacy_exports = version_ < 11;
         result.vertex_swizzles.resize(e.vertex_element_count);
         std::memcpy(result.vertex_swizzles.data(),
                     blobs_ + e.vertex_elements_offset +
@@ -133,7 +137,39 @@ ShaderCache::Lookup ShaderCache::Find(const void* microcode_be, size_t byte_coun
       }
       // An output the translation doesn't write would leave the pixel
       // shader's input undefined (e.g. a texture coordinate of 0).
-      const std::vector<uint32_t> runtime = shader_key::InterpolatorExports(microcode_be, byte_count);
+      std::vector<uint32_t> runtime_signatures;
+      const std::vector<uint32_t> runtime =
+          shader_key::InterpolatorExports(microcode_be, byte_count, &runtime_signatures,
+                                          version_ < 11);
+      // v9: the game shader whose exports compute the same as the runtime
+      // code's (only their registers renumbered). The first one that merely
+      // exports to every register can compute something else: the UI text
+      // vertex shader got a candidate exporting colour .xyz (alpha 0).
+      if (version_ >= 9) {
+        for (size_t index : candidates) {
+          const CacheEntry& e = entries_[index];
+          const auto* words = reinterpret_cast<const uint32_t*>(blobs_ + e.vertex_elements_offset) +
+                              e.vertex_element_count;
+          const std::span<const uint32_t> exports(words, e.export_count);
+          const std::span<const uint32_t> signatures(
+              words + e.export_count + e.vertex_element_count, e.export_count);
+          bool same = true;
+          for (size_t r = 0; r < runtime.size() && same; ++r) {
+            same = false;
+            for (size_t t = 0; t < exports.size(); ++t) {
+              if ((exports[t] & ~0xFu) == (runtime[r] & ~0xFu) &&
+                  signatures[t] == runtime_signatures[r]) {
+                same = true;
+                break;
+              }
+            }
+          }
+          if (same) {
+            result.candidates = uint32_t(candidates.size());
+            return make(index, Match::kNormalized);
+          }
+        }
+      }
       for (size_t index : candidates) {
         const CacheEntry& e = entries_[index];
         const auto* exports = reinterpret_cast<const uint32_t*>(

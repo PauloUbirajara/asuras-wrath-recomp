@@ -1,6 +1,8 @@
 #include "vk_image.h"
+#include "render_scale.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdlib>
 
@@ -15,10 +17,10 @@ bool CreateTrackedImage(const vk::VulkanDevice* device, VkFormat format,
                         VkImageAspectFlags aspect, uint32_t width, uint32_t height,
                         VkSampleCountFlagBits samples, VkImageUsageFlags usage,
                         const VkFormat* view_formats, uint32_t view_format_count,
-                        TrackedImage& out, uint32_t scale8) {
+                        TrackedImage& out, uint32_t rscale) {
   const uint32_t guest_width = width, guest_height = height;
-  width = HostSize(width, scale8);
-  height = HostSize(height, scale8);
+  width = HostSize(width, rscale);
+  height = HostSize(height, rscale);
   VkImageCreateInfo info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   VkImageFormatListCreateInfo format_list = {VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO};
   if (view_format_count) {
@@ -51,21 +53,35 @@ bool CreateTrackedImage(const vk::VulkanDevice* device, VkFormat format,
   out.height = guest_height;
   out.host_width = width;
   out.host_height = height;
-  out.scale8 = scale8;
+  out.rscale = rscale;
   out.samples = samples;
   return true;
 }
 
-uint32_t RenderScale8() {
-  static const uint32_t scale8 = [] {
-    const char* env = std::getenv("MANTRA_RENDER_SCALE");
-    if (!env || !*env) return 8u;
-    double v = std::strtod(env, nullptr);
-    if (v >= 100.0) v /= 720.0;  // a target height
-    if (!(v > 0.0)) return 8u;
-    return uint32_t(std::clamp<long>(std::lround(v * 8.0), 4, 32));
-  }();
-  return scale8;
+namespace {
+uint32_t ScaleUnitsFor(double factor) {
+  if (!(factor > 0.0)) return kScaleOne;
+  return uint32_t(std::clamp<long>(std::lround(factor * kScaleOne), kMinScaleUnits, kMaxScaleUnits));
+}
+// The scale in use (changed only on the GPU thread, at swap) and the one
+// SetRenderScale asked for (0: none pending).
+std::atomic<uint32_t> g_scale_units{[] {
+  const char* env = std::getenv("MANTRA_RENDER_SCALE");
+  if (!env || !*env) return kScaleOne;
+  double v = std::strtod(env, nullptr);
+  if (v >= 100.0) v /= 720.0;  // a target height
+  return ScaleUnitsFor(v);
+}()};
+std::atomic<uint32_t> g_pending_units{0};
+}  // namespace
+
+uint32_t RenderScaleUnits() { return g_scale_units.load(std::memory_order_relaxed); }
+
+
+bool ApplyPendingRenderScale() {
+  const uint32_t pending = g_pending_units.exchange(0);
+  if (!pending) return false;
+  return g_scale_units.exchange(pending) != pending;
 }
 
 void DestroyTrackedImage(const vk::VulkanDevice* device, TrackedImage& image) {
@@ -127,3 +143,7 @@ void TransitionImage(const vk::VulkanDevice* device, VkCommandBuffer cmd, Tracke
 }
 
 }  // namespace mantra
+
+void mantra_set_render_scale(double factor) {
+  mantra::g_pending_units = mantra::ScaleUnitsFor(factor);
+}

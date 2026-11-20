@@ -80,17 +80,20 @@ struct LauncherSettings {
   uint32_t turbo = 0;                        // Turbo: held controls repeat (bit = PadControl)
   bool hide_cursor = true;                   // mouse cursor hides while it isn't moving, in game
   bool mute_background = false;              // no sound while the window isn't focused
-  int render_height = 720;                   // internal resolution (16:9), 720 = the game's
-  // Graphics > "Higher resolution" (experimental): off, the game renders at
-  // its own 720p whatever render_height says (RenderHeight).
-  bool native_render = false;
+  // Internal resolution, % of the game's 1280x720 (5..400, steps of 5).
+  int render_scale = 100;
   bool toasts = true;                        // achievement pop-ups
   int toast_corner = 3;                      // 0 top left, 1 top right, 2 bottom left, 3 bottom right
   double toast_seconds = 4.5;                // how long each pop-up stays
+  // Settings > Frame traces.
+  bool trace_picture = true;                 // save the traced frame as <trace>.png
+  bool trace_notice = true;                  // "Frame N traced" over the game
+  int trace_notice_position = 1;             // 0..2 top left/centre/right, 3..5 bottom
 
   static std::filesystem::path PathIn(const std::filesystem::path& user_data_root);
   bool Load(const std::filesystem::path& path);  // false if missing
   bool Save(const std::filesystem::path& path) const;
+  std::string Serialize() const;  // the file's text (Save)
 };
 
 // Applies the settings to flags nothing else set (command line, environment,
@@ -112,9 +115,8 @@ void ApplyLiveSettings(const LauncherSettings& settings);
 // Whether the shader cache works with the given settings.
 enum class ShaderCacheFit { kReady, kMissing, kOutdated };
 ShaderCacheFit ShaderCacheFitFor(const LauncherSettings& s);
-// The render height mantra uses: render_height with "Higher resolution" on,
-// else the game's 720.
-int RenderHeight(const LauncherSettings& s);
+// The render scale mantra uses, as a factor (1 = the game's 1280x720).
+double RenderScale(const LauncherSettings& s);
 bool NeedsRestart(const LauncherSettings& before, const LauncherSettings& after);
 
 // Turns the SDK's green ImGui accents (all overlays) orange.
@@ -218,14 +220,13 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
     // update: keep the shaders `out` already has, translate only new ones.
     void Start(const std::filesystem::path& tool, const std::filesystem::path& game,
                const std::filesystem::path& out, const std::vector<std::filesystem::path>& dumps,
-               bool update = false, bool background = false, bool fresh = false);
+               bool update = false, bool fresh = false);
     // Asks it to stop (it saves its progress, for the next build to continue).
     void RequestStop();
     // Kills it if a requested stop takes too long; every frame.
     void Tick();
     // Stops it and waits (closing the launcher).
     void Stop();
-    bool background = false;  // only the shaders the game used (MaybeTranslateForGame)
     std::string Line();
   };
   // One per process, never destroyed: in the game, the launcher over it
@@ -288,6 +289,7 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
     std::string when;  // from the name: YYYY-MM-DD HH:MM:SS
     uint64_t swap = 0;
     uintmax_t size = 0;
+    std::filesystem::path picture;  // <trace>.png, if saved
   };
   std::vector<TraceEntry> traces_;  // newest first
   double traces_checked_at_ = -10.0;
@@ -296,7 +298,10 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   void DrawSettings(float scale);
   void LoadAchievements();
   void UseDroppedPath(const std::filesystem::path& path);
-  void DrawQuit(const ImVec2& pos, const ImVec2& size, float scale);
+  // In game: Quit the game (top right) and its confirmation.
+  void DrawQuit(float scale);
+  // In game: the confirmation before Restart.
+  bool DrawRestartConfirm(float scale);
   void DrawSidebar(const ImVec2& pos, const ImVec2& size, float scale);
   void DrawPanel(const ImVec2& pos, const ImVec2& size, float scale);
   void DrawControls(float scale);
@@ -357,8 +362,12 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   // Opened over the running game (Esc): drawn translucent, the game shows through.
   bool OverGame() const { return bool(in_game_needs_restart_); }
   std::function<void(const LauncherSettings&, bool)> on_resume_;
+  // In game: the settings when the launcher opened (Cancel goes back to them).
+  LauncherSettings opened_settings_;
+  std::string opened_serialized_;
   bool resume_requested_ = false;
   bool quit_confirm_ = false;  // the in-game Quit's confirmation is open
+  bool restart_confirm_ = false;  // the in-game Restart's confirmation is open
   bool fonts_at_start_ = false;  // the game fonts were there when the launcher opened
   AssetJob asset_job_;
   std::vector<ProfileInfo> profiles_;
@@ -418,14 +427,6 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
     bool Running() const { return process.Running(); }
   };
   GameProcess game_;
-  // Translates the shaders the game used that the cache lacks (exact
-  // translations of the ones it patched at runtime): in the launcher over
-  // the game (Esc), and in the one that started it once it has closed.
-  void MaybeTranslateForGame();
-  double game_shaders_checked_at_ = -10.0;
-  // Tried by MaybeTranslateForGame, in this process (over the game, across Esc).
-  static std::unordered_set<uint64_t>& ShadersTried();
-  std::unordered_set<uint64_t>& shaders_tried_ = ShadersTried();
   std::filesystem::file_time_type settings_saved_time_{};  // after our last save
   bool playing_ = false;
   bool play_without_shaders_ = false;  // Play was pressed once without a shader cache

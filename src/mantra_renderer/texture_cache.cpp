@@ -411,7 +411,28 @@ TextureCache::Binding TextureCache::Get(const xenos::xe_gpu_texture_fetch_t& fet
   }
   Texture& texture = *it->second;
   if (inserted) {
-    const HostFormat host_format = GetHostFormat(fetch);
+    HostFormat host_format = GetHostFormat(fetch);
+    {
+      // Resolved fixed16 render targets hold signed bits (value / 32). An
+      // unsigned fetch of them reads a slightly negative value as almost 1.0
+      // (x64 after the bias): the console's math doesn't produce those
+      // negatives, ours can (rounding), and they show as saturated blocks
+      // in blurred passes (Episode 2's green reflections). Read them signed;
+      // non-negative values read the same either way.
+      // Debug: MANTRA_FIXED16_UNSIGNED=1 keeps the unsigned view.
+      static const bool keep_unsigned = std::getenv("MANTRA_FIXED16_UNSIGNED") != nullptr;
+      const uint32_t base = (fetch.base_address << 12) & kPhysicalMask;
+      if (!keep_unsigned && base && ResolvedValid(base)) {
+        switch (host_format.format) {
+          case VK_FORMAT_R16_UNORM: host_format.format = VK_FORMAT_R16_SNORM; break;
+          case VK_FORMAT_R16G16_UNORM: host_format.format = VK_FORMAT_R16G16_SNORM; break;
+          case VK_FORMAT_R16G16B16A16_UNORM:
+            if (!host_format.decode) host_format.format = VK_FORMAT_R16G16B16A16_SNORM;
+            break;
+          default: break;
+        }
+      }
+    }
     texture.format = host_format.format;
     texture.component_count = host_format.component_count;
     for (uint32_t i = 0; i < 4; ++i) texture.channels[i] = uint8_t(host_format.channels[i]);
@@ -570,7 +591,7 @@ bool TextureCache::CreateImage(Texture& texture) {
   info.flags = texture.dimension == kCube ? VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT : 0;
   info.imageType = texture.dimension == k3D ? VK_IMAGE_TYPE_3D : VK_IMAGE_TYPE_2D;
   info.format = texture.format;
-  info.extent = {HostSize(texture.width, texture.scale8), HostSize(texture.height, texture.scale8),
+  info.extent = {HostSize(texture.width, texture.rscale), HostSize(texture.height, texture.rscale),
                  texture.depth};
   info.mipLevels = texture.levels;
   info.arrayLayers = texture.layers;
@@ -625,11 +646,11 @@ bool TextureCache::LoadFromMemory(Texture& texture, const xenos::xe_gpu_texture_
   const uint32_t host_width = std::max(width >> mip_min, 1u);
   const uint32_t host_height = std::max(height >> mip_min, 1u);
   const uint32_t host_levels = mip_max - mip_min + 1;
-  if (texture.image && texture.scale8 != 8) {
+  if (texture.image && texture.rscale != kScaleOne) {
     RetireImage(texture);
   }
   if (!texture.image) {
-    texture.scale8 = 8;
+    texture.rscale = kScaleOne;
     texture.width = host_width;
     texture.height = host_height;
     texture.layers = layers;
@@ -986,11 +1007,11 @@ bool TextureCache::CopyFromResolved(Texture& texture, const xenos::xe_gpu_textur
       return false;
     }
   }
-  if (texture.image && texture.scale8 != surface->image.scale8) {
+  if (texture.image && texture.rscale != surface->image.rscale) {
     RetireImage(texture);
   }
   if (!texture.image) {
-    texture.scale8 = surface->image.scale8;
+    texture.rscale = surface->image.rscale;
     texture.width = width_minus_1 + 1;
     texture.height = height_minus_1 + 1;
     texture.depth = texture.stacked ? depth_minus_1 + 1 : 1;
@@ -1027,7 +1048,7 @@ bool TextureCache::CopyFromResolved(Texture& texture, const xenos::xe_gpu_textur
     VkImageCopy& region = regions[z];
     region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     region.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    const uint32_t s = texture.scale8;
+    const uint32_t s = texture.rscale;
     const uint32_t src_y = HostCoord(z * slice_rows, s);
     region.srcOffset = {0, int32_t(src_y), 0};
     region.dstOffset = {0, 0, int32_t(z)};

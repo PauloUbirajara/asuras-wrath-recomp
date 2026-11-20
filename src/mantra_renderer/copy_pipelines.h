@@ -23,7 +23,11 @@ struct CopyPushConstants {
   uint32_t swizzle[4] = {0, 1, 2, 3};
   // 0 = copy, 1 = float -> 7e3 bits (10:10:10:2 unorm), 2 = the reverse.
   uint32_t mode = 0;
-  uint32_t padding[3] = {};
+  // Source pixels per destination pixel (render scales differ), and whether
+  // to filter bilinearly (else the nearest texel).
+  float src_ratio = 1.0f;
+  uint32_t linear = 0;
+  uint32_t padding = 0;
 };
 static_assert(sizeof(CopyPushConstants) == 48);
 
@@ -43,11 +47,14 @@ class CopyPipelines {
   // SHADER_READ_ONLY_OPTIMAL and dst to COLOR_ATTACHMENT_OPTIMAL first.
   // `descriptor_pool` must be reset only after `cmd` completes. `rect`,
   // `dst_width`/`dst_height` and `constants.src_offset` are in guest pixels;
-  // both images are `scale8` / 8 larger (RenderScale8()).
+  // the destination is `rscale` / kScaleOne larger (RenderScaleUnits()), the source
+  // `src_rscale` / kScaleOne (0: the same). Between different scales, `linear`
+  // filters bilinearly (single-sampled sources only), else nearest.
   bool Record(VkCommandBuffer cmd, VkDescriptorPool descriptor_pool, VkImageView src_view,
               bool src_multisampled, VkImageView dst_view, VkFormat dst_format,
               uint32_t dst_width, uint32_t dst_height, const CopyRect& rect,
-              const CopyPushConstants& constants, uint32_t scale8 = RenderScale8());
+              const CopyPushConstants& constants, uint32_t rscale = RenderScaleUnits(),
+              uint32_t src_rscale = 0, bool linear = false);
 
  private:
   VkPipeline GetPipeline(VkFormat dst_format, bool src_multisampled);

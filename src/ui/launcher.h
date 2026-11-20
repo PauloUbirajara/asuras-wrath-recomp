@@ -298,7 +298,10 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   void DrawSettings(float scale);
   void LoadAchievements();
   void UseDroppedPath(const std::filesystem::path& path);
-  void DrawQuit(const ImVec2& pos, const ImVec2& size, float scale);
+  // In game: Quit the game (top right) and its confirmation.
+  void DrawQuit(float scale);
+  // In game: the confirmation before Restart.
+  bool DrawRestartConfirm(float scale);
   void DrawSidebar(const ImVec2& pos, const ImVec2& size, float scale);
   void DrawPanel(const ImVec2& pos, const ImVec2& size, float scale);
   void DrawControls(float scale);
@@ -364,6 +367,7 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   std::string opened_serialized_;
   bool resume_requested_ = false;
   bool quit_confirm_ = false;  // the in-game Quit's confirmation is open
+  bool restart_confirm_ = false;  // the in-game Restart's confirmation is open
   bool fonts_at_start_ = false;  // the game fonts were there when the launcher opened
   AssetJob asset_job_;
   std::vector<ProfileInfo> profiles_;

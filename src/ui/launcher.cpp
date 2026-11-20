@@ -1518,16 +1518,25 @@ bool LauncherDialog::SidebarButton(const char* label, bool selected, float width
 }
 
 // In game: Quit, above Resume, after a confirmation (Esc or Cancel goes back).
-void LauncherDialog::DrawQuit(const ImVec2& pos, const ImVec2& size, float scale) {
+void LauncherDialog::DrawQuit(float scale) {
   ImGui::PushFont(font_, 24.0f * scale);
   ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
   ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.06f));
   ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.12f));
   ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.75f, 0.73f, 0.70f, 1.0f));
-  ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + size.y - 140 * scale));
-  if (ImGui::Button((std::string(T("Quit the game")) + "##quit").c_str(), ImVec2(size.x, 44 * scale))) {
-    ImGui::OpenPopup("##quit_confirm");
+  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(16 * scale, 8 * scale));
+  {
+    // Top right of the window, out of the way of Resume.
+    const std::string text = std::string(T("Quit the game")) + "##quit";
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const ImVec2 button_size(ImGui::CalcTextSize(text.c_str(), nullptr, true).x + 32 * scale,
+                             ImGui::GetFontSize() + 16 * scale);
+    ImGui::SetCursorScreenPos(
+        ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - button_size.x - 24 * scale,
+               viewport->WorkPos.y + 20 * scale));
+    if (ImGui::Button(text.c_str(), button_size)) ImGui::OpenPopup("##quit_confirm");
   }
+  ImGui::PopStyleVar();
   ImGui::PopStyleColor(4);
   ImGui::PopFont();
 
@@ -1562,6 +1571,42 @@ void LauncherDialog::DrawQuit(const ImVec2& pos, const ImVec2& size, float scale
   ImGui::PopStyleColor(2);
   ImGui::PopStyleVar();
   ImGui::PopFont();
+}
+
+bool LauncherDialog::DrawRestartConfirm(float scale) {
+  bool confirmed = false;
+  const ImGuiViewport* viewport = ImGui::GetMainViewport();
+  ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+  ImGui::PushFont(font_, 26.0f * scale);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(28 * scale, 22 * scale));
+  ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0.11f, 0.10f, 0.10f, 0.98f));
+  ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, ImVec4(0, 0, 0, 0.55f));
+  restart_confirm_ = ImGui::BeginPopupModal("##restart_confirm", nullptr,
+                                            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
+                                                ImGuiWindowFlags_AlwaysAutoResize);
+  if (restart_confirm_) {
+    ImGui::TextUnformatted(T("Restart the game?"));
+    ImGui::TextDisabled("%s", T("Progress since the last save is lost."));
+    ImGui::Spacing();
+    ImGui::Spacing();
+    const float w = 180 * scale;
+    if (ImGui::Button((std::string(T("Restart")) + "##restart_yes").c_str(), ImVec2(w, 0))) {
+      ImGui::CloseCurrentPopup();
+      confirmed = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();  // Enter = Cancel
+    // Esc (the launcher's own key, which would resume the game) goes back.
+    const bool esc = std::exchange(resume_requested_, false);
+    if (ImGui::Button((std::string(T("Cancel")) + "##restart_no").c_str(), ImVec2(w, 0)) || esc) {
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
+  ImGui::PopStyleColor(2);
+  ImGui::PopStyleVar();
+  ImGui::PopFont();
+  return confirmed;
 }
 
 void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float scale) {
@@ -1656,7 +1701,9 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
   ImGui::PopStyleVar(2);
   ImGui::PopFont();
 
-  // Play, at the bottom.
+  // Play, at the bottom. In game, after a change: Cancel under it, back to
+  // the settings the launcher opened with.
+  const bool can_cancel = OverGame() && settings_.Serialize() != opened_serialized_;
   bool busy = shader_build_.state == ShaderBuild::kRunning ||
               iso_extract_.state == IsoExtract::kRunning;
   // A change that needs the shaders rebuilt (gone again if it's undone),
@@ -1677,8 +1724,8 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
     ImGui::PushFont(font_, 20.0f * scale);
     const float wrap = size.x - 20 * scale;
     const ImVec2 text_size = ImGui::CalcTextSize(notice.c_str(), nullptr, false, wrap);
-    // Above Play, and above Quit in game.
-    const float above = (in_game_needs_restart_ ? 150 : 100) * scale;
+    // Above Play (and Cancel under it).
+    const float above = (can_cancel ? 160 : 100) * scale;
     const ImVec2 at(pos.x + 10 * scale, pos.y + size.y - above - text_size.y);
     ImGui::SetCursorScreenPos(at);
     ImGui::PushTextWrapPos(pos.x + size.x - 10 * scale);
@@ -1699,14 +1746,14 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
   }
   // Over the running game: Resume, or Restart for changes that need one.
   const bool in_game = bool(in_game_needs_restart_);
-  if (in_game) DrawQuit(pos, size, scale);
+  if (in_game) DrawQuit(scale);
   ImGui::PushFont(font_, 34.0f * scale);
   ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
   ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.06f));
   ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.12f));
   ImGui::PushStyleColor(ImGuiCol_Text, busy ? ImVec4(0.5f, 0.5f, 0.5f, 1.0f)
                                             : ImVec4(0.96f, 0.95f, 0.92f, 1.0f));
-  ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + size.y - 90 * scale));
+  ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + size.y - (can_cancel ? 150 : 90) * scale));
   const bool restart = in_game && in_game_needs_restart_(settings_);
   // The game started from here: Stop while it runs.
   const bool stop = !in_game && game_.Running();
@@ -1715,20 +1762,23 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
                            : !in_game ? T("Play")
                            : restart  ? T("Restart")
                                       : T("Resume");
-  // In game, after a change: Cancel beside it, back to the settings the
-  // launcher opened with.
-  const bool can_cancel = in_game && settings_.Serialize() != opened_serialized_;
-  const float play_width = can_cancel ? std::floor(size.x * 0.6f) : size.x;
   const bool clicked =
-      ImGui::Button((std::string(play_label) + "##play").c_str(), ImVec2(play_width, 64 * scale));
+      ImGui::Button((std::string(play_label) + "##play").c_str(), ImVec2(size.x, 64 * scale));
   const bool play_hovered = ImGui::IsItemHovered();
+  ImGui::PopStyleColor(4);
+  ImGui::PopFont();
   bool cancel = false;
   if (can_cancel) {
-    ImGui::SameLine(0, 0);
+    ImGui::PushFont(font_, 24.0f * scale);
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.06f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.12f));
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.75f, 0.73f, 0.70f, 1.0f));
+    ImGui::SetCursorScreenPos(ImVec2(pos.x, pos.y + size.y - 80 * scale));
     cancel = ImGui::Button((std::string(T("Cancel")) + "##cancel").c_str(),
-                           ImVec2(size.x - play_width, 64 * scale));
-    ImGui::PopStyleColor();
+                           ImVec2(size.x, 48 * scale));
+    ImGui::PopStyleColor(4);
+    ImGui::PopFont();
     if (ImGui::IsItemHovered()) {
       ImGui::PushFont(font_, 22.0f * scale);
       ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14 * scale, 10 * scale));
@@ -1739,11 +1789,13 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
       ImGui::PopFont();
     }
   }
+  // Restart asks first (progress since the last save is lost).
+  if (clicked && restart && !busy) ImGui::OpenPopup("##restart_confirm");
+  const bool restart_confirmed = in_game && DrawRestartConfirm(scale);
+  // Esc while a confirmation is open closes it (it takes the request).
   const bool esc_resume = std::exchange(resume_requested_, false) && in_game;
-  const bool play = (clicked || esc_resume) && !busy;
-  const bool restart_chosen = clicked && restart;
-  ImGui::PopStyleColor(4);
-  ImGui::PopFont();
+  const bool play = ((clicked && !restart) || restart_confirmed || esc_resume) && !busy;
+  const bool restart_chosen = restart_confirmed;
   if (cancel) {
     settings_ = opened_settings_;
     std::snprintf(game_data_buffer_, sizeof(game_data_buffer_), "%s", settings_.game_data.c_str());
@@ -2921,7 +2973,13 @@ void LauncherDialog::DrawSystem(float scale) {
   };
 
   SubHeading(HeadingFont(), T("Game"), scale);
-  label(T("Language"));
+  // The game loads its language at start: a change applies on Restart (the
+  // launcher's own text changes right away).
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted(T("Language"));
+  ImGui::SameLine(0, 3 * scale);
+  ImGui::TextColored(kRestartMark, "*");
+  ImGui::SameLine(label_w);
   ImGui::SetNextItemWidth(240 * scale);
   struct Language {
     uint32_t id;
@@ -2953,6 +3011,10 @@ void LauncherDialog::DrawSystem(float scale) {
   LockedNote("user_language");
   ImGui::SetCursorPosX(label_w);
   ImGui::TextDisabled("%s", T("The game's menus and subtitles, the achievements and this launcher."));
+  ImGui::SetCursorPosX(label_w);
+  ImGui::TextColored(kRestartMark, "*");
+  ImGui::SameLine(0, 6 * scale);
+  ImGui::TextDisabled("%s", T("Takes effect the next time the game starts."));
 
   SubHeading(HeadingFont(), T("Achievement pop-ups"), scale);
   label(T("Show achievements"));

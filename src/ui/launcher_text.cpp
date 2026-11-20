@@ -55,6 +55,8 @@ constexpr Entry kEntries[] = {
      "Impostato da riga di comando o file di configurazione"},
     {"Quit the game", "ゲームを終了", "Spiel beenden", "Quitter le jeu", "Salir del juego",
      "Esci dal gioco"},
+    {"Restart the game?", "ゲームを再起動しますか？", "Spiel neu starten?", "Redémarrer le jeu ?",
+     "¿Reiniciar el juego?", "Riavviare il gioco?"},
     {"Quit the game?", "ゲームを終了しますか？", "Spiel beenden?", "Quitter le jeu ?",
      "¿Salir del juego?", "Uscire dal gioco?"},
     {"Progress since the last save is lost.", "最後のセーブ以降の進行状況は失われます。",

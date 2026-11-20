@@ -242,6 +242,49 @@
         </LinearLayout>
     </LinearLayout>
 
+    <!-- Controls › Touch controls (Android): the on-screen pad over the game
+         (TouchControlsView.kt). -->
+    <LinearLayout
+        android:id="@+id/section_touch"
+        style="@style/Section">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/touch_show"
+                style="@style/Widget.Paper.Switch" android:text="@string/touch_show" />
+            <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/touch_hide_with_pad"
+                style="@style/Widget.Paper.Switch" android:text="@string/touch_hide_with_pad" />
+            <TextView android:id="@+id/touch_status" style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content" />
+        </LinearLayout>
+        <LinearLayout android:id="@+id/touch_options"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/touch_size" />
+            <TextView android:id="@+id/touch_size_value" style="@style/Text.Paper.Hint"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" />
+            <com.google.android.material.slider.Slider
+                android:id="@+id/touch_size"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:valueFrom="50" android:valueTo="200" android:stepSize="10"
+                app:labelBehavior="gone" app:tickVisible="false" />
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/touch_opacity" />
+            <TextView android:id="@+id/touch_opacity_value" style="@style/Text.Paper.Hint"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" />
+            <com.google.android.material.slider.Slider
+                android:id="@+id/touch_opacity"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:valueFrom="10" android:valueTo="100" android:stepSize="5"
+                app:labelBehavior="gone" app:tickVisible="false" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/touch_hint" />
+        </LinearLayout>
+    </LinearLayout>
+
     <!-- Controls › Controller: vibration, the stick deadzones. -->
     <LinearLayout
         android:id="@+id/section_controller"

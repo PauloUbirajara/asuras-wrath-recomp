@@ -296,4 +296,15 @@
     <string name="gpu_driver_installed">Installed %1$s: used the next time the game starts.</string>
     <string name="gpu_driver_install_failed">Couldn\'t install the driver: %1$s</string>
     <string name="gpu_driver_hint">For Snapdragon phones (Adreno GPUs): a custom Vulkan driver such as Mesa Turnip, from a driver .zip (the kind other Android emulators use). It can be faster or fix the picture, or the game may not start with it: then choose the phone\'s own driver again. Applies the next time the game starts.</string>
+    <string name="section_touch">Touch controls</string>
+    <string name="touch_show">Show touch controls</string>
+    <string name="touch_auto">Shown when no controller is connected</string>
+    <string name="touch_on">Always shown</string>
+    <string name="touch_off">Off</string>
+    <string name="touch_status_pad">A controller is connected.</string>
+    <string name="touch_status_none">No controller connected.</string>
+    <string name="touch_size">Size</string>
+    <string name="touch_opacity">Opacity</string>
+    <string name="touch_hint">Two sticks, A B X Y, the bumpers and triggers, Back and Start, over the game. They work alongside a controller, with the same button remap and Turbo. They hide while the game\'s own menu is open. Changes apply when you go back to the game.</string>
+    <string name="touch_hide_with_pad">Hide them while a controller is connected</string>
 </resources>

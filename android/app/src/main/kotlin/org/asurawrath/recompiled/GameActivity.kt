@@ -26,11 +26,20 @@ class GameActivity : SDLActivity() {
         for (note in listOf(".open_game_menu", ".toast_example")) File(folders.root, note).delete()
         current = this
         super.onCreate(savedInstanceState)
+        // The touch controls over the game's surface (Controls › Touch controls).
+        touch = TouchControlsView(this).also {
+            mLayout?.addView(it, android.view.ViewGroup.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT))
+        }
     }
+
+    private var touch: TouchControlsView? = null
 
     override fun onResume() {
         super.onResume()
         applyScreenPadding()
+        // After the in-game menu: its touch settings.
+        touch?.reload(LauncherConfig.load(AppFolders(this).config))
     }
 
     /**
@@ -81,6 +90,12 @@ class GameActivity : SDLActivity() {
 
         /** asura_wrath_app.h: the menu closed (reload launcher.cfg, maybe open the game menu). */
         @JvmStatic external fun nativeMenuClosed()
+
+        /** pad_remap.cpp: the touch controls' state (bit = PadControl; sticks -1..1, up positive). */
+        @JvmStatic external fun nativeTouchPad(controls: Int, lx: Float, ly: Float, rx: Float, ry: Float)
+
+        /** pad_remap.cpp: the game's own menu is open (the touch controls hide). */
+        @JvmStatic external fun nativeTouchSuspended(): Boolean
     }
 }
 

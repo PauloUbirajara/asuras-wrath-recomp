@@ -3,7 +3,12 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <vector>
+
+#ifdef __ANDROID__
+#include <jni.h>
+#endif
 
 #include <rex/cvar.h>
 #include <rex/input/device_assignment.h>
@@ -136,7 +141,91 @@ class RemappedPadDriver final : public InputDriver {
   std::unique_ptr<sdl::SDLInputDriver> inner_;
 };
 
+// Android's touch controls (GameActivity's TouchControlsView, through
+// nativeTouchPad): the controls held (bit = PadControl) and the sticks.
+std::atomic<uint32_t> g_touch_controls{0};
+std::atomic<uint64_t> g_touch_sticks{0};  // lx, ly, rx, ry: int16 each
+std::atomic<bool> g_touch_suspended{false};
+
+// The touch controls as a pad: synthetic, so it feeds player 1 alongside any
+// real one, with the same remap and Turbo.
+class TouchPadDriver final : public InputDriver {
+ public:
+  TouchPadDriver() : InputDriver(nullptr, 0) {}
+  X_STATUS Setup() override { return X_STATUS_SUCCESS; }
+  void EnumerateDevices(std::vector<DeviceInfo>& out) override {
+    DeviceInfo info;
+    info.id = kDevice;
+    info.name = "Touch";
+    info.synthetic = true;
+    out.push_back(info);
+  }
+  X_RESULT GetDeviceState(DeviceId id, X_INPUT_STATE* out) override {
+    if (id != kDevice) return X_ERROR_DEVICE_NOT_CONNECTED;
+    if (!out) return X_ERROR_SUCCESS;
+    const uint32_t controls = g_touch_controls.load(std::memory_order_relaxed);
+    const uint64_t sticks = g_touch_sticks.load(std::memory_order_relaxed);
+    std::memset(out, 0, sizeof(*out));
+    const uint64_t state = uint64_t(controls) ^ (sticks * 0x9E3779B97F4A7C15ull);
+    if (state != last_state_) {
+      last_state_ = state;
+      ++packet_;
+    }
+    out->packet_number = packet_;
+    X_INPUT_GAMEPAD& pad = out->gamepad;
+    uint16_t buttons = 0;
+    for (int c = 0; c < kPadControlCount; ++c) {
+      if (controls & (1u << c)) buttons |= kBits[c];
+    }
+    pad.buttons = buttons;
+    pad.left_trigger = (controls & (1u << kPadLT)) ? 255 : 0;
+    pad.right_trigger = (controls & (1u << kPadRT)) ? 255 : 0;
+    pad.thumb_lx = int16_t(sticks & 0xFFFF);
+    pad.thumb_ly = int16_t((sticks >> 16) & 0xFFFF);
+    pad.thumb_rx = int16_t((sticks >> 32) & 0xFFFF);
+    pad.thumb_ry = int16_t((sticks >> 48) & 0xFFFF);
+    const PadMap map = GetPadMap();
+    if (map != IdentityPadMap()) RemapPad(pad, map);
+    if (const uint32_t turbo = g_turbo.load(std::memory_order_relaxed)) ApplyTurbo(pad, turbo);
+    return X_ERROR_SUCCESS;
+  }
+  X_RESULT GetDeviceCapabilities(DeviceId id, uint32_t, X_INPUT_CAPABILITIES* caps) override {
+    if (id != kDevice) return X_ERROR_DEVICE_NOT_CONNECTED;
+    if (caps) {
+      std::memset(caps, 0, sizeof(*caps));
+      caps->type = 0x01;
+      caps->sub_type = 0x01;
+      caps->gamepad.buttons = 0xFFFF;
+      caps->gamepad.left_trigger = 0xFF;
+      caps->gamepad.right_trigger = 0xFF;
+    }
+    return X_ERROR_SUCCESS;
+  }
+  X_RESULT SetDeviceVibration(DeviceId id, X_INPUT_VIBRATION*) override {
+    return id == kDevice ? X_ERROR_SUCCESS : X_ERROR_DEVICE_NOT_CONNECTED;
+  }
+  X_RESULT GetDeviceKeystroke(DeviceId id, uint32_t, X_INPUT_KEYSTROKE*) override {
+    return id == kDevice ? X_ERROR_EMPTY : X_ERROR_DEVICE_NOT_CONNECTED;
+  }
+
+ private:
+  static constexpr auto kDevice = static_cast<DeviceId>(0x544F5543);  // 'TOUC'
+  uint64_t last_state_ = ~0ull;
+  uint32_t packet_ = 0;
+};
+
 }  // namespace
+
+void SetTouchPad(uint32_t controls, float lx, float ly, float rx, float ry) {
+  auto axis = [](float v) {
+    return uint64_t(uint16_t(int16_t(std::clamp(v, -1.0f, 1.0f) * 32767.0f)));
+  };
+  g_touch_controls.store(controls & ((1u << kPadControlCount) - 1), std::memory_order_relaxed);
+  g_touch_sticks.store(axis(lx) | axis(ly) << 16 | axis(rx) << 32 | axis(ry) << 48,
+                       std::memory_order_relaxed);
+}
+void SetTouchControlsSuspended(bool suspended) { g_touch_suspended = suspended; }
+bool TouchControlsSuspended() { return g_touch_suspended; }
 
 PadMap IdentityPadMap() {
   PadMap map;
@@ -191,6 +280,9 @@ std::unique_ptr<rex::system::IInputSystem> CreateInputSystem(bool tool_mode) {
       auto pads = std::make_unique<RemappedPadDriver>();
       if (pads->Setup() == X_STATUS_SUCCESS) input->AddDriver(std::move(pads));
     }
+#ifdef __ANDROID__
+    input->AddDriver(std::make_unique<TouchPadDriver>());
+#endif
     auto mnk = std::make_unique<mnk::MnkInputDriver>(nullptr, 0);
     if (mnk->Setup() == X_STATUS_SUCCESS) input->AddDriver(std::move(mnk));
   }
@@ -200,3 +292,18 @@ std::unique_ptr<rex::system::IInputSystem> CreateInputSystem(bool tool_mode) {
 }
 
 }  // namespace asura::input
+
+#ifdef __ANDROID__
+// GameActivity.nativeTouchPad (TouchControlsView): the touch controls' state,
+// sticks -1..1 with up positive (XInput's sense).
+extern "C" JNIEXPORT void JNICALL Java_org_asurawrath_recompiled_GameActivity_nativeTouchPad(
+    JNIEnv*, jclass, jint controls, jfloat lx, jfloat ly, jfloat rx, jfloat ry) {
+  asura::input::SetTouchPad(uint32_t(controls), lx, ly, rx, ry);
+}
+// GameActivity.nativeTouchSuspended: the game's own (ImGui) menu is open and
+// takes touches as the mouse, so the controls step aside.
+extern "C" JNIEXPORT jboolean JNICALL Java_org_asurawrath_recompiled_GameActivity_nativeTouchSuspended(
+    JNIEnv*, jclass) {
+  return asura::input::TouchControlsSuspended() ? JNI_TRUE : JNI_FALSE;
+}
+#endif

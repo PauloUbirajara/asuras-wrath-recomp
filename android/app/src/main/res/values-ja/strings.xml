@@ -252,4 +252,15 @@
     <string name="gpu_driver_installed">%1$s をインストールしました。次にゲームを起動したときに使われます。</string>
     <string name="gpu_driver_install_failed">ドライバーをインストールできませんでした: %1$s</string>
     <string name="gpu_driver_hint">Snapdragon 端末(Adreno GPU)向け: Mesa Turnip などのカスタム Vulkan ドライバーを、ドライバーの .zip(ほかの Android エミュレーターと同じ形式)から使えます。速くなったり表示が直ったりしますが、ゲームが起動しないこともあります。その場合は端末標準のドライバーに戻してください。次にゲームを起動したときから適用されます。</string>
+    <string name="section_touch">タッチ操作</string>
+    <string name="touch_show">タッチ操作を表示</string>
+    <string name="touch_auto">コントローラー未接続のとき表示</string>
+    <string name="touch_on">常に表示</string>
+    <string name="touch_off">オフ</string>
+    <string name="touch_status_pad">コントローラーが接続されています。</string>
+    <string name="touch_status_none">コントローラーは接続されていません。</string>
+    <string name="touch_size">大きさ</string>
+    <string name="touch_opacity">不透明度</string>
+    <string name="touch_hint">2 本のスティック、A B X Y、LB/RB と LT/RT、Back と Start をゲームの上に表示します。コントローラーと同時に使え、ボタン割り当てとターボも同じく効きます。ゲーム側のメニューを開いている間は隠れます。変更はゲームに戻ったときに反映されます。</string>
+    <string name="touch_hide_with_pad">コントローラー接続中は隠す</string>
 </resources>

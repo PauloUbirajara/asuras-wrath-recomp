@@ -2,7 +2,7 @@
 
 PC port of Asura's Wrath (`default.xex`, Title ID `43430817`) via Xbox 360 static PowerPC recompilation to C++23, rendered by the in-repo Vulkan renderer `mantra`.
 
-> Note: made and tested on Linux. A Windows build can be made (natively or cross-compiled from Linux). An **experimental Android** build exists (arm64, needs a controller; see [Android](#android-experimental)).
+> Note: made and tested on Linux. A Windows build can be made (natively or cross-compiled from Linux). An **experimental Android** build exists (arm64; touch controls or a controller; see [Android](#android-experimental)).
 
 <a href="https://www.youtube.com/playlist?list=PLVyuezqTsTB0">
         <img alt="cover" src="https://github.com/user-attachments/assets/339f7f1b-85d4-48ac-9b5f-ac4fad276dad" />
@@ -280,7 +280,7 @@ The render resolution is also `MANTRA_RENDER_SCALE` (a factor such as `1.5`, or 
 
 ### Android (experimental)
 
-Runs on Android 10+ with an arm64 (or x86_64) CPU and Vulkan 1.1. There are no touch controls yet: connect a controller (USB or Bluetooth).
+Runs on Android 10+ with an arm64 (or x86_64) CPU and Vulkan 1.1. On-screen touch controls show over the game; they hide while a controller (USB or Bluetooth) is connected (*Controls > Touch controls*). Snapdragon phones can also load a custom Vulkan driver such as Turnip (*Settings > GPU driver*).
 
 1. Install the APK (`…-android-arm64-v8a.apk` for phones, or the universal one).
 2. Copy the extracted game (the folder with `default.xex`) to the phone, then pick it in the launcher (**Game › Choose folder**, which asks for "All files access"). A copy in `Android/data/org.asurawrath.recompiled/files/extracted/` is found without asking. `.iso` extraction isn't available on the phone: extract it on a computer.
@@ -362,14 +362,14 @@ At the default `info` level the renderer logs a `frame times` line every 5 secon
 ## 9. Issues
 
 - Episodes are still being tested: Episode 1 seems playable with some minor visual issues, the others are still to be tested.
-- Android is experimental: slow on mid-range phones, character voices can drop out at low frame rates, no touch controls.
+- Android is experimental: slow on mid-range phones, character voices can drop out at low frame rates.
 
 ---
 
 ## 10. TODO
 
 - [ ] Port to Android (experimental build available; needs performance work)
-- [ ] Add touch controls for Android (?)
+- [x] Add touch controls for Android
 - [ ] Test all episodes
 - [ ] Improve performance
 - [ ] Make DLCs work

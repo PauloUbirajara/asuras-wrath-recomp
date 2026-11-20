@@ -68,7 +68,8 @@ import java.util.Locale
  *   Game data   Folders, Shader cache (built here by ShaderBuildService or
  *               imported), Saves, Logs; Traces and Progress listed, not yet
  *               on Android
- *   Controls    Test (the controller live), Controller (vibration, deadzones)
+ *   Controls    Test (the controller live), Controller (vibration, deadzones),
+ *               Touch controls (TouchControlsView)
  *   Settings    System (language: also this launcher's), Display, Enhancements,
  *               GPU driver (Snapdragon phones: GpuDrivers)
  *   About       the build, this device (Copy), the notice
@@ -97,6 +98,7 @@ open class LauncherActivity : AppCompatActivity() {
         PROGRESS(R.id.section_progress, R.string.section_progress),
         TEST(R.id.section_test, R.string.section_test),
         CONTROLLER(R.id.section_controller, R.string.section_controller),
+        TOUCH(R.id.section_touch, R.string.section_touch),
         SYSTEM(R.id.section_system, R.string.section_system),
         DISPLAY(R.id.section_display, R.string.section_display),
         ENHANCEMENTS(R.id.section_enhancements, R.string.section_enhancements),
@@ -106,7 +108,7 @@ open class LauncherActivity : AppCompatActivity() {
     private enum class Page(val menu: Int, val title: Int, val sections: List<Section>, val view: Int = 0) {
         GAME(R.id.menu_game, R.string.page_game,
             listOf(Section.FOLDERS, Section.SHADERS, Section.SAVES, Section.LOGS, Section.TRACES, Section.PROGRESS)),
-        CONTROLS(R.id.menu_controls, R.string.page_controls, listOf(Section.TEST, Section.CONTROLLER)),
+        CONTROLS(R.id.menu_controls, R.string.page_controls, listOf(Section.TEST, Section.CONTROLLER, Section.TOUCH)),
         ACHIEVEMENTS(R.id.menu_achievements, R.string.page_achievements, emptyList(), R.id.page_achievements),
         SETTINGS(R.id.menu_settings, R.string.page_settings, listOf(Section.SYSTEM, Section.DISPLAY, Section.ENHANCEMENTS, Section.GPU)),
         ABOUT(R.id.menu_about, R.string.page_about, emptyList(), R.id.page_about),
@@ -396,6 +398,7 @@ open class LauncherActivity : AppCompatActivity() {
             ?: getString(R.string.pad_none_short)
         Section.CONTROLLER -> getString(R.string.summary_controller, config.int("vibration", 100),
             percent(config.double("deadzone_left")), percent(config.double("deadzone_right")))
+        Section.TOUCH -> touchSummary()
         Section.SYSTEM -> languageName()
         Section.DISPLAY -> getString(R.string.summary_display, config.int("render_scale", 100),
             getString(aspectNames.getValue(config["aspect"] ?: "fit")))
@@ -1181,6 +1184,21 @@ open class LauncherActivity : AppCompatActivity() {
                 save()
             }
         }
+        // Controls › Touch controls (TouchControlsView).
+        findViewById<Slider>(R.id.touch_size).addOnChangeListener { _, value, fromUser ->
+            findViewById<TextView>(R.id.touch_size_value).text = getString(R.string.percent_value, value.toInt())
+            if (fromUser && !binding) {
+                config["touch_size"] = value.toInt().toString()
+                save()
+            }
+        }
+        findViewById<Slider>(R.id.touch_opacity).addOnChangeListener { _, value, fromUser ->
+            findViewById<TextView>(R.id.touch_opacity_value).text = getString(R.string.percent_value, value.toInt())
+            if (fromUser && !binding) {
+                config["touch_opacity"] = value.toInt().toString()
+                save()
+            }
+        }
         for ((id, cap) in fpsChips) {
             findViewById<Chip>(id).setOnClickListener {
                 config["fps_cap"] = cap.toString()
@@ -1269,6 +1287,8 @@ open class LauncherActivity : AppCompatActivity() {
         R.id.fx_shadows to "fx_shadows", R.id.fx_ambient_occlusion to "fx_ambient_occlusion",
         R.id.fx_light_shafts to "fx_light_shafts", R.id.fx_lens_flares to "fx_lens_flares",
         R.id.fx_distortion to "fx_distortion",
+        // Touch controls (TouchControlsView).
+        R.id.touch_show to "touch_show", R.id.touch_hide_with_pad to "touch_hide_with_pad",
     )
     // Turbo chips -> PadState.NAMES (launcher.cfg turbo=a,b,...).
     private val turboChips = listOf(
@@ -1281,8 +1301,15 @@ open class LauncherActivity : AppCompatActivity() {
         "show_fps" to false, "skip_intro" to false, "toasts" to true, "detailed_logs" to false, "trace_picture" to true,
         "fx_bloom" to true, "fx_depth_of_field" to true, "fx_motion_blur" to true, "fx_radial_blur" to true,
         "fx_shadows" to true, "fx_ambient_occlusion" to true, "fx_light_shafts" to true, "fx_lens_flares" to true,
-        "fx_distortion" to true,
+        "fx_distortion" to true, "touch_show" to true, "touch_hide_with_pad" to true,
     )
+
+    /** The Touch controls line: off, always, or hidden with a controller. */
+    private fun touchSummary() = getString(when {
+        !config.bool("touch_show", true) -> R.string.touch_off
+        !config.bool("touch_hide_with_pad", true) -> R.string.touch_on
+        else -> R.string.touch_auto
+    })
 
     private val fpsChips = listOf(R.id.fps_30 to 30, R.id.fps_60 to 60, R.id.fps_120 to 120, R.id.fps_unlimited to 0)
     private val aspectRows = mapOf(
@@ -1436,6 +1463,17 @@ open class LauncherActivity : AppCompatActivity() {
                 if (cap == 0) FPS_UNLIMITED_SLOT.toFloat() else (cap.coerceAtLeast(15) / 5 * 5).toFloat()
             showFpsCap(cap)
             for ((id, value) in fpsChips) findViewById<Chip>(id).isChecked = value == cap
+            val touchShown = config.bool("touch_show", true)
+            findViewById<View>(R.id.touch_hide_with_pad).isEnabled = touchShown
+            findViewById<TextView>(R.id.touch_status).text = getString(
+                if (TouchControlsView.controllerConnected()) R.string.touch_status_pad else R.string.touch_status_none)
+            findViewById<View>(R.id.touch_options).alpha = if (touchShown) 1f else 0.5f
+            val touchSize = config.int("touch_size", 100).coerceIn(50, 200) / 10 * 10
+            findViewById<Slider>(R.id.touch_size).value = touchSize.toFloat()
+            findViewById<TextView>(R.id.touch_size_value).text = getString(R.string.percent_value, touchSize)
+            val touchOpacity = config.int("touch_opacity", 50).coerceIn(10, 100) / 5 * 5
+            findViewById<Slider>(R.id.touch_opacity).value = touchOpacity.toFloat()
+            findViewById<TextView>(R.id.touch_opacity_value).text = getString(R.string.percent_value, touchOpacity)
             val padding = config.int("screen_padding", 0).coerceIn(0, 64) / 4 * 4
             // As launcher.cpp: toast_position, or the older toast_corner; 140% on phones.
             val toastPosition = config.int("toast_position", -1).takeIf { it in 0..7 }

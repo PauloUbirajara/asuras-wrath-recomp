@@ -255,4 +255,15 @@
     <string name="gpu_driver_installed">%1$s installato: usato al prossimo avvio del gioco.</string>
     <string name="gpu_driver_install_failed">Impossibile installare il driver: %1$s</string>
     <string name="gpu_driver_hint">Per i telefoni Snapdragon (GPU Adreno): un driver Vulkan personalizzato come Mesa Turnip, da uno .zip di driver (come quelli usati da altri emulatori Android). Può essere più veloce o correggere l\'immagine, oppure il gioco può non avviarsi: in quel caso scegli di nuovo il driver del telefono. Vale dal prossimo avvio del gioco.</string>
+    <string name="section_touch">Comandi touch</string>
+    <string name="touch_show">Mostra comandi touch</string>
+    <string name="touch_auto">Visibili senza controller collegato</string>
+    <string name="touch_on">Sempre visibili</string>
+    <string name="touch_off">Disattivati</string>
+    <string name="touch_status_pad">Un controller è collegato.</string>
+    <string name="touch_status_none">Nessun controller collegato.</string>
+    <string name="touch_size">Dimensione</string>
+    <string name="touch_opacity">Opacità</string>
+    <string name="touch_hint">Due stick, A B X Y, dorsali e grilletti, Back e Start sopra il gioco. Funzionano insieme a un controller, con la stessa riassegnazione dei tasti e il Turbo. Si nascondono mentre il menu del gioco è aperto. Le modifiche valgono al ritorno nel gioco.</string>
+    <string name="touch_hide_with_pad">Nascondili quando è collegato un controller</string>
 </resources>

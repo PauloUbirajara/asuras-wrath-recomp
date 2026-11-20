@@ -255,4 +255,15 @@
     <string name="gpu_driver_installed">%1$s installiert: wird beim nächsten Spielstart verwendet.</string>
     <string name="gpu_driver_install_failed">Der Treiber konnte nicht installiert werden: %1$s</string>
     <string name="gpu_driver_hint">Für Snapdragon-Telefone (Adreno-GPUs): ein eigener Vulkan-Treiber wie Mesa Turnip, aus einer Treiber-.zip (wie sie andere Android-Emulatoren nutzen). Er kann schneller sein oder Grafikfehler beheben, oder das Spiel startet damit nicht: dann wieder den eigenen Treiber des Telefons wählen. Gilt ab dem nächsten Spielstart.</string>
+    <string name="section_touch">Touch-Steuerung</string>
+    <string name="touch_show">Touch-Steuerung anzeigen</string>
+    <string name="touch_auto">Sichtbar, wenn kein Controller verbunden ist</string>
+    <string name="touch_on">Immer sichtbar</string>
+    <string name="touch_off">Aus</string>
+    <string name="touch_status_pad">Ein Controller ist verbunden.</string>
+    <string name="touch_status_none">Kein Controller verbunden.</string>
+    <string name="touch_size">Größe</string>
+    <string name="touch_opacity">Deckkraft</string>
+    <string name="touch_hint">Zwei Sticks, A B X Y, Schulter- und Triggertasten, Back und Start über dem Spiel. Sie funktionieren neben einem Controller, mit derselben Tastenbelegung und Turbo. Solange das Spielmenü offen ist, sind sie ausgeblendet. Änderungen gelten, sobald du zum Spiel zurückkehrst.</string>
+    <string name="touch_hide_with_pad">Ausblenden, solange ein Controller verbunden ist</string>
 </resources>

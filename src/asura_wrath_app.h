@@ -403,6 +403,8 @@ class AsuraWrathApp : public rex::ReXApp {
   // Enhancements > Mouse cursor: auto-hidden in game (the SDK shows it again
   // while the mouse moves).
   void UpdateCursor() {
+    // Android: the touch controls step aside while the game menu is open.
+    asura::input::SetTouchControlsSuspended(launcher_ != nullptr);
     if (!window() || !game_running_) return;
     window()->SetCursorVisibility(launcher_settings_.hide_cursor && !launcher_
                                       ? rex::ui::Window::CursorVisibility::kAutoHidden
@@ -535,6 +537,7 @@ class AsuraWrathApp : public rex::ReXApp {
     }
 #endif
     if (window()) window()->SetCursorVisibility(rex::ui::Window::CursorVisibility::kVisible);
+    asura::input::SetTouchControlsSuspended(true);
     launcher_ = std::make_unique<asura::ui::LauncherDialog>(
         imgui_drawer(), immediate_drawer(), window(), toast_font_, title_font_, launcher_settings_,
         launcher_settings_path_, user_data_root_path_,

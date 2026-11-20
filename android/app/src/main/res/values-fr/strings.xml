@@ -255,4 +255,15 @@
     <string name="gpu_driver_installed">%1$s installé : utilisé au prochain lancement du jeu.</string>
     <string name="gpu_driver_install_failed">Impossible d\'installer le pilote : %1$s</string>
     <string name="gpu_driver_hint">Pour les téléphones Snapdragon (GPU Adreno) : un pilote Vulkan personnalisé comme Mesa Turnip, depuis un .zip de pilote (comme ceux des autres émulateurs Android). Il peut être plus rapide ou corriger l\'image, ou le jeu peut ne pas démarrer avec : rechoisissez alors le pilote du téléphone. S\'applique au prochain lancement du jeu.</string>
+    <string name="section_touch">Commandes tactiles</string>
+    <string name="touch_show">Afficher les commandes tactiles</string>
+    <string name="touch_auto">Affichées sans manette connectée</string>
+    <string name="touch_on">Toujours affichées</string>
+    <string name="touch_off">Désactivées</string>
+    <string name="touch_status_pad">Une manette est connectée.</string>
+    <string name="touch_status_none">Aucune manette connectée.</string>
+    <string name="touch_size">Taille</string>
+    <string name="touch_opacity">Opacité</string>
+    <string name="touch_hint">Deux sticks, A B X Y, les boutons de tranche et gâchettes, Back et Start, sur le jeu. Elles fonctionnent avec une manette, avec la même réassignation des boutons et le Turbo. Elles se masquent tant que le menu du jeu est ouvert. Les changements s\'appliquent au retour dans le jeu.</string>
+    <string name="touch_hide_with_pad">Les masquer quand une manette est connectée</string>
 </resources>

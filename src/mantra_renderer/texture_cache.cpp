@@ -1,4 +1,5 @@
 #include "texture_cache.h"
+#include "texture_decode_bc.h"
 #include "buffer_cache.h"
 #include "mantra_log.h"
 #include "render_targets.h"
@@ -46,6 +47,22 @@ enum Decode : uint8_t {
   kDepthFloat, // k_24_8_FLOAT (20e4) -> R32 float
   kYUV,        // 4:2:2 (2x1 blocks, bytes Y0 Cb Y1 Cr) -> RGBA8 (Cr, Y, Cb, 1)
   kYUVSwapped, // 4:2:2, bytes Cb Y0 Cr Y1
+  // Without host BC support (texture_decode_bc.h): 4x4 blocks -> texels.
+  kBC1,        // -> RGBA8
+  kBC2,        // -> RGBA8
+  kBC3,        // -> RGBA8
+  kBC4,        // -> R8
+  kBC5,        // -> R8G8
+  kDXT3AToR8,  // DXT3A's 4-bit alpha -> R8
+};
+
+// Which BC formats the host samples (bit n = BCn), else they are decoded.
+enum BcSupportBits : uint8_t {
+  kBcSupport1 = 1 << 1,
+  kBcSupport2 = 1 << 2,
+  kBcSupport3 = 1 << 3,
+  kBcSupport4 = 1 << 4,
+  kBcSupport5 = 1 << 5,
 };
 
 struct HostFormat {
@@ -62,7 +79,7 @@ struct HostFormat {
 // packed formats (after the endian swap), so the host format is the one whose
 // first channel sits there, permuted through `channels` where Vulkan has no
 // matching order.
-HostFormat GetHostFormat(const xenos::xe_gpu_texture_fetch_t& fetch) {
+HostFormat GetHostFormat(const xenos::xe_gpu_texture_fetch_t& fetch, uint8_t bc_support) {
   using F = xenos::TextureFormat;
   using S = xenos::TextureSign;
   HostFormat h;
@@ -110,21 +127,53 @@ HostFormat GetHostFormat(const xenos::xe_gpu_texture_fetch_t& fetch) {
     case F::k_2_10_10_10:
       h.format = VK_FORMAT_A2B10G10R10_UNORM_PACK32;
       break;
+    // BC blocks as they are when the host samples them, else decoded to
+    // plain texels (RGBA8 keeps the gamma flag through its sRGB variant).
     case F::k_DXT1:
-      h.format = gamma ? VK_FORMAT_BC1_RGBA_SRGB_BLOCK : VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+      if (bc_support & kBcSupport1) {
+        h.format = gamma ? VK_FORMAT_BC1_RGBA_SRGB_BLOCK : VK_FORMAT_BC1_RGBA_UNORM_BLOCK;
+      } else {
+        h.format = gamma ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+        h.decode = kBC1;
+        h.host_bpb = 4;
+      }
       break;
     case F::k_DXT2_3:
-      h.format = gamma ? VK_FORMAT_BC2_SRGB_BLOCK : VK_FORMAT_BC2_UNORM_BLOCK;
+      if (bc_support & kBcSupport2) {
+        h.format = gamma ? VK_FORMAT_BC2_SRGB_BLOCK : VK_FORMAT_BC2_UNORM_BLOCK;
+      } else {
+        h.format = gamma ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+        h.decode = kBC2;
+        h.host_bpb = 4;
+      }
       break;
     case F::k_DXT4_5:
-      h.format = gamma ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
+      if (bc_support & kBcSupport3) {
+        h.format = gamma ? VK_FORMAT_BC3_SRGB_BLOCK : VK_FORMAT_BC3_UNORM_BLOCK;
+      } else {
+        h.format = gamma ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+        h.decode = kBC3;
+        h.host_bpb = 4;
+      }
       break;
     case F::k_DXN:
-      h.format = VK_FORMAT_BC5_UNORM_BLOCK;
+      if (bc_support & kBcSupport5) {
+        h.format = VK_FORMAT_BC5_UNORM_BLOCK;
+      } else {
+        h.format = VK_FORMAT_R8G8_UNORM;
+        h.decode = kBC5;
+        h.host_bpb = 2;
+      }
       h.component_count = 2;
       break;
     case F::k_DXT5A:
-      h.format = VK_FORMAT_BC4_UNORM_BLOCK;
+      if (bc_support & kBcSupport4) {
+        h.format = VK_FORMAT_BC4_UNORM_BLOCK;
+      } else {
+        h.format = VK_FORMAT_R8_UNORM;
+        h.decode = kBC4;
+        h.host_bpb = 1;
+      }
       h.component_count = 1;
       break;
     case F::k_16:
@@ -185,10 +234,16 @@ HostFormat GetHostFormat(const xenos::xe_gpu_texture_fetch_t& fetch) {
       h.component_count = 2;
       break;
     case F::k_DXT3A:
-      h.format = VK_FORMAT_BC2_UNORM_BLOCK;
-      h.decode = kDXT3A;
-      h.host_bpb = 16;
-      h.channels[0] = VK_COMPONENT_SWIZZLE_A;
+      if (bc_support & kBcSupport2) {
+        h.format = VK_FORMAT_BC2_UNORM_BLOCK;
+        h.decode = kDXT3A;
+        h.host_bpb = 16;
+        h.channels[0] = VK_COMPONENT_SWIZZLE_A;
+      } else {
+        h.format = VK_FORMAT_R8_UNORM;
+        h.decode = kDXT3AToR8;
+        h.host_bpb = 1;
+      }
       h.component_count = 1;
       break;
     case F::k_Cr_Y1_Cb_Y0_REP:
@@ -289,6 +344,18 @@ void DecodeBlock(Decode decode, bool is_signed, const uint8_t* src, uint8_t* dst
       std::memcpy(dst, out, 8);
       break;
     }
+    case kBC1: bc::DecodeBC1(src, dst, blocks_x * 4); break;
+    case kBC2: bc::DecodeBC2(src, dst, blocks_x * 4); break;
+    case kBC3: bc::DecodeBC3(src, dst, blocks_x * 4); break;
+    case kBC4: bc::DecodeBC4(src, dst, blocks_x); break;
+    case kBC5: bc::DecodeBC5(src, dst, blocks_x * 2); break;
+    case kDXT3AToR8:
+      // 4 rows of 4 4-bit alphas (as BC2's alpha half).
+      for (uint32_t y = 0; y < 4; ++y) {
+        const uint32_t row = uint32_t(src[2 * y]) | (uint32_t(src[2 * y + 1]) << 8);
+        for (uint32_t x = 0; x < 4; ++x) dst[y * blocks_x + x] = uint8_t(((row >> (4 * x)) & 15) * 17);
+      }
+      break;
     case kCopy:
       break;
   }
@@ -345,6 +412,27 @@ bool TextureCache::Initialize(const rex::ui::vulkan::VulkanDevice* device, Buffe
   cmd_copy_image_ = reinterpret_cast<PFN_vkCmdCopyImage>(
       device->vulkan_instance()->functions().vkGetDeviceProcAddr(device->device(),
                                                                  "vkCmdCopyImage"));
+  // BC formats the GPU samples (most desktop GPUs: all; most Android ones:
+  // none). The rest are decoded on load. MANTRA_FORCE_BC_DECODE=1 decodes
+  // all of them, for testing.
+  const char* force = std::getenv("MANTRA_FORCE_BC_DECODE");
+  bc_support_ = 0;
+  if (!(force && *force && *force != '0')) {
+    const auto& ifn = device->vulkan_instance()->functions();
+    const std::pair<VkFormat, uint8_t> formats[] = {
+        {VK_FORMAT_BC1_RGBA_UNORM_BLOCK, kBcSupport1}, {VK_FORMAT_BC2_UNORM_BLOCK, kBcSupport2},
+        {VK_FORMAT_BC3_UNORM_BLOCK, kBcSupport3},      {VK_FORMAT_BC4_UNORM_BLOCK, kBcSupport4},
+        {VK_FORMAT_BC5_UNORM_BLOCK, kBcSupport5}};
+    for (const auto& [format, bit] : formats) {
+      VkFormatProperties props = {};
+      ifn.vkGetPhysicalDeviceFormatProperties(device->physical_device(), format, &props);
+      if (props.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) bc_support_ |= bit;
+    }
+  }
+  if (bc_support_ != (kBcSupport1 | kBcSupport2 | kBcSupport3 | kBcSupport4 | kBcSupport5)) {
+    MANTRA_INFO("textures: BC formats decoded on load (host support mask {:#x}{})", bc_support_,
+                force && *force && *force != '0' ? ", MANTRA_FORCE_BC_DECODE" : "");
+  }
   return true;
 }
 
@@ -411,7 +499,7 @@ TextureCache::Binding TextureCache::Get(const xenos::xe_gpu_texture_fetch_t& fet
   }
   Texture& texture = *it->second;
   if (inserted) {
-    HostFormat host_format = GetHostFormat(fetch);
+    HostFormat host_format = GetHostFormat(fetch, bc_support_);
     {
       // Resolved fixed16 render targets hold signed bits (value / 32). An
       // unsigned fetch of them reads a slightly negative value as almost 1.0

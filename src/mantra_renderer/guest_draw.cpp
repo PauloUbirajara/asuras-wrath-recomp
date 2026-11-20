@@ -518,7 +518,7 @@ void NativeCommandProcessor::EndRendering() {
   if (!rendering_.active) {
     return;
   }
-  vulkan_device_->functions().vkCmdEndRendering(CurrentSlot().command_buffer);
+  rendering_backend_->End(CurrentSlot().command_buffer);
   rendering_.active = false;
   if (gpu_profiler_.mode) {
     const mantra::RenderTarget* c0 = rendering_.color[0];
@@ -686,50 +686,45 @@ bool NativeCommandProcessor::BeginDrawRendering(VkCommandBuffer cmd, uint32_t co
   }
 
   // New pass.
-  uint32_t width = UINT32_MAX, height = UINT32_MAX;
-  VkRenderingAttachmentInfo color_attachments[mantra::kMaxColorAttachments] = {};
+  uint32_t width = UINT32_MAX, height = UINT32_MAX;  // guest pixels
+  uint32_t host_width = UINT32_MAX, host_height = UINT32_MAX;
+  mantra::PassBegin pass;
+  pass.formats.color_count = color_count;
+  pass.formats.samples = VkSampleCountFlagBits(key.sample_count);
   for (uint32_t i = 0; i < color_count; ++i) {
-    VkRenderingAttachmentInfo& a = color_attachments[i];
-    a.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-    a.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-    a.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-    a.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    pass.formats.color[i] = VkFormat(key.color_formats[i]);
     if (mantra::RenderTarget* rt = color_rts[i]) {
       mantra::TransitionImage(vulkan_device_, cmd, rt->image,
                               VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                               mantra::kColorAttachmentStage, mantra::kColorAttachmentAccess);
-      a.imageView = render_targets_.GetView(*rt, colors[i].host_format);
+      pass.color[i] = {render_targets_.GetView(*rt, colors[i].host_format),
+                       VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
       width = std::min(width, rt->image.width);
       height = std::min(height, rt->image.height);
+      host_width = std::min(host_width, rt->image.host_width);
+      host_height = std::min(host_height, rt->image.host_height);
     }
   }
-  VkRenderingAttachmentInfo depth_attachment = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
   if (depth_rt) {
     mantra::TransitionImage(vulkan_device_, cmd, depth_rt->image,
                             VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                             mantra::kDepthAttachmentStage, mantra::kDepthAttachmentAccess);
-    depth_attachment.imageView = render_targets_.GetView(*depth_rt, render_targets_.depth_format());
-    depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-    depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-    depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    pass.formats.depth_stencil = render_targets_.depth_format();
+    pass.depth_stencil = {render_targets_.GetView(*depth_rt, render_targets_.depth_format()),
+                          VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
     width = std::min(width, depth_rt->image.width);
     height = std::min(height, depth_rt->image.height);
+    host_width = std::min(host_width, depth_rt->image.host_width);
+    host_height = std::min(host_height, depth_rt->image.host_height);
   }
-  VkRenderingInfo info = {VK_STRUCTURE_TYPE_RENDERING_INFO};
   // Guest pixels here and in rendering_.area; the images are larger by the
   // render scale.
   const VkRect2D guest_area = {{0, 0}, {width, height}};
-  info.renderArea = mantra::HostRect(guest_area, pass_rscale);
-  info.layerCount = 1;
-  info.colorAttachmentCount = color_count;
-  info.pColorAttachments = color_attachments;
-  if (depth_rt) {
-    info.pDepthAttachment = &depth_attachment;
-    info.pStencilAttachment = &depth_attachment;
-  }
+  pass.area = mantra::HostRect(guest_area, pass_rscale);
+  pass.extent = {host_width, host_height};  // the smallest image (covers the area)
   GpuMarkHere(GpuMarkKind::kSetup);
   gpu_profiler_.pass_draws = 0;
-  vulkan_device_->functions().vkCmdBeginRendering(cmd, &info);
+  rendering_backend_->Begin(cmd, pass);
   ++guest_draw_stats_.render_passes;
 
   rendering_ = {};

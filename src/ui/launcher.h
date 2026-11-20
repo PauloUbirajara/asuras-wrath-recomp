@@ -172,6 +172,12 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   // be destroyed by it.
   void SetInGame(std::function<bool(const LauncherSettings&)> needs_restart,
                  std::function<void(const LauncherSettings&, bool restart)> on_resume);
+  // Where the game can't run as another process (Android): Play calls
+  // `play` with the chosen settings instead, on the UI thread after the frame
+  // with the click; the launcher is detached by then and may be destroyed.
+  void SetPlayInThisProcess(std::function<void(const LauncherSettings&)> play) {
+    play_here_ = std::move(play);
+  }
   // Esc again: like Resume (changes that need a restart wait for the next start).
   void RequestResume() { resume_requested_ = true; }
   // The game Play started (another process) is running.
@@ -303,7 +309,16 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   // In game: the confirmation before Restart.
   bool DrawRestartConfirm(float scale);
   void DrawSidebar(const ImVec2& pos, const ImVec2& size, float scale);
-  void DrawPanel(const ImVec2& pos, const ImVec2& size, float scale);
+  // title_inset: room kept at the band's left (the compact layout's menu
+  // button). Returns the top band's height.
+  float DrawPanel(const ImVec2& pos, const ImVec2& size, float scale, float title_inset = 0.0f);
+  // Narrow or portrait windows: the sidebar becomes a drawer over the panel,
+  // opened by a menu button in the panel's top band.
+  void DrawCompact(const ImVec2& display, float scale);
+  bool MenuButton(const ImVec2& at, float size, float scale);
+  bool drawer_open_ = false;
+  float drawer_t_ = 0.0f;           // 0 closed .. 1 open (slides)
+  bool sidebar_notice_ = false;     // the sidebar shows a notice (last frame)
   void DrawControls(float scale);
   // test: the live view (Controls > Test); else the bindings and sliders.
   void DrawController(float scale, bool test);
@@ -427,6 +442,7 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
     bool Running() const { return process.Running(); }
   };
   GameProcess game_;
+  std::function<void(const LauncherSettings&)> play_here_;  // SetPlayInThisProcess
   std::filesystem::file_time_type settings_saved_time_{};  // after our last save
   bool playing_ = false;
   bool play_without_shaders_ = false;  // Play was pressed once without a shader cache

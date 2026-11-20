@@ -42,8 +42,9 @@ float Fixed16ToSnorm(uint16_t v) { return std::max(float(int16_t(v)) * (1.0f / 3
 
 // --- RenderTargetPool --------------------------------------------------------
 
-bool RenderTargetPool::Initialize(const vk::VulkanDevice* device) {
+bool RenderTargetPool::Initialize(const vk::VulkanDevice* device, RenderingBackend* rendering) {
   device_ = device;
+  rendering_ = rendering;
   const auto& ifn = device->vulkan_instance()->functions();
   for (VkFormat candidate : {VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT_S8_UINT}) {
     VkFormatProperties props = {};
@@ -488,22 +489,24 @@ void RenderTargetPool::FlushClears(VkCommandBuffer cmd, RenderTarget& rt) {
       y1 = std::max<int64_t>(y1, r.offset.y + int64_t(r.extent.height));
       ++end;
     }
-    VkRenderingAttachmentInfo attachment = {VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    attachment.imageView = view;
-    attachment.imageLayout = rt.image.layout;
-    attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-    attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    VkRenderingInfo rendering = {VK_STRUCTURE_TYPE_RENDERING_INFO};
-    rendering.renderArea = {{int32_t(x0), int32_t(y0)}, {uint32_t(x1 - x0), uint32_t(y1 - y0)}};
-    rendering.layerCount = 1;
-    if (is_depth) {
-      rendering.pDepthAttachment = &attachment;
-      rendering.pStencilAttachment = &attachment;
-    } else {
-      rendering.colorAttachmentCount = 1;
-      rendering.pColorAttachments = &attachment;
+    // The view's format (render passes need it): views are kept by format.
+    VkFormat format = is_depth ? depth_format_ : VK_FORMAT_UNDEFINED;
+    for (const auto& [view_format, v] : rt.views) {
+      if (v == view && view_format != VK_FORMAT_UNDEFINED) format = view_format;
     }
-    dfn.vkCmdBeginRendering(cmd, &rendering);
+    PassBegin pass;
+    pass.formats.samples = rt.image.samples;
+    if (is_depth) {
+      pass.formats.depth_stencil = format;
+      pass.depth_stencil = {view, rt.image.layout};
+    } else {
+      pass.formats.color_count = 1;
+      pass.formats.color[0] = format;
+      pass.color[0] = {view, rt.image.layout};
+    }
+    pass.extent = {rt.image.host_width, rt.image.host_height};
+    pass.area = {{int32_t(x0), int32_t(y0)}, {uint32_t(x1 - x0), uint32_t(y1 - y0)}};
+    rendering_->Begin(cmd, pass);
     for (size_t i = begin; i < end; ++i) {
       const RenderTarget::PendingClear& p = rt.pending_clears[i];
       VkClearAttachment clear = {};
@@ -516,7 +519,7 @@ void RenderTargetPool::FlushClears(VkCommandBuffer cmd, RenderTarget& rt) {
       dfn.vkCmdClearAttachments(cmd, 1, &clear, 1, &clear_rect);
       ++flushed_clears_;
     }
-    dfn.vkCmdEndRendering(cmd);
+    rendering_->End(cmd);
     begin = end;
   }
   rt.pending_clears.clear();

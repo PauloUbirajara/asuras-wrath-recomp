@@ -31,7 +31,7 @@ add_executable(mantra_shadergen
     "${XENOS_RECOMP_SRC}/shader_recompiler.cpp"
     "${XENOS_RECOMP_SRC}/dxc_compiler.cpp"
     # Workers are this tool run again (platform::Process).
-    "${CMAKE_SOURCE_DIR}/src/platform/$<IF:$<PLATFORM_ID:Windows>,platform_win.cpp,platform_posix.cpp>"
+    ${ASURA_PLATFORM_SOURCES}
 )
 
 # XenosRecomp sources expect pch.h to be included first; DXC's WinAdapter.h

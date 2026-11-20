@@ -115,6 +115,8 @@ std::filesystem::path ExePath() {
   }
 }
 
+bool CanStartSelf() { return true; }
+
 std::vector<std::string> ExeArgs() {
   std::vector<std::string> args;
   int count = 0;

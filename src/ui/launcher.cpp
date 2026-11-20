@@ -1408,6 +1408,7 @@ void LauncherDialog::LimitFrameRate(ImGuiIO& io) {
   active |= !capture_flag_.empty() || pad_capture_ >= 0 || page_ == Page::kControls ||
             shader_build_.state == ShaderBuild::kRunning ||
             iso_extract_.state == IsoExtract::kRunning || asset_job_.running;
+  active |= drawer_t_ != (drawer_open_ ? 1.0f : 0.0f);  // the drawer slides
   if (active) last_input_ = now;
   // 60 fps in use, 20 fps after 3 s without input (10 fps while the game
   // runs, to leave it the GPU).
@@ -1457,7 +1458,13 @@ void LauncherDialog::OnDraw(ImGuiIO& io) {
     if (!failed) StartAssetJob();  // the language may have changed meanwhile
   }
   const ImVec2 display = io.DisplaySize;
-  const float scale = std::clamp(std::min(display.y / 720.0f, display.x / 1280.0f), 0.6f, 3.0f);
+  // Portrait or near-square windows (phones, narrow desktop windows): the
+  // sidebar would squeeze the panel, so it becomes a drawer, and the layout
+  // scales for a 720x1280 portrait screen instead of 1280x720.
+  const bool compact = display.x < display.y * 1.25f;
+  const float scale =
+      compact ? std::clamp(std::min(display.x / 720.0f, display.y / 1280.0f), 0.6f, 3.0f)
+              : std::clamp(std::min(display.y / 720.0f, display.x / 1280.0f), 0.6f, 3.0f);
   UsePalette(OverGame());
 
   ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
@@ -1469,14 +1476,88 @@ void LauncherDialog::OnDraw(ImGuiIO& io) {
   const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                  ImGuiWindowFlags_NoSavedSettings |
                                  ImGuiWindowFlags_NoBringToFrontOnFocus;
+  if (!compact) drawer_open_ = false, drawer_t_ = 0.0f;
   if (ImGui::Begin("##asura_launcher", nullptr, flags)) {
-    // The launcher has the window to itself: sidebar left, panel right.
-    const float sidebar_w = std::floor(std::max(display.x * 0.21f, 200.0f * scale));
-    DrawSidebar(ImVec2(0, 0), ImVec2(sidebar_w, display.y), scale);
-    DrawPanel(ImVec2(sidebar_w, 0), ImVec2(display.x - sidebar_w, display.y), scale);
+    if (compact) {
+      // The panel has the window; the menu button sits in its top band,
+      // level with the page title.
+      const float button = 44.0f * scale, margin = 12.0f * scale;
+      const float band = DrawPanel(ImVec2(0, 0), display, scale, margin * 2 + button);
+      if (MenuButton(ImVec2(margin, std::floor((band - button) * 0.5f)), button, scale)) {
+        drawer_open_ = !drawer_open_;
+      }
+    } else {
+      // The launcher has the window to itself: sidebar left, panel right.
+      const float sidebar_w = std::floor(std::max(display.x * 0.21f, 200.0f * scale));
+      DrawSidebar(ImVec2(0, 0), ImVec2(sidebar_w, display.y), scale);
+      DrawPanel(ImVec2(sidebar_w, 0), ImVec2(display.x - sidebar_w, display.y), scale);
+    }
   }
   ImGui::End();
   ImGui::PopStyleColor();
+  ImGui::PopStyleVar(3);
+  if (compact) DrawCompact(display, scale);
+}
+
+// The ☰ button: three bars, with a dot when the sidebar has a notice.
+bool LauncherDialog::MenuButton(const ImVec2& at, float size, float scale) {
+  ImGui::SetCursorScreenPos(at);
+  const bool clicked = ImGui::InvisibleButton("##menu", ImVec2(size, size));
+  const bool hovered = ImGui::IsItemHovered();
+  ImDrawList* draw = ImGui::GetWindowDrawList();
+  if (hovered || drawer_open_) {
+    draw->AddRectFilled(at, ImVec2(at.x + size, at.y + size), IM_COL32(255, 255, 255, 24),
+                        4.0f * scale);
+  }
+  const float w = size * 0.56f, h = std::max(2.0f, std::round(size * 0.07f));
+  const float x = at.x + (size - w) * 0.5f;
+  for (int i = -1; i <= 1; ++i) {
+    const float y = std::round(at.y + size * 0.5f + i * size * 0.2f - h * 0.5f);
+    draw->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), U32(kPanelText), h * 0.5f);
+  }
+  if (sidebar_notice_) {
+    draw->AddCircleFilled(ImVec2(at.x + size * 0.82f, at.y + size * 0.2f), size * 0.1f,
+                          U32(ImVec4(0.95f, 0.55f, 0.40f, 1.0f)));
+  }
+  return clicked;
+}
+
+// The sidebar as a drawer, in a window of its own above the panel. It is drawn
+// every frame, off screen when closed: Play/Resume and Esc live in it.
+void LauncherDialog::DrawCompact(const ImVec2& display, float scale) {
+  const ImGuiIO& io = ImGui::GetIO();
+  const float target = drawer_open_ ? 1.0f : 0.0f;
+  const float step = std::min(io.DeltaTime * 8.0f, 1.0f);
+  drawer_t_ = drawer_t_ < target ? std::min(target, drawer_t_ + step)
+                                 : std::max(target, drawer_t_ - step);
+  const float ease = 1.0f - (1.0f - drawer_t_) * (1.0f - drawer_t_);
+  const float w = std::floor(std::min(display.x * 0.82f, 320.0f * scale));
+  const bool shown = drawer_t_ > 0.0f;
+  // Closed: only the sidebar's own rectangle, just left of the screen.
+  ImGui::SetNextWindowPos(shown ? ImVec2(0, 0) : ImVec2(-w, 0), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(shown ? display : ImVec2(w, display.y), ImGuiCond_Always);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+  const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                                 ImGuiWindowFlags_NoSavedSettings |
+                                 ImGuiWindowFlags_NoBackground;
+  if (ImGui::Begin("##asura_drawer", nullptr, flags)) {
+    const float x = shown ? -w * (1.0f - ease) : -w;
+    if (shown) {
+      // Dim the panel; a click or tap beside the drawer closes it.
+      ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(0, 0), display,
+                                                IM_COL32(0, 0, 0, int(140 * ease)));
+      if (drawer_open_ && ImGui::IsWindowHovered() && ImGui::IsMouseClicked(0) &&
+          io.MousePos.x > x + w && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId)) {
+        drawer_open_ = false;
+      }
+    }
+    const Page before = page_;
+    DrawSidebar(ImVec2(x, 0), ImVec2(w, display.y), scale);
+    if (page_ != before) drawer_open_ = false;  // a page was picked (or a notice sent there)
+  }
+  ImGui::End();
   ImGui::PopStyleVar(3);
 }
 
@@ -1719,6 +1800,7 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
     }
     if (!notice.empty()) notice += std::string(" ") + T("Game data > Shaders");
   }
+  sidebar_notice_ = !notice.empty();
   if (!notice.empty()) {
     // In the launcher's font (ImGui's own has no Japanese).
     ImGui::PushFont(font_, 20.0f * scale);
@@ -1897,6 +1979,15 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
     pad_capture_ = -1;
     ClosePad();
     SaveSettings();
+    if (!in_game && play_here_) {
+      // The game takes over this process and its window.
+      message_.clear();
+      play_without_shaders_ = false;
+      playing_ = true;
+      imgui_drawer()->RemoveDialog(this);
+      call_in_ui_thread_deferred_([cb = play_here_, s = settings_] { cb(s); });
+      return;
+    }
     if (!in_game) {
       message_.clear();
       if (std::string error; !game_.Start(&error)) message_ = error;
@@ -1911,7 +2002,8 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
   }
 }
 
-void LauncherDialog::DrawPanel(const ImVec2& pos, const ImVec2& size, float scale) {
+float LauncherDialog::DrawPanel(const ImVec2& pos, const ImVec2& size, float scale,
+                                float title_inset) {
   ImDrawList* draw = ImGui::GetWindowDrawList();
   const ImVec2 end(pos.x + size.x, pos.y + size.y);
   float band = std::floor(size.y * 0.08f);
@@ -1956,6 +2048,7 @@ void LauncherDialog::DrawPanel(const ImVec2& pos, const ImVec2& size, float scal
     draw->AddRectFilled(ImVec2(pos.x, pos.y + band), ImVec2(end.x, end.y - band), U32(kPanel));
   }
 
+  title_x = std::max(title_x, pos.x + title_inset);
   // The page title, centered in the top band.
   const float pad = 36 * scale;
   {
@@ -2022,6 +2115,7 @@ void LauncherDialog::DrawPanel(const ImVec2& pos, const ImVec2& size, float scal
   ImGui::PopFont();
   ImGui::PopStyleVar(2);
   ImGui::PopStyleColor(26);
+  return band;
 }
 
 namespace {
@@ -3580,7 +3674,7 @@ uint64_t FolderBytes(const std::filesystem::path& dir, std::filesystem::file_tim
 
 std::string FormatTime(std::filesystem::file_time_type t) {
   if (t == std::filesystem::file_time_type::min()) return "-";
-  const auto sys = std::chrono::clock_cast<std::chrono::system_clock>(t);
+  const auto sys = std::chrono::file_clock::to_sys(t);
   const std::time_t tt = std::chrono::system_clock::to_time_t(
       std::chrono::time_point_cast<std::chrono::system_clock::duration>(sys));
   const std::tm tm = platform::LocalTime(tt);

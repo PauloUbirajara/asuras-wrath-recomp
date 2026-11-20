@@ -256,8 +256,10 @@ class AsuraWrathApp : public rex::ReXApp {
       if (launcher_settings_.game_data.empty()) {
         // First start: an "extracted" folder in the working directory or
         // next to the executable.
+        // (On Android ExePath() stands for the app's own storage folder.)
         for (const auto& dir : {std::filesystem::current_path(ec) / "extracted",
-                                rex::filesystem::GetExecutableFolder() / "extracted"}) {
+                                rex::filesystem::GetExecutableFolder() / "extracted",
+                                asura::platform::ExePath().parent_path() / "extracted"}) {
           if (std::filesystem::is_regular_file(dir / "default.xex", ec)) {
             launcher_settings_.game_data = dir.string();
             break;
@@ -277,7 +279,7 @@ class AsuraWrathApp : public rex::ReXApp {
   // process (this executable with --launcher=false), which takes the path
   // below.
   std::optional<rex::PathConfig> OnFinalizePaths(
-      const rex::PathConfig& defaults, std::function<void(rex::PathConfig)>) override {
+      const rex::PathConfig& defaults, std::function<void(rex::PathConfig)> resume) override {
     // The window is up: its icon (assets/ui/icon.png), launcher and game alike.
     asura::ui::ApplyWindowIcon();
     // Esc in game: the launcher over the running game. Registered before the
@@ -309,6 +311,25 @@ class AsuraWrathApp : public rex::ReXApp {
           context->CallInUIThreadDeferred(std::move(f));
         },
         [] { Restart(/*show_launcher=*/true); });
+    if (!asura::platform::CanStartSelf()) {
+      // Android: Play starts the game here, as the SDK would have without
+      // the launcher (the paths with the game folder chosen in it).
+      launcher_->SetPlayInThisProcess(
+          [this, defaults, resume = std::move(resume)](const asura::ui::LauncherSettings& s) {
+            launcher_.reset();
+            launcher_settings_ = s;
+            startup_settings_ = s;
+            asura::ui::ApplyLauncherDefaults(s);
+            asura::ui::ApplyWindowSettings(s);
+            asura::ui::ApplyLiveSettings(s);
+            rex::PathConfig paths = defaults;
+            if (!s.game_data.empty()) paths.game_data_root = s.game_data;
+            UpdateFpsCounter();
+            game_running_ = true;
+            UpdateCursor();
+            resume(paths);
+          });
+    }
     return std::nullopt;
   }
 

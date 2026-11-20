@@ -46,13 +46,25 @@ endif()
 
 include(generated/rexglue.cmake)
 
+# The OS layer (src/platform/platform.h): one set of files per OS, shared by
+# the executable, the mantra plugin and mantra_shadergen.
+if(WIN32)
+    set(ASURA_PLATFORM_SOURCES ${CMAKE_SOURCE_DIR}/src/platform/platform_win.cpp)
+elseif(ANDROID)
+    set(ASURA_PLATFORM_SOURCES ${CMAKE_SOURCE_DIR}/src/platform/platform_posix.cpp
+                               ${CMAKE_SOURCE_DIR}/src/platform/platform_android.cpp)
+else()
+    set(ASURA_PLATFORM_SOURCES ${CMAKE_SOURCE_DIR}/src/platform/platform_posix.cpp
+                               ${CMAKE_SOURCE_DIR}/src/platform/platform_linux.cpp)
+endif()
+
 # Sources
 set(ASURAWRATH_SOURCES
     src/main.cpp
     src/game/frame_rate.cpp
     src/game/skip_intro.cpp
     src/input/pad_remap.cpp
-    $<IF:$<PLATFORM_ID:Windows>,src/platform/platform_win.cpp,src/platform/platform_posix.cpp>
+    ${ASURA_PLATFORM_SOURCES}
     src/ui/about_info.cpp
     src/ui/game_assets.cpp
     src/ui/game_font.cpp
@@ -68,6 +80,12 @@ set(ASURAWRATH_SOURCES
 
 if(WIN32)
     add_executable(asura_wrath WIN32 ${ASURAWRATH_SOURCES})
+elseif(ANDROID)
+    # Android: libasura_wrath.so, loaded by the app's activity (android/),
+    # which calls its SDL_main.
+    add_library(asura_wrath SHARED ${ASURAWRATH_SOURCES})
+    # The NDK's libc++ keeps std::jthread behind its experimental flag.
+    target_compile_options(asura_wrath PRIVATE -fexperimental-library)
 else()
     add_executable(asura_wrath ${ASURAWRATH_SOURCES})
 endif()

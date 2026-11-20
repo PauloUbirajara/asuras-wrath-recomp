@@ -85,42 +85,12 @@ std::filesystem::path LegacyCacheDir() {
   return {};
 }
 
-std::filesystem::path ExePath() {
-  std::error_code ec;
-  auto exe = std::filesystem::read_symlink("/proc/self/exe", ec);
-  return ec ? std::filesystem::path() : exe;
-}
-
-std::vector<std::string> ExeArgs() {
-  std::vector<std::string> args;
-  if (std::ifstream in("/proc/self/cmdline", std::ios::binary); in) {
-    for (std::string arg; std::getline(in, arg, '\0');) args.push_back(arg);
-  }
-  return args;
-}
-
-void ReplaceProcess(const std::filesystem::path& exe, const std::vector<std::string>& args) {
-  std::vector<std::string> copy = args;
-  execv(exe.c_str(), Argv(copy).data());
-}
-
 void SetEnv(const char* name, const char* value) {
   if (value) {
     setenv(name, value, 1);
   } else {
     unsetenv(name);
   }
-}
-
-bool OpenPath(const std::string& path_or_url) {
-  const char* argv[] = {"xdg-open", path_or_url.c_str(), nullptr};
-  pid_t pid = -1;
-  if (posix_spawnp(&pid, "xdg-open", nullptr, nullptr, const_cast<char* const*>(argv),
-                   environ) != 0) {
-    return false;
-  }
-  std::thread([pid] { waitpid(pid, nullptr, 0); }).detach();
-  return true;
 }
 
 bool IsWritable(const std::filesystem::path& dir) { return access(dir.c_str(), W_OK) == 0; }

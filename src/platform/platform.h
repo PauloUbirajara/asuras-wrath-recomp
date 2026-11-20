@@ -2,8 +2,10 @@
 // SDK doesn't wrap: per-user cache folder, this executable, child processes,
 // opening a folder or link, environment variables.
 //
-// One implementation per OS (platform_posix.cpp, platform_win.cpp). Built
-// into both the executable and the mantra plugin.
+// One implementation per OS: platform_win.cpp; platform_posix.cpp plus
+// platform_linux.cpp (desktop) or platform_android.cpp. CMake picks them
+// (ASURA_PLATFORM_SOURCES). Built into both the executable and the mantra
+// plugin.
 #pragma once
 
 #include <atomic>
@@ -38,8 +40,12 @@ inline constexpr const char* kDataDirVariable = "ASURA_DATA_DIR";
 std::filesystem::path ExePath();
 std::vector<std::string> ExeArgs();
 
+// Whether Play can start the game as another process of this executable
+// (desktop). Android can't: there the game starts in the launcher's process.
+bool CanStartSelf();
+
 // Replaces this process with `exe` started with `args` (argv[0] first).
-// Only returns if that fails.
+// Only returns if that fails (always on Android).
 void ReplaceProcess(const std::filesystem::path& exe, const std::vector<std::string>& args);
 
 // Sets (or, with nullptr, removes) an environment variable of this process,

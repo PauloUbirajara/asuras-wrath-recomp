@@ -31,8 +31,9 @@ size_t DrawPipelines::KeyHash::operator()(const PipelineKey& key) const {
 }
 
 bool DrawPipelines::Initialize(const rex::ui::vulkan::VulkanDevice* device,
-                               VkPipelineLayout layout) {
+                               VkPipelineLayout layout, RenderingBackend* rendering) {
   device_ = device;
+  rendering_ = rendering;
   layout_ = layout;
   if (device->properties().geometryShader) {
     rect_list_gs_ =
@@ -384,18 +385,19 @@ VkPipeline DrawPipelines::Create(const PipelineKey& key) {
   dynamic.dynamicStateCount = uint32_t(std::size(dynamic_states));
   dynamic.pDynamicStates = dynamic_states;
 
-  VkFormat color_formats[kMaxColorAttachments];
+  PassFormats formats;
+  formats.color_count = key.color_count;
   for (uint32_t i = 0; i < key.color_count; ++i) {
-    color_formats[i] = VkFormat(key.color_formats[i]);
+    formats.color[i] = VkFormat(key.color_formats[i]);
   }
-  VkPipelineRenderingCreateInfo rendering = {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-  rendering.colorAttachmentCount = key.color_count;
-  rendering.pColorAttachmentFormats = color_formats;
-  rendering.depthAttachmentFormat = VkFormat(key.depth_format);
-  rendering.stencilAttachmentFormat = VkFormat(key.depth_format);
+  formats.depth_stencil = VkFormat(key.depth_format);
+  formats.samples = VkSampleCountFlagBits(key.sample_count);
 
   VkGraphicsPipelineCreateInfo info = {VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-  info.pNext = &rendering;
+  PipelineTarget target;
+  if (!rendering_->PreparePipeline(formats, info, target)) {
+    return VK_NULL_HANDLE;
+  }
   info.stageCount = stage_count;
   info.pStages = stages;
   info.pVertexInputState = &vertex_input;

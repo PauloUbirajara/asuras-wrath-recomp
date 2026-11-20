@@ -25,6 +25,7 @@
 #include "draw_pipelines.h"
 #include "pipeline_store.h"
 #include "render_targets.h"
+#include "rendering_backend.h"
 #include "shader_cache.h"
 #include "shader_interface.h"
 #include "texture_cache.h"
@@ -516,6 +517,8 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
   uint64_t submission_completed_ = 0;
   bool recording_ = false;
 
+  // Dynamic rendering or render passes (rendering_backend.h).
+  std::unique_ptr<mantra::RenderingBackend> rendering_backend_;
   mantra::CopyPipelines copy_pipelines_;
   mantra::DrawPipelines draw_pipelines_;
   // Pipelines from earlier runs (MANTRA_PIPELINE_WARMUP=0 skips building them).

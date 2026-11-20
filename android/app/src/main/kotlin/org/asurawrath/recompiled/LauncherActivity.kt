@@ -45,6 +45,7 @@ import androidx.core.view.isVisible
 import androidx.core.widget.NestedScrollView
 import androidx.drawerlayout.widget.DrawerLayout
 import com.google.android.material.chip.Chip
+import com.google.android.material.chip.ChipGroup
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.materialswitch.MaterialSwitch
 import com.google.android.material.progressindicator.LinearProgressIndicator
@@ -52,6 +53,7 @@ import com.google.android.material.slider.Slider
 import com.google.android.material.textfield.MaterialAutoCompleteTextView
 import java.io.DataInputStream
 import java.io.File
+import kotlin.math.roundToInt
 import java.io.InputStream
 import java.io.RandomAccessFile
 import java.util.Locale
@@ -87,10 +89,10 @@ open class LauncherActivity : AppCompatActivity() {
     private enum class Section(val view: Int, val title: Int, val enabled: Boolean = true) {
         FOLDERS(R.id.section_folders, R.string.section_folders),
         SHADERS(R.id.section_shaders, R.string.section_shaders),
-        SAVES(R.id.section_saves, R.string.section_saves),
+        SAVES(R.id.section_saves, R.string.section_info),
         LOGS(R.id.section_logs, R.string.section_logs),
-        TRACES(0, R.string.section_traces, enabled = false),
-        PROGRESS(0, R.string.section_progress, enabled = false),
+        TRACES(R.id.section_traces, R.string.section_traces),
+        PROGRESS(R.id.section_progress, R.string.section_progress),
         TEST(R.id.section_test, R.string.section_test),
         CONTROLLER(R.id.section_controller, R.string.section_controller),
         SYSTEM(R.id.section_system, R.string.section_system),
@@ -102,10 +104,12 @@ open class LauncherActivity : AppCompatActivity() {
         GAME(R.id.menu_game, R.string.page_game,
             listOf(Section.FOLDERS, Section.SHADERS, Section.SAVES, Section.LOGS, Section.TRACES, Section.PROGRESS)),
         CONTROLS(R.id.menu_controls, R.string.page_controls, listOf(Section.TEST, Section.CONTROLLER)),
+        ACHIEVEMENTS(R.id.menu_achievements, R.string.page_achievements, emptyList(), R.id.page_achievements),
         SETTINGS(R.id.menu_settings, R.string.page_settings, listOf(Section.SYSTEM, Section.DISPLAY, Section.ENHANCEMENTS)),
         ABOUT(R.id.menu_about, R.string.page_about, emptyList(), R.id.page_about),
     }
     private var page = Page.GAME
+    private var lastBack = 0L  // the last Back that only warned (press twice to leave)
     private var section: Section? = null
     private val summaries = HashMap<Section, TextView>()  // the list's state lines
 
@@ -137,20 +141,17 @@ open class LauncherActivity : AppCompatActivity() {
         // The launcher's language is the game's (Settings › System); set
         // again at each start (Android before 13 doesn't keep it).
         applyLanguage()
-        // In game (landscape, over the paused game): the desktop's layout, the
-        // sidebar docked beside the page, the game dimmed behind both.
-        val wide = inGame && resources.configuration.screenWidthDp > resources.configuration.screenHeightDp
-        setContentView(if (wide) R.layout.activity_launcher_wide else R.layout.activity_launcher)
-        // A phone in landscape: the sidebar's logo and big buttons don't fit its height.
-        val c = resources.configuration
-        if (c.screenWidthDp > c.screenHeightDp && c.screenHeightDp < 520) compactSidebar()
-        if (inGame) hideSystemBars()
+        // The menu button and drawer in either orientation.
+        setContentView(R.layout.activity_launcher)
+        if (inGame) overGame()
         LauncherArt.applyFonts(window.decorView)
         LauncherArt.bitmap(this, "logo.png")?.let { findViewById<ImageView>(R.id.logo).setImageBitmap(it) }
         setUpPages(savedInstanceState)
         setUpSettings()
         setUpControls()
         setUpAbout()
+        setUpFiles()
+        findViewById<ChipGroup>(R.id.achievements_filter).setOnCheckedStateChangeListener { _, _ -> refreshAchievements() }
         findViewById<Button>(R.id.game_choose).setOnClickListener { choose(pickGame) }
         findViewById<Button>(R.id.files_choose).setOnClickListener { choose(pickFiles) }
         findViewById<Button>(R.id.files_default).setOnClickListener {
@@ -168,8 +169,9 @@ open class LauncherActivity : AppCompatActivity() {
             }
         }
         findViewById<Button>(R.id.shaders_start_over).setOnClickListener { buildShaders(fresh = true) }
-        findViewById<Button>(R.id.play).setOnClickListener { if (inGame) resume() else play() }
+        findViewById<Button>(R.id.play).setOnClickListener { play() }
         if (inGame) setUpInGame()
+        if (inGame) setOverlay(true)
         findViewById<TextView>(R.id.play_notice).setOnClickListener {
             showPage(Page.GAME, if (gameFound()) Section.SHADERS else Section.FOLDERS)
         }
@@ -242,7 +244,13 @@ open class LauncherActivity : AppCompatActivity() {
                 when {
                     d != null && d.isDrawerOpen(GravityCompat.START) -> d.closeDrawer(GravityCompat.START)
                     section != null -> showPage(page)
+                    inGame && !overlay -> setOverlay(true)
                     inGame -> resume()
+                    // Leaving the launcher takes a second Back within 2 s.
+                    android.os.SystemClock.uptimeMillis() - lastBack > 2000 -> {
+                        lastBack = android.os.SystemClock.uptimeMillis()
+                        toast(getString(R.string.press_back_again))
+                    }
                     else -> {
                         isEnabled = false
                         onBackPressedDispatcher.onBackPressed()
@@ -258,6 +266,7 @@ open class LauncherActivity : AppCompatActivity() {
 
     /** Shows a page: its section `s`, else its list (or its own view). */
     private fun showPage(p: Page, s: Section? = null) {
+        if (inGame) setOverlay(false)
         page = p
         section = s?.takeIf { it in p.sections && it.enabled }
         for (other in Page.entries) findViewById<MenuButton>(other.menu).current = other == p
@@ -280,9 +289,11 @@ open class LauncherActivity : AppCompatActivity() {
         drawer?.closeDrawer(GravityCompat.START)
         when (section) {
             Section.SAVES -> refreshSaves()
+            Section.PROGRESS -> refreshProgress()
             Section.LOGS -> refreshLogs()
+            Section.TRACES -> refreshTraces()
             Section.TEST -> refreshPad()
-            else -> {}
+            else -> if (p == Page.ACHIEVEMENTS) refreshAchievements()
         }
     }
 
@@ -366,7 +377,14 @@ open class LauncherActivity : AppCompatActivity() {
                 DateFormat.getTimeFormat(this).format(it.modified))
         } ?: getString(R.string.saves_none_short)
         Section.LOGS -> logFiles().size.let { resources.getQuantityString(R.plurals.summary_logs, it, it) }
-        Section.TRACES, Section.PROGRESS -> getString(R.string.not_on_android)
+        Section.TRACES -> traceFiles().size.let {
+            if (it == 0) getString(R.string.traces_none) else resources.getQuantityString(R.plurals.summary_traces, it, it)
+        }
+        Section.PROGRESS -> latestProgress()?.let { progress ->
+            val (cleared, total) = episodeCount(progress, episodes())
+            if (total > 0) getString(R.string.episodes_cleared, cleared, total)
+            else getString(R.string.battle_points_value, progress.battlePoints)
+        } ?: getString(R.string.saves_none_short)
         Section.TEST -> PadState.connectedPad()?.let { getString(R.string.pad_connected, it.name) }
             ?: getString(R.string.pad_none_short)
         Section.CONTROLLER -> getString(R.string.summary_controller, config.int("vibration", 100),
@@ -574,6 +592,9 @@ open class LauncherActivity : AppCompatActivity() {
                 " " + DateFormat.getTimeFormat(this).format(save.modified)))
             card.addView(labelled(getString(R.string.save_size), Formatter.formatShortFileSize(this, save.bytes)))
             card.addView(labelled(getString(R.string.save_profile), save.profile))
+            Achievements.load(folders.files(config)).takeIf { it.isNotEmpty() }?.let { all ->
+                card.addView(labelled(getString(R.string.page_achievements), "${all.count { it.unlocked }} / ${all.size}"))
+            }
             card.addView(labelled(getString(R.string.folder), save.folder.absolutePath +
                 "\n" + save.files.joinToString(", ") { "${it.name} (${Formatter.formatShortFileSize(this, it.length())})" }))
             card.addView((LayoutInflater.from(this).inflate(R.layout.paper_button, card, false) as Button).apply {
@@ -609,6 +630,194 @@ open class LauncherActivity : AppCompatActivity() {
         setPadding(0, (6 * resources.displayMetrics.density).toInt(), 0, 0)
         addView(TextView(context).apply { setTextAppearance(R.style.Text_Paper_Label); text = label })
         addView(TextView(context).apply { setTextAppearance(R.style.Text_Paper_Path); text = value; setTextIsSelectable(true) })
+    }
+
+    // --- Game data › Progress ------------------------------------------------------
+
+    private fun language() = config.int("language", 1)
+
+    private fun episodes(): List<GameProgress.Episode> =
+        gameFolder()?.takeIf { gameFound() }?.let { GameProgress.episodes(it, language()) } ?: emptyList()
+
+    /** The most recent save's progress. */
+    private fun latestProgress(): GameProgress.Summary? =
+        scanSaves().sortedByDescending { it.modified }.firstNotNullOfOrNull { GameProgress.readSaveFolder(it.folder) }
+
+    // The hidden True Episode 18 (18_B) only counts once it is reached.
+    private fun episodeCount(progress: GameProgress.Summary, episodes: List<GameProgress.Episode>): Pair<Int, Int> {
+        var total = 0
+        var cleared = 0
+        for (e in episodes) {
+            val r = progress.stories.firstOrNull { it.id == e.id }
+            if (e.number.endsWith("_B") && r?.reached != true) continue
+            total++
+            if (r?.cleared == true) cleared++
+        }
+        return cleared to total
+    }
+
+    // As LauncherDialog::DrawStory: the totals, then the episodes reached so
+    // far (later titles are spoilers) with their best rank per difficulty.
+    private fun refreshProgress() {
+        val list = findViewById<LinearLayout>(R.id.progress_list)
+        list.removeAllViews()
+        val progress = latestProgress()
+        if (progress == null) {
+            list.addView(body(getString(R.string.saves_none)))
+            LauncherArt.applyFonts(list)
+            return
+        }
+        val dp = resources.displayMetrics.density
+        val episodes = episodes()
+        val difficulties = arrayOf(R.string.easy, R.string.normal, R.string.hard)
+        val (cleared, total) = episodeCount(progress, episodes)
+        if (total > 0) {
+            list.addView(labelled(getString(R.string.episodes), getString(R.string.episodes_cleared, cleared, total)))
+            list.addView(LinearProgressIndicator(this).apply {
+                this.max = total
+                this.progress = cleared
+                trackThickness = (8 * dp).toInt()
+                trackColor = ContextCompat.getColor(context, R.color.field)
+                setIndicatorColor(ContextCompat.getColor(context, R.color.mark))
+                setPadding(0, (6 * dp).toInt(), 0, 0)
+            })
+        }
+        if (progress.difficulty >= 0) {
+            list.addView(labelled(getString(R.string.difficulty), getString(difficulties[progress.difficulty])))
+        }
+        list.addView(labelled(getString(R.string.battle_points), progress.battlePoints.toString()))
+        list.addView(labelled(getString(R.string.enemies_defeated), progress.enemiesDefeated.toString()))
+        if (episodes.isEmpty()) {
+            list.addView(hint(getString(R.string.episodes_no_game)))
+            LauncherArt.applyFonts(list)
+            return
+        }
+        fun ranks(r: GameProgress.StoryRecord) = (0 until GameProgress.DIFFICULTIES).joinToString("   ") { d ->
+            getString(difficulties[d]) + " " + r.rank[d].ifEmpty { "–" }
+        }
+        fun episodeRow(number: String, title: String, r: GameProgress.StoryRecord) =
+            LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                background = ContextCompat.getDrawable(context, R.drawable.row_background)
+                setPadding((14 * dp).toInt(), (8 * dp).toInt(), (14 * dp).toInt(), (8 * dp).toInt())
+                layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = (8 * dp).toInt() }
+                alpha = if (r.cleared) 1f else 0.75f
+                addView(TextView(context).apply {
+                    setTextAppearance(R.style.Text_Paper_RowTitle)
+                    text = if (title.isEmpty()) number else "$number · $title"
+                })
+                addView(TextView(context).apply { setTextAppearance(R.style.Text_Paper_Hint); text = ranks(r) })
+            }
+        val roman = arrayOf("", "I", "II", "III", "IV")
+        var part = 0
+        for (e in episodes) {
+            val r = progress.stories.firstOrNull { it.id == e.id } ?: continue
+            if (!r.reached) continue
+            if (e.part != part) {
+                part = e.part
+                list.addView(TextView(this).apply {
+                    setTextAppearance(R.style.Text_Paper_Heading)
+                    text = getString(R.string.part, roman.getOrElse(part) { "" })
+                    setPadding(0, (14 * dp).toInt(), 0, 0)
+                })
+            }
+            var number = getString(R.string.episode, e.number.substringBefore('_'))
+            if (e.number.endsWith("_B")) number += " (" + getString(R.string.true_episode) + ")"
+            list.addView(episodeRow(number, e.title, r))
+        }
+        // Episodes that aren't in the main list (downloadable ones), once reached.
+        val game = gameFolder()
+        val extras = progress.stories.filter { r -> r.reached && episodes.none { it.id == r.id } }
+        if (extras.isNotEmpty() && game != null) {
+            list.addView(TextView(this).apply {
+                setTextAppearance(R.style.Text_Paper_Heading)
+                setText(R.string.extra)
+                setPadding(0, (14 * dp).toInt(), 0, 0)
+            })
+            for (r in extras) list.addView(episodeRow(getString(R.string.extra), GameProgress.title(game, language(), r.id), r))
+        }
+        LauncherArt.applyFonts(list)
+    }
+
+    // --- Achievements -------------------------------------------------------------
+
+    private val iconCache = HashMap<String, android.graphics.Bitmap?>()
+
+    // As LauncherDialog::DrawAchievements (its list view): the count and
+    // gamerscore, a filter, then icon, name and points, description, date.
+    private fun refreshAchievements() {
+        val files = folders.files(config)
+        val all = Achievements.load(files)
+        val list = findViewById<LinearLayout>(R.id.achievements_list)
+        list.removeAllViews()
+        val summary = findViewById<TextView>(R.id.achievements_summary)
+        val bar = findViewById<LinearProgressIndicator>(R.id.achievements_bar)
+        val filter = findViewById<View>(R.id.achievements_filter)
+        if (all.isEmpty()) {
+            summary.text = getString(if (!gameFound()) R.string.achievements_no_game else R.string.achievements_missing)
+            bar.isVisible = false
+            filter.isVisible = false
+            return
+        }
+        bar.isVisible = true
+        filter.isVisible = true
+        val unlocked = all.filter { it.unlocked }
+        summary.text = getString(R.string.achievements_summary, unlocked.size, all.size,
+            unlocked.sumOf { it.gamerscore }, all.sumOf { it.gamerscore })
+        bar.max = all.size
+        bar.progress = unlocked.size
+        if (Achievements.cachedLanguage(files) != language()) {
+            list.addView(hint(getString(R.string.achievements_language)))
+        }
+        val shown = when (findViewById<ChipGroup>(R.id.achievements_filter).checkedChipId) {
+            R.id.achievements_unlocked -> unlocked
+            R.id.achievements_locked -> all.filter { !it.unlocked }
+            else -> all
+        }
+        val dp = resources.displayMetrics.density
+        val grey = android.graphics.ColorMatrixColorFilter(android.graphics.ColorMatrix().apply { setSaturation(0f) })
+        for (a in shown) {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                background = ContextCompat.getDrawable(context, R.drawable.row_background)
+                setPadding((10 * dp).toInt(), (10 * dp).toInt(), (12 * dp).toInt(), (10 * dp).toInt())
+            }
+            row.addView(ImageView(this).apply {
+                layoutParams = LinearLayout.LayoutParams((56 * dp).toInt(), (56 * dp).toInt()).apply {
+                    marginEnd = (12 * dp).toInt()
+                }
+                setImageBitmap(iconCache.getOrPut(a.icon.path) { android.graphics.BitmapFactory.decodeFile(a.icon.path) })
+                if (!a.unlocked) {
+                    colorFilter = grey
+                    imageAlpha = 140
+                }
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            })
+            val text = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = LinearLayout.LayoutParams(0, -2, 1f)
+            }
+            text.addView(TextView(this).apply {
+                setTextAppearance(R.style.Text_Paper_RowTitle)
+                this.text = getString(R.string.achievement_name, a.name, a.gamerscore)
+                if (!a.unlocked) setTextColor(ContextCompat.getColor(context, R.color.panel_text_dim))
+            })
+            text.addView(TextView(this).apply {
+                setTextAppearance(R.style.Text_Paper_Body)
+                this.text = if (a.unlocked) a.description else a.lockedDescription
+                if (!a.unlocked) setTextColor(ContextCompat.getColor(context, R.color.panel_text_dim))
+            })
+            a.unlockedMillis?.let { ms ->
+                text.addView(TextView(this).apply {
+                    setTextAppearance(R.style.Text_Paper_Hint)
+                    this.text = DateFormat.getDateFormat(context).format(ms)
+                })
+            }
+            row.addView(text)
+            if (!a.unlocked) row.alpha = 0.8f
+            list.addView(row)
+        }
+        LauncherArt.applyFonts(list)
     }
 
     // --- Logs ------------------------------------------------------------------
@@ -675,6 +884,159 @@ open class LauncherActivity : AppCompatActivity() {
         } catch (e: Exception) {
             toast(e.message ?: e.toString())
         }
+    }
+
+    // --- Game data › Traces; Logs' and Traces' folder buttons -------------------
+
+    private fun traceDir() = File(folders.files(config), "traces")
+
+    // MANTRA_TRACE_TRIGGER (asura_wrath_app.h: <Files>/cache/trace.now): the
+    // game traces the frame after it finds the file, and deletes it.
+    private fun traceTrigger() = File(folders.files(config), "cache/trace.now")
+
+    // <date>_<time>_frame<N>.log, newest first.
+    private fun traceFiles(): List<File> =
+        (traceDir().listFiles { f -> f.isFile && f.name.endsWith(".log") && f.name.contains("_frame") } ?: emptyArray())
+            .sortedByDescending { it.name }
+
+    private fun setUpFiles() {
+        findViewById<Button>(R.id.logs_open).setOnClickListener { openFolder(logDir()) }
+        findViewById<Button>(R.id.traces_open).setOnClickListener { openFolder(traceDir()) }
+        findViewById<Button>(R.id.logs_delete).setOnClickListener {
+            // In game, its own log stays (it is being written).
+            val logs = logFiles().let { if (inGame) it.drop(1) else it }
+            deleteAll(logs, R.string.delete_logs_title) { refreshLogs() }
+        }
+        findViewById<Button>(R.id.traces_delete).setOnClickListener {
+            val files = traceDir().listFiles { f -> f.isFile } ?: emptyArray()
+            deleteAll(files.toList(), R.string.delete_traces_title) { refreshTraces() }
+        }
+        findViewById<Button>(R.id.trace_now).setOnClickListener { traceNextFrame() }
+    }
+
+    /** In game: asks for a trace, then resumes (the game traces the frame after). */
+    private fun traceNextFrame() {
+        val trigger = traceTrigger()
+        try {
+            trigger.parentFile?.mkdirs()
+            trigger.writeText("1\n")
+        } catch (e: Exception) {
+            toast(e.message ?: e.toString())
+            return
+        }
+        toast(getString(R.string.trace_on_resume))
+        resume()
+    }
+
+    private fun refreshTraces() {
+        findViewById<TextView>(R.id.traces_path).text = traceDir().absolutePath
+        val pending = traceTrigger().isFile
+        findViewById<Button>(R.id.trace_now).isEnabled = inGame && !pending
+        findViewById<TextView>(R.id.trace_status).text = getString(when {
+            !inGame -> R.string.trace_in_game
+            pending -> R.string.trace_on_resume
+            else -> R.string.trace_resume_hint
+        })
+        val list = findViewById<LinearLayout>(R.id.traces_list)
+        list.removeAllViews()
+        val traces = traceFiles()
+        if (traces.isEmpty()) list.addView(body(getString(R.string.traces_none)))
+        for (trace in traces) {
+            val frame = trace.nameWithoutExtension.substringAfterLast("_frame")
+            val picture = File(trace.parentFile, trace.nameWithoutExtension + ".png")
+            val when_ = DateFormat.getDateFormat(this).format(trace.lastModified()) + " " +
+                DateFormat.getTimeFormat(this).format(trace.lastModified())
+            val details = listOfNotNull(getString(R.string.trace_frame, frame),
+                Formatter.formatShortFileSize(this, trace.length()),
+                getString(R.string.picture).takeIf { picture.isFile }).joinToString(" · ")
+            list.addView(row(when_, details) { showTrace(trace, picture) })
+        }
+        LauncherArt.applyFonts(list)
+    }
+
+    private fun showTrace(trace: File, picture: File) {
+        val actions = ArrayList<Pair<String, () -> Unit>>()
+        actions += getString(R.string.trace_read) to { showLog(trace) }
+        if (picture.isFile) actions += getString(R.string.picture) to { viewFile(picture, "image/png") }
+        actions += getString(R.string.log_share) to {
+            shareFiles(listOfNotNull(trace, picture.takeIf { it.isFile }), trace.name)
+        }
+        actions += getString(R.string.save_delete) to {
+            deleteAll(listOfNotNull(trace, picture.takeIf { it.isFile }), R.string.delete_trace_title) { refreshTraces() }
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(trace.name)
+            .setItems(actions.map { it.first }.toTypedArray()) { _, i -> actions[i].second() }
+            .setNegativeButton(R.string.close, null)
+            .show()
+    }
+
+    private fun deleteAll(files: List<File>, title: Int, done: () -> Unit) {
+        if (files.isEmpty()) {
+            toast(getString(R.string.nothing_to_delete))
+            return
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(title)
+            .setMessage(resources.getQuantityString(R.plurals.delete_files, files.size, files.size))
+            .setPositiveButton(R.string.save_delete) { _, _ ->
+                val failed = files.count { !it.delete() }
+                if (failed > 0) toast(getString(R.string.delete_failed, failed))
+                done()
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    private fun viewFile(file: File, mime: String) {
+        try {
+            val uri = FileProvider.getUriForFile(this, "$packageName.files", file)
+            startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, mime).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+        } catch (e: Exception) {
+            toast(e.message ?: e.toString())
+        }
+    }
+
+    private fun shareFiles(files: List<File>, title: String) {
+        try {
+            val uris = ArrayList(files.map { FileProvider.getUriForFile(this, "$packageName.files", it) })
+            val intent = if (uris.size == 1) {
+                Intent(Intent.ACTION_SEND).putExtra(Intent.EXTRA_STREAM, uris[0])
+            } else {
+                Intent(Intent.ACTION_SEND_MULTIPLE).putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
+            }
+            intent.type = "*/*"
+            intent.putExtra(Intent.EXTRA_SUBJECT, title)
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            startActivity(Intent.createChooser(intent, title))
+        } catch (e: Exception) {
+            toast(e.message ?: e.toString())
+        }
+    }
+
+    /**
+     * Opens a folder in the phone's file manager. Android keeps other apps
+     * out of Android/data, so where none can open it, its path is copied
+     * for pasting into one that can (or a computer over USB).
+     */
+    private fun openFolder(dir: File) {
+        dir.mkdirs()
+        val storage = android.os.Environment.getExternalStorageDirectory().absolutePath
+        val inAppData = dir.absolutePath.contains("/Android/data/")
+        if (!inAppData && dir.absolutePath.startsWith("$storage/")) {
+            val id = "primary:" + dir.absolutePath.removePrefix("$storage/")
+            val uri = android.provider.DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", id)
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(uri, android.provider.DocumentsContract.Document.MIME_TYPE_DIR)
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION))
+                return
+            } catch (e: Exception) {
+            }
+        }
+        val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+        clipboard.setPrimaryClip(android.content.ClipData.newPlainText(dir.name, dir.absolutePath))
+        toast(getString(R.string.folder_path_copied, dir.absolutePath))
     }
 
     // --- Controls --------------------------------------------------------------
@@ -813,6 +1175,34 @@ open class LauncherActivity : AppCompatActivity() {
                 save()
             }
         }
+        // Achievement pop-ups (game_toast.h ToastOptions).
+        for (i in 0 until 8) {
+            findViewById<Chip>(toastPositionChip(i)).setOnClickListener {
+                if (!binding) {
+                    config["toast_position"] = i.toString()
+                    save()
+                }
+            }
+        }
+        findViewById<Slider>(R.id.toast_size).addOnChangeListener { _, value, fromUser ->
+            showToastSize(value.toInt())
+            if (fromUser && !binding) {
+                config["toast_size"] = value.toInt().toString()
+                save()
+            }
+        }
+        findViewById<Slider>(R.id.toast_seconds).addOnChangeListener { _, value, fromUser ->
+            showToastSeconds(value)
+            if (fromUser && !binding) {
+                config["toast_seconds"] = String.format(Locale.ROOT, "%.1f", value)
+                save()
+            }
+        }
+        // In game: the game shows one when it comes back (asura_wrath_app.h OnMenuClosed).
+        findViewById<Button>(R.id.toast_example).setOnClickListener {
+            File(folders.root, ".toast_example").writeText("1\n")
+            resume()
+        }
         findViewById<Slider>(R.id.screen_padding).addOnChangeListener { _, value, fromUser ->
             showScreenPadding(value.toInt())
             if (fromUser && !binding) {
@@ -829,6 +1219,16 @@ open class LauncherActivity : AppCompatActivity() {
             findViewById<View>(ids.second).apply {
                 TooltipCompat.setTooltipText(this, contentDescription)
                 setOnClickListener { performLongClick() }
+            }
+        }
+        for ((id, name) in turboChips) {
+            findViewById<Chip>(id).setOnCheckedChangeListener { _, checked ->
+                if (binding) return@setOnCheckedChangeListener
+                val set = turboSet().toMutableSet()
+                if (checked) set.add(name) else set.remove(name)
+                // In PadState.NAMES order, as the native launcher writes it.
+                config["turbo"] = PadState.NAMES.filter { it in set }.joinToString(",")
+                save()
             }
         }
         for ((id, key) in switches) {
@@ -849,11 +1249,27 @@ open class LauncherActivity : AppCompatActivity() {
 
     // Switch -> launcher.cfg key, and the native launcher's default.
     private val switches = listOf(
-        R.id.vsync to "vsync", R.id.show_fps to "show_fps", R.id.skip_intro to "skip_intro",
-        R.id.toasts to "toasts", R.id.detailed_logs to "detailed_logs",
+        R.id.show_fps to "show_fps", R.id.skip_intro to "skip_intro",
+        R.id.toasts to "toasts", R.id.detailed_logs to "detailed_logs", R.id.trace_picture to "trace_picture",
+        // Effects (src/game/graphics_effects.h kGraphicsEffects: the same keys).
+        R.id.fx_bloom to "fx_bloom", R.id.fx_depth_of_field to "fx_depth_of_field",
+        R.id.fx_motion_blur to "fx_motion_blur", R.id.fx_radial_blur to "fx_radial_blur",
+        R.id.fx_shadows to "fx_shadows", R.id.fx_ambient_occlusion to "fx_ambient_occlusion",
+        R.id.fx_light_shafts to "fx_light_shafts", R.id.fx_lens_flares to "fx_lens_flares",
+        R.id.fx_distortion to "fx_distortion",
     )
+    // Turbo chips -> PadState.NAMES (launcher.cfg turbo=a,b,...).
+    private val turboChips = listOf(
+        R.id.turbo_a to "a", R.id.turbo_b to "b", R.id.turbo_x to "x",
+        R.id.turbo_y to "y", R.id.turbo_lb to "lb", R.id.turbo_rb to "rb",
+    )
+    private fun turboSet(): Set<String> =
+        (config["turbo"] ?: "").split(',').map { it.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
     private val switchDefaults = mapOf(
-        "vsync" to true, "show_fps" to false, "skip_intro" to false, "toasts" to true, "detailed_logs" to false,
+        "show_fps" to false, "skip_intro" to false, "toasts" to true, "detailed_logs" to false, "trace_picture" to true,
+        "fx_bloom" to true, "fx_depth_of_field" to true, "fx_motion_blur" to true, "fx_radial_blur" to true,
+        "fx_shadows" to true, "fx_ambient_occlusion" to true, "fx_light_shafts" to true, "fx_lens_flares" to true,
+        "fx_distortion" to true,
     )
 
     private val fpsChips = listOf(R.id.fps_30 to 30, R.id.fps_60 to 60, R.id.fps_120 to 120, R.id.fps_unlimited to 0)
@@ -862,6 +1278,20 @@ open class LauncherActivity : AppCompatActivity() {
         "fill" to (R.id.aspect_fill to R.id.aspect_fill_info),
         "stretch" to (R.id.aspect_stretch to R.id.aspect_stretch_info),
     )
+
+    private fun toastPositionChip(i: Int) = when (i) {
+        0 -> R.id.toast_pos_0; 1 -> R.id.toast_pos_1; 2 -> R.id.toast_pos_2; 3 -> R.id.toast_pos_3
+        4 -> R.id.toast_pos_4; 5 -> R.id.toast_pos_5; 6 -> R.id.toast_pos_6; else -> R.id.toast_pos_7
+    }
+
+    private fun showToastSize(percent: Int) {
+        findViewById<TextView>(R.id.toast_size_value).text = getString(R.string.percent_value, percent)
+    }
+
+    private fun showToastSeconds(seconds: Float) {
+        findViewById<TextView>(R.id.toast_seconds_value).text =
+            getString(R.string.seconds_value, String.format(Locale.getDefault(), "%.1f", seconds))
+    }
 
     private fun showScreenPadding(dp: Int) {
         findViewById<TextView>(R.id.screen_padding_value).text =
@@ -926,7 +1356,7 @@ open class LauncherActivity : AppCompatActivity() {
             findViewById<TextView>(R.id.files_path).text = folders.files(config).absolutePath
 
             findViewById<MaterialAutoCompleteTextView>(R.id.language).setText(languageName(), false)
-            val renderScale = config.int("render_scale", 100).coerceIn(25, 200) / 5 * 5
+            val renderScale = config.int("render_scale", 100).coerceIn(5, 400) / 5 * 5
             findViewById<Slider>(R.id.render_scale).value = renderScale.toFloat()
             showRenderScale(config.int("render_scale", 100))
             val vibration = config.int("vibration", 100).coerceIn(0, 200) / 10 * 10
@@ -941,6 +1371,20 @@ open class LauncherActivity : AppCompatActivity() {
             showFpsCap(cap)
             for ((id, value) in fpsChips) findViewById<Chip>(id).isChecked = value == cap
             val padding = config.int("screen_padding", 0).coerceIn(0, 64) / 4 * 4
+            // As launcher.cpp: toast_position, or the older toast_corner; 140% on phones.
+            val toastPosition = config.int("toast_position", -1).takeIf { it in 0..7 }
+                ?: intArrayOf(0, 2, 5, 7)[config.int("toast_corner", 3).coerceIn(0, 3)]
+            for (i in 0 until 8) findViewById<Chip>(toastPositionChip(i)).isChecked = i == toastPosition
+            val toastSize = (config.int("toast_size", 140) + 5) / 10 * 10
+            findViewById<Slider>(R.id.toast_size).value = toastSize.coerceIn(50, 250).toFloat()
+            showToastSize(toastSize.coerceIn(50, 250))
+            val toastSeconds = ((config["toast_seconds"]?.toFloatOrNull() ?: 4.5f) * 2).roundToInt() / 2f
+            findViewById<Slider>(R.id.toast_seconds).value = toastSeconds.coerceIn(1f, 15f)
+            showToastSeconds(toastSeconds.coerceIn(1f, 15f))
+            val toastsOn = config.bool("toasts", true)
+            findViewById<View>(R.id.toast_options).alpha = if (toastsOn) 1f else 0.5f
+            findViewById<Button>(R.id.toast_example).isEnabled = inGame
+            findViewById<TextView>(R.id.toast_example_hint).isVisible = !inGame
             findViewById<Slider>(R.id.screen_padding).value = padding.toFloat()
             showScreenPadding(padding)
             val aspect = config["aspect"]?.takeIf { it in aspectRows } ?: "fit"
@@ -948,12 +1392,16 @@ open class LauncherActivity : AppCompatActivity() {
             for ((id, key) in switches) {
                 findViewById<MaterialSwitch>(id).isChecked = config.bool(key, switchDefaults.getValue(key))
             }
+            val turbo = turboSet()
+            for ((id, name) in turboChips) findViewById<Chip>(id).isChecked = name in turbo
             when (section) {
                 null -> if (page.sections.isNotEmpty()) showList()
                 Section.SAVES -> refreshSaves()
+                Section.PROGRESS -> refreshProgress()
                 Section.LOGS -> refreshLogs()
+                Section.TRACES -> refreshTraces()
                 Section.TEST -> refreshPad()
-                else -> {}
+                else -> if (page == Page.ACHIEVEMENTS) refreshAchievements()
             }
         } finally {
             binding = false
@@ -994,25 +1442,46 @@ open class LauncherActivity : AppCompatActivity() {
 
     // --- In game (InGameMenuActivity) -------------------------------------------
 
-    /** The sidebar in a landscape phone's height: no logo, Restart and Quit side by side. */
-    private fun compactSidebar() {
+    /**
+     * In game, as the desktop launcher over the running game: the paused game
+     * dimmed behind, the page on a plain panel (no parchment image) with the
+     * game showing around it, the drawer see-through.
+     */
+    /**
+     * In game, Back first shows only this over the dimmed game: the menu
+     * button, Quit, Restart and Resume. A page from the drawer brings the
+     * panel; Back from a page's list returns here.
+     */
+    private var overlay = false
+
+    private fun setOverlay(on: Boolean) {
+        overlay = on
+        val panel = findViewById<PanelLayout>(R.id.panel)
+        panel.setBackgroundColor(if (on) 0 else ContextCompat.getColor(this, R.color.in_game_panel))
+        findViewById<View>(R.id.panel_scroll).visibility = if (on) View.INVISIBLE else View.VISIBLE
+        findViewById<View>(R.id.page_title).isVisible = !on
+        if (on) {
+            findViewById<View>(R.id.crumb_sep).isVisible = false
+            findViewById<View>(R.id.section_title).isVisible = false
+            for (p in Page.entries) findViewById<MenuButton>(p.menu).current = false
+        }
+        val ink = ContextCompat.getColor(this, if (on) R.color.sidebar_text else R.color.panel_text)
+        ((findViewById<ViewGroup>(R.id.menu_button)).getChildAt(0) as ImageView).imageTintList =
+            android.content.res.ColorStateList.valueOf(ink)
+        findViewById<Button>(R.id.quit).setTextColor(
+            ContextCompat.getColor(this, if (on) R.color.sidebar_text else R.color.mark))
+    }
+
+    private fun overGame() {
         val dp = resources.displayMetrics.density
-        if (inGame) findViewById<View>(R.id.sidebar).setBackgroundColor(ContextCompat.getColor(this, R.color.in_game_sidebar))
-        findViewById<View>(R.id.logo).isVisible = false
-        findViewById<View>(R.id.logo_caption).isVisible = false
-        (findViewById<View>(R.id.menu).layoutParams as ViewGroup.MarginLayoutParams).topMargin = (16 * dp).toInt()
-        findViewById<LinearLayout>(R.id.in_game_actions).orientation = LinearLayout.HORIZONTAL
-        for (id in intArrayOf(R.id.restart, R.id.quit)) {
-            findViewById<Button>(id).apply {
-                layoutParams = LinearLayout.LayoutParams(0, (48 * dp).toInt(), 1f)
-                textSize = 16f
-            }
+        findViewById<View>(R.id.drawer).setBackgroundColor(ContextCompat.getColor(this, R.color.in_game_dim))
+        findViewById<View>(R.id.sidebar).setBackgroundColor(ContextCompat.getColor(this, R.color.in_game_sidebar))
+        findViewById<PanelLayout>(R.id.panel).apply {
+            plain = true
+            setBackgroundColor(ContextCompat.getColor(this@LauncherActivity, R.color.in_game_panel))
+            (layoutParams as ViewGroup.MarginLayoutParams).setMargins((16 * dp).toInt(), (12 * dp).toInt(), (16 * dp).toInt(), (12 * dp).toInt())
         }
-        findViewById<Button>(R.id.play).apply {
-            layoutParams.height = (64 * dp).toInt()
-            (layoutParams as ViewGroup.MarginLayoutParams).bottomMargin = (4 * dp).toInt()
-            textSize = 26f
-        }
+        hideSystemBars()
     }
 
     /** In game: no status or navigation bar, as the game (a swipe shows them). */
@@ -1025,8 +1494,11 @@ open class LauncherActivity : AppCompatActivity() {
     }
 
     private fun setUpInGame() {
-        findViewById<Button>(R.id.play).setText(R.string.in_game_resume)
-        findViewById<View>(R.id.in_game_actions).isVisible = true
+        findViewById<View>(R.id.play).isVisible = false
+        findViewById<View>(R.id.in_game_bar).isVisible = true
+        findViewById<View>(R.id.quit).isVisible = true
+        findViewById<Button>(R.id.resume).setOnClickListener { resume() }
+        findViewById<Button>(R.id.trace).setOnClickListener { traceNextFrame() }
         findViewById<Button>(R.id.restart).setOnClickListener {
             confirm(R.string.restart_title, getString(R.string.progress_lost), R.string.restart) { restartGame() }
         }
@@ -1049,9 +1521,12 @@ open class LauncherActivity : AppCompatActivity() {
     private fun restartNeeded(): Boolean {
         val start = GameActivity.startConfig ?: return false
         fun fill(c: LauncherConfig) = c["aspect"] == "fill"
-        return start.bool("vsync", true) != config.bool("vsync", true) || fill(start) != fill(config) ||
+        return fill(start) != fill(config) ||
             start.int("language", 1) != config.int("language", 1) ||
-            (start["game_data"] ?: "") != (config["game_data"] ?: "")
+            (start["game_data"] ?: "") != (config["game_data"] ?: "") ||
+            switches.any { (_, key) ->
+                key.startsWith("fx_") && start.bool(key, true) != config.bool(key, true)
+            }
     }
 
     /** Back to the game (it reloads launcher.cfg: asura_wrath_app.h OnMenuClosed). */

@@ -63,6 +63,8 @@ set(ASURAWRATH_SOURCES
     src/main.cpp
     src/game/frame_rate.cpp
     src/game/skip_intro.cpp
+    src/game/game_files.cpp
+    src/game/graphics_effects.cpp
     src/input/pad_remap.cpp
     ${ASURA_PLATFORM_SOURCES}
     src/ui/about_info.cpp

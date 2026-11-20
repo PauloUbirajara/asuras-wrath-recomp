@@ -76,13 +76,68 @@
                 android:textStyle="bold"
                 android:visibility="gone" />
         </LinearLayout>
+        <!-- In game: quits it (after asking). -->
+        <Button
+            android:id="@+id/quit"
+            style="?android:attr/borderlessButtonStyle"
+            android:layout_width="wrap_content"
+            android:layout_height="48dp"
+            android:minWidth="0dp"
+            android:paddingHorizontal="12dp"
+            android:text="@string/quit"
+            android:textAllCaps="false"
+            android:textColor="@color/mark"
+            android:textSize="18sp"
+            android:visibility="gone" />
     </LinearLayout>
 
-    <androidx.core.widget.NestedScrollView
-        android:id="@+id/panel_scroll"
+    <!-- The page, then (in game) Restart and Resume at the bottom right. -->
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:scrollbarStyle="outsideOverlay">
-        <include layout="@layout/launcher_pages" />
-    </androidx.core.widget.NestedScrollView>
+        android:orientation="vertical">
+        <androidx.core.widget.NestedScrollView
+            android:id="@+id/panel_scroll"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:scrollbarStyle="outsideOverlay">
+            <include layout="@layout/launcher_pages" />
+        </androidx.core.widget.NestedScrollView>
+        <LinearLayout
+            android:id="@+id/in_game_bar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:paddingTop="8dp"
+            android:gravity="end|center_vertical"
+            android:orientation="horizontal"
+            android:visibility="gone">
+            <Button
+                android:id="@+id/trace"
+                style="@style/Widget.Paper.InGame"
+                android:layout_width="wrap_content"
+                android:layout_height="56dp"
+                android:layout_marginEnd="8dp"
+                android:text="@string/trace"
+                android:textSize="17sp" />
+            <Button
+                android:id="@+id/restart"
+                style="@style/Widget.Paper.InGame"
+                android:layout_width="wrap_content"
+                android:layout_height="56dp"
+                android:layout_marginEnd="8dp"
+                android:text="@string/in_game_restart"
+                android:textSize="17sp" />
+            <Button
+                android:id="@+id/resume"
+                style="@style/Widget.Paper.Play"
+                android:layout_width="wrap_content"
+                android:layout_height="56dp"
+                android:minWidth="120dp"
+                android:maxLines="1"
+                android:paddingStart="20dp"
+                android:paddingEnd="20dp"
+                android:text="@string/in_game_resume" />
+        </LinearLayout>
+    </LinearLayout>
 </org.asurawrath.recompiled.PanelLayout>

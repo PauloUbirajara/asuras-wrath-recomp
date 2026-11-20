@@ -84,9 +84,17 @@ class PanelLayout @JvmOverloads constructor(context: Context, attrs: AttributeSe
         setWillNotDraw(false)
     }
 
+    /** In game: no parchment image, the panel's plain colour over the dimmed game. */
+    var plain = false
+        set(value) {
+            field = value
+            requestLayout()
+            invalidate()
+        }
+
     private fun layoutFrame(w: Int, h: Int) {
         val density = resources.displayMetrics.density
-        val bitmap = image
+        val bitmap = if (plain) null else image
         if (bitmap == null) {
             val margin = (16 * density).toInt()
             inner.set(margin, margin, w - margin, h - margin)
@@ -146,7 +154,7 @@ class PanelLayout @JvmOverloads constructor(context: Context, attrs: AttributeSe
     }
 
     override fun onDraw(canvas: Canvas) {
-        val bitmap = image ?: return super.onDraw(canvas)
+        val bitmap = (if (plain) null else image) ?: return super.onDraw(canvas)
         val iw = bitmap.width
         val ih = bitmap.height
         val us = intArrayOf(0, SLICE[0].toInt(), iw - SLICE[2].toInt(), iw)

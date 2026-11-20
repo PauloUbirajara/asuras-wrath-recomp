@@ -17,9 +17,13 @@
 #                                    (./build.sh --windows) as a .zip instead
 #   tools/package.sh --android       the APKs from ./build.sh --android instead
 #                                    (universal, arm64-v8a, x86_64)
+#   tools/package.sh --all           all of them: Linux .tar.gz + AppImage,
+#                                    Windows .zip and the APKs (each from its
+#                                    existing build; one missing is reported and
+#                                    the others are still made)
 #
 # Writes out/package/asuras-wrath-recomp-<version>-linux-x86_64.tar.gz (and
-# .AppImage) plus SHA256SUMS (SHA256SUMS-windows, SHA256SUMS-android for the
+# .AppImage) plus SHA256SUMS-linux (SHA256SUMS-windows, SHA256SUMS-android for the
 # others); the staging folders are removed afterwards.
 #
 # The default build is tuned for your CPU (-march=native) and may crash on
@@ -33,18 +37,21 @@ STRIP=true
 CLEAN=false
 WINDOWS=false
 ANDROID=false
+ALL=false
+PASS=()  # options handed to each package of --all
 BUILD_DIR_SET=false
 VERSION=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --appimage) APPIMAGE=true ;;
-    --no-strip) STRIP=false ;;
+    --no-strip) STRIP=false; PASS+=(--no-strip) ;;
     --build-dir) BUILD_DIR="$(cd "$2" && pwd)"; BUILD_DIR_SET=true; shift ;;
     --windows) WINDOWS=true ;;
     --android) ANDROID=true ;;
+    --all) ALL=true ;;
     --version) VERSION="$2"; shift ;;
     --clean) CLEAN=true ;;
-    -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "[!] Unknown argument: $1" >&2; exit 1 ;;
   esac
   shift
@@ -56,7 +63,12 @@ if [ -z "$VERSION" ]; then
   VERSION="${VERSION#v}"
   [ -n "$VERSION" ] || VERSION="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo dev)"
 fi
-if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no --ignore-submodules 2>/dev/null)" ]; then
+if $ALL && { $WINDOWS || $ANDROID || $APPIMAGE || $BUILD_DIR_SET; }; then
+  echo "[!] --all makes every package: drop --windows, --android, --appimage and --build-dir" >&2
+  exit 1
+fi
+if [ -z "${ASURA_PACKAGE_ALL:-}" ] &&
+  [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=no --ignore-submodules 2>/dev/null)" ]; then
   echo "[!] The checkout has uncommitted changes: the package is not exactly $VERSION."
 fi
 OUT="$REPO_ROOT/out/package"
@@ -65,6 +77,27 @@ STAGE="$WORK/$NAME"
 BASE="$NAME-$VERSION-linux-x86_64"
 $CLEAN && rm -rf "$OUT"
 mkdir -p "$OUT"
+
+# --- All (Linux, Windows, Android) ------------------------------------------------
+# One run of this script per package, all with the same version.
+if $ALL; then
+  failed=()
+  for kind in linux windows android; do
+    echo "[+] --- $kind ---"
+    case "$kind" in
+      linux) args=(--appimage) ;;
+      *) args=(--$kind) ;;
+    esac
+    ASURA_PACKAGE_ALL=1 "$0" --version "$VERSION" "${PASS[@]}" "${args[@]}" || failed+=("$kind")
+  done
+  if [ ${#failed[@]} -gt 0 ]; then
+    echo "[!] Not packaged: ${failed[*]} (see above)" >&2
+    exit 1
+  fi
+  echo "[+] All packages in $OUT"
+  exit 0
+fi
+
 trap 'rm -rf "$WORK"' EXIT
 
 # --- Android (.apk) ---------------------------------------------------------------
@@ -246,5 +279,5 @@ SVG
 fi
 
 # --- Checksums -----------------------------------------------------------------
-(cd "$OUT" && sha256sum "$BASE".tar.gz $([ -f "$BASE.AppImage" ] && echo "$BASE.AppImage") > SHA256SUMS)
-echo "[+] $OUT/SHA256SUMS"
+(cd "$OUT" && sha256sum "$BASE".tar.gz $([ -f "$BASE.AppImage" ] && echo "$BASE.AppImage") > "SHA256SUMS-linux")
+echo "[+] $OUT/SHA256SUMS-linux"

@@ -448,6 +448,41 @@ constexpr Entry kEntries[] = {
      "Va directement à l'écran titre, sans l'avis de sauvegarde automatique.",
      "Va directamente a la pantalla de título, sin el aviso de autoguardado.",
      "Va direttamente alla schermata del titolo, senza l'avviso di salvataggio automatico."},
+    {"Show an example", "表示例を見る", "Beispiel zeigen", "Voir un exemple", "Ver un ejemplo",
+     "Mostra un esempio"},
+    {"Achievement name", "実績の名前", "Name des Erfolgs", "Nom du succès", "Nombre del logro",
+     "Nome dell'obiettivo"},
+    // Settings > Display > Effects (game/graphics_effects.h)
+    {"Effects", "エフェクト", "Effekte", "Effets", "Efectos", "Effetti"},
+    {"Bloom", "ブルーム", "Bloom", "Flou lumineux (bloom)", "Resplandor (bloom)", "Bloom"},
+    {"Depth of field (background blur)", "被写界深度（背景のぼかし）",
+     "Tiefenschärfe (Hintergrundunschärfe)", "Profondeur de champ (flou d'arrière-plan)",
+     "Profundidad de campo (desenfoque del fondo)", "Profondità di campo (sfocatura dello sfondo)"},
+    {"Motion blur", "モーションブラー", "Bewegungsunschärfe", "Flou de mouvement",
+     "Desenfoque de movimiento", "Sfocatura di movimento"},
+    {"Radial blur", "放射状ブラー", "Radiale Unschärfe", "Flou radial", "Desenfoque radial",
+     "Sfocatura radiale"},
+    {"Dynamic shadows", "動的な影", "Dynamische Schatten", "Ombres dynamiques",
+     "Sombras dinámicas", "Ombre dinamiche"},
+    {"Ambient occlusion", "アンビエントオクルージョン", "Umgebungsverdeckung", "Occlusion ambiante",
+     "Oclusión ambiental", "Occlusione ambientale"},
+    {"Light shafts", "光芒", "Lichtstrahlen", "Rayons de lumière", "Haces de luz", "Raggi di luce"},
+    {"Lens flares", "レンズフレア", "Linsenreflexe", "Reflets d'objectif", "Destellos de lente",
+     "Riflessi dell'obiettivo"},
+    {"Heat haze and distortion", "陽炎と歪み", "Hitzeflimmern und Verzerrung",
+     "Brume de chaleur et distorsion", "Calima y distorsión", "Foschia di calore e distorsione"},
+    {"Turning effects off makes the game lighter for weak graphics cards and phones, or the "
+     "picture cleaner. Shadows baked into the levels stay.",
+     "エフェクトをオフにすると、性能の低いグラフィックカードやスマートフォンでの負荷が下がり、"
+     "画面もすっきりします。ステージに焼き込まれた影は残ります。",
+     "Ausgeschaltete Effekte entlasten schwache Grafikkarten und Handys oder machen das Bild "
+     "klarer. In die Level eingebackene Schatten bleiben.",
+     "Désactiver des effets allège le jeu pour les cartes graphiques modestes et les téléphones, "
+     "ou rend l'image plus nette. Les ombres intégrées aux niveaux restent.",
+     "Desactivar efectos aligera el juego en tarjetas gráficas modestas y móviles, o deja la "
+     "imagen más limpia. Las sombras integradas en los niveles se mantienen.",
+     "Disattivare gli effetti alleggerisce il gioco su schede grafiche modeste e telefoni, o "
+     "rende l'immagine più pulita. Le ombre integrate nei livelli restano."},
     {"Logs", "ログ", "Protokolle", "Journaux", "Registros", "Log"},
     {"File", "ファイル", "Datei", "Fichier", "Archivo", "File"},
     {"Process", "プロセス", "Prozess", "Processus", "Proceso", "Processo"},

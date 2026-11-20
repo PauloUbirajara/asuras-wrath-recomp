@@ -28,6 +28,10 @@ constexpr ImVec4 kScore(0.78f, 0.62f, 0.36f, 1.0f);  // dim gold
 
 constexpr float kToastWidth = 300.0f, kToastHeight = 70.0f;
 
+// The dialog previews go to (the latest created).
+std::mutex g_preview_mutex;
+GameToastDialog* g_preview_dialog = nullptr;
+
 ImU32 Faded(ImVec4 c, float alpha) { return ImGui::GetColorU32(ImVec4(c.x, c.y, c.z, c.w * alpha)); }
 
 }  // namespace
@@ -46,13 +50,22 @@ GameToastDialog::GameToastDialog(rex::ui::ImGuiDrawer* drawer,
   // The base constructor attached the dialog (created in the UI thread);
   // stay detached until there is something to show.
   imgui_drawer()->RemoveDialog(this);
+  std::lock_guard lock(g_preview_mutex);
+  g_preview_dialog = this;
 }
 
-GameToastDialog::~GameToastDialog() { *alive_ = false; }
+GameToastDialog::~GameToastDialog() {
+  *alive_ = false;
+  std::lock_guard lock(g_preview_mutex);
+  if (g_preview_dialog == this) g_preview_dialog = nullptr;
+}
 
 GameToastDialog::Image GameToastDialog::LoadImage(const char* name) {
+  return LoadImageFile(GameUiFile(name));
+}
+
+GameToastDialog::Image GameToastDialog::LoadImageFile(const std::filesystem::path& path) {
   Image image;
-  const auto path = GameUiFile(name);
   std::ifstream file(path, std::ios::binary);
   if (!file) return image;
   const std::vector<unsigned char> bytes((std::istreambuf_iterator<char>(file)), {});
@@ -77,6 +90,13 @@ std::mutex g_options_mutex;
 ToastOptions g_options;
 }  // namespace
 
+bool PreviewToast(const rex::system::AchievementEvent& sample) {
+  std::lock_guard lock(g_preview_mutex);
+  if (!g_preview_dialog) return false;
+  g_preview_dialog->PushPreview(sample);
+  return true;
+}
+
 void SetToastOptions(const ToastOptions& options) {
   std::lock_guard lock(g_options_mutex);
   g_options = options;
@@ -90,9 +110,19 @@ ToastOptions GetToastOptions() {
 void GameToastDialog::Push(const rex::system::AchievementEvent& event) {
   // The unlock itself is recorded by the runtime; only the pop-up is skipped.
   if (!GetToastOptions().enabled) return;
+  Queue(event, false);
+}
+
+void GameToastDialog::PushPreview(const rex::system::AchievementEvent& event) {
+  Queue(event, true);
+}
+
+void GameToastDialog::Queue(const rex::system::AchievementEvent& event, bool preview) {
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    queue_.push_back({event, std::nullopt});
+    // A new preview replaces one still showing (settings change between clicks).
+    if (preview && !queue_.empty() && queue_.back().preview) queue_.pop_back();
+    queue_.push_back({event, std::nullopt, preview});
     if (attached_ || attach_pending_ || !call_in_ui_thread_) return;
     attach_pending_ = true;
   }
@@ -140,13 +170,23 @@ void GameToastDialog::OnDraw(ImGuiIO& io) {
 
   // A fixed 300x70 toast at 720p, scaled with the window height; the
   // background art is stretched to fit it.
-  const float scale = std::max(io.DisplaySize.y / 720.0f, 0.5f);
-  const float margin = 16.0f * scale, pad = 8.0f * scale;
+  const float margin = 16.0f * std::max(io.DisplaySize.y / 720.0f, 0.5f);
+  float scale = std::max(io.DisplaySize.y / 720.0f, 0.5f) * std::clamp(options.size, 0.5f, 2.5f);
+  // Never wider than the screen (large sizes on narrow windows).
+  if (kToastWidth * scale > io.DisplaySize.x - 2 * margin) {
+    scale = std::max(io.DisplaySize.x - 2 * margin, 1.0f) / kToastWidth;
+  }
+  const float pad = 8.0f * scale;
   const ImVec2 size(kToastWidth * scale, kToastHeight * scale);
-  const bool right = options.corner == 1 || options.corner == 3;
-  const bool bottom = options.corner >= 2;
-  const ImVec2 pos(right ? io.DisplaySize.x - size.x - margin : margin,
-                   bottom ? io.DisplaySize.y - size.y - margin : margin);
+  // Column: 0 left, 1 centre, 2 right; row: 0 top, 1 middle, 2 bottom.
+  static constexpr int kColumn[] = {0, 1, 2, 0, 2, 0, 1, 2};
+  static constexpr int kRow[] = {0, 0, 0, 1, 1, 2, 2, 2};
+  const int position = std::clamp(options.position, 0, 7);
+  auto place = [&](int slot, float extent, float avail) {
+    return slot == 0 ? margin : slot == 1 ? (avail - extent) * 0.5f : avail - extent - margin;
+  };
+  const ImVec2 pos(place(kColumn[position], size.x, io.DisplaySize.x),
+                   place(kRow[position], size.y, io.DisplaySize.y));
 
   ImGui::SetNextWindowPos(pos, ImGuiCond_Always);
   ImGui::SetNextWindowSize(size, ImGuiCond_Always);
@@ -176,7 +216,17 @@ void GameToastDialog::OnDraw(ImGuiIO& io) {
                      ImVec2(1, 1), tint);
       x += w + pad;
     }
-    if (rex::ui::ImmediateTexture* icon = icon_cache_.GetIcon(event.achievement)) {
+    rex::ui::ImmediateTexture* icon = icon_cache_.GetIcon(event.achievement);
+    if (!icon && !event.achievement.icon_path.empty() &&
+        std::filesystem::path(event.achievement.icon_path).is_absolute()) {
+      auto it = file_icons_.find(event.achievement.icon_path);
+      if (it == file_icons_.end()) {
+        it = file_icons_.emplace(event.achievement.icon_path,
+                                 LoadImageFile(event.achievement.icon_path)).first;
+      }
+      icon = it->second.texture.get();
+    }
+    if (icon) {
       const float s = inner_h;
       const float y = pos.y + (size.y - s) * 0.5f;
       draw->AddImage(reinterpret_cast<ImTextureID>(icon), ImVec2(x, y), ImVec2(x + s, y + s),
@@ -200,9 +250,9 @@ void GameToastDialog::OnDraw(ImGuiIO& io) {
       }
     }
     const float line = ImGui::GetTextLineHeight();
-    float y = pos.y + (size.y - 2 * line - 4.0f) * 0.5f;
+    float y = pos.y + (size.y - 2 * line - 4.0f * scale) * 0.5f;
     draw->AddText(ImVec2(x, y), Faded(kTitle, alpha), "Achievement Unlocked");
-    y += line + 4.0f;
+    y += line + 4.0f * scale;
     draw->AddText(ImVec2(x, y), Faded(kText, alpha), name.c_str());
     draw->AddText(ImVec2(x + ImGui::CalcTextSize(name.c_str()).x, y), Faded(kScore, alpha),
                   score.c_str());

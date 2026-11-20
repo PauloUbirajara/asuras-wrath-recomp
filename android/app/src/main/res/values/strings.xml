@@ -189,7 +189,7 @@
     <string name="restart">Restart</string>
     <string name="quit">Quit</string>
     <string name="later">Later</string>
-    <string name="restart_needed">V-Sync, Fill, the language and the game folder change when the game starts again: restart it now, or later.</string>
+    <string name="restart_needed">Fill, the effects, the language and the game folder change when the game starts again: restart it now, or later.</string>
     <string name="game_menu">Game menu</string>
     <string name="game_menu_summary">The button remap, keyboard, achievements and the other settings</string>
     <string name="shaders_in_game">Not while the game runs: quit it first.</string>
@@ -199,4 +199,91 @@
     <string name="access_text">The game reads its files straight from the folder you pick. Android asks you to allow \"All files access\" for that.</string>
     <string name="folder_unsupported">This location can\'t be used. Choose a folder on the internal storage or an SD card.</string>
     <string name="files_not_writable">The game can\'t write to this folder.</string>
+
+    <!-- Achievements; Game data › Info and › Progress -->
+    <string name="achievements_summary" translatable="false">%1$d / %2$d · %3$dG / %4$dG</string>
+    <string name="achievement_name" translatable="false">%1$s · %2$dG</string>
+    <string name="section_info">Info</string>
+    <string name="page_achievements">Achievements</string>
+    <string name="filter_all">All</string>
+    <string name="filter_unlocked">Unlocked</string>
+    <string name="filter_locked">Locked</string>
+    <string name="achievements_no_game">Choose the game folder (Game data › Folders) to see the achievements.</string>
+    <string name="achievements_missing">Start the game once: it reads the achievement list from the game files.</string>
+    <string name="achievements_language">In another language: the game updates the list the next time it starts.</string>
+    <string name="episodes">Episodes</string>
+    <string name="episodes_cleared">%1$d of %2$d episodes cleared</string>
+    <string name="difficulty">Difficulty</string>
+    <string name="easy">Easy</string>
+    <string name="normal">Normal</string>
+    <string name="hard">Hard</string>
+    <string name="battle_points">Battle points</string>
+    <string name="battle_points_value">%1$d battle points</string>
+    <string name="enemies_defeated">Enemies defeated</string>
+    <string name="episodes_no_game">Choose the game folder (Game data › Folders) to see the episodes.</string>
+    <string name="part">Part %1$s</string>
+    <string name="episode">Episode %1$s</string>
+    <string name="true_episode">True</string>
+    <string name="extra">Extra</string>
+    <string name="press_back_again">Press Back again to exit</string>
+
+    <!-- Game data › Traces; Logs' and Traces' folder buttons -->
+    <string name="open_folder">Open the folder</string>
+    <string name="delete_all">Delete all</string>
+    <string name="traces_hint">A trace writes what the renderer does during one frame into a file of its own, for bug reports about the picture. Go to the moment that looks wrong, then trace it. The newest 30 are kept.</string>
+    <string name="trace_now">Trace the next frame</string>
+    <string name="trace">Trace</string>
+    <string name="trace_on_resume">The game traces it once you resume.</string>
+    <string name="trace_in_game">In game: Back › Trace.</string>
+    <string name="trace_resume_hint">The frame right after you resume is traced.</string>
+    <string name="traces_none">No traces yet.</string>
+    <string name="trace_picture">Save a picture of the frame</string>
+    <string name="trace_picture_hint">The traced frame as a .png next to its trace.</string>
+    <string name="trace_frame">Frame %1$s</string>
+    <string name="picture">Picture</string>
+    <string name="trace_read">Read the trace</string>
+    <string name="delete_logs_title">Delete the logs?</string>
+    <string name="delete_traces_title">Delete the traces?</string>
+    <string name="delete_trace_title">Delete this trace?</string>
+    <string name="nothing_to_delete">Nothing to delete.</string>
+    <string name="delete_failed">%1$d files could not be deleted.</string>
+    <string name="folder_path_copied">Android doesn\'t let file managers open this folder; its path is copied: %1$s</string>
+    <plurals name="summary_traces">
+        <item quantity="one">%1$d trace</item>
+        <item quantity="other">%1$d traces</item>
+    </plurals>
+    <plurals name="delete_files">
+        <item quantity="one">%1$d file will be deleted. This can\'t be undone.</item>
+        <item quantity="other">%1$d files will be deleted. This can\'t be undone.</item>
+    </plurals>
+    <!-- Controls › Controller › Turbo; Settings › Display › Effects -->
+    <string name="turbo">Turbo</string>
+    <string name="turbo_hint">Hold a ticked button instead of mashing it (controller only).</string>
+    <string name="effects">Effects</string>
+    <string name="effects_hint">Turning effects off makes the game lighter for the phone, or the picture cleaner. Shadows baked into the levels stay. Applies the next time the game starts.</string>
+    <string name="fx_bloom">Bloom</string>
+    <string name="fx_depth_of_field">Depth of field (background blur)</string>
+    <string name="fx_motion_blur">Motion blur</string>
+    <string name="fx_radial_blur">Radial blur</string>
+    <string name="fx_shadows">Dynamic shadows</string>
+    <string name="fx_ambient_occlusion">Ambient occlusion</string>
+    <string name="fx_light_shafts">Light shafts</string>
+    <string name="fx_lens_flares">Lens flares</string>
+    <string name="fx_distortion">Heat haze and distortion</string>
+    <!-- Settings › System › Achievement pop-ups -->
+    <string name="toast_position">Position</string>
+    <string name="toast_size">Size</string>
+    <string name="toast_seconds">Duration</string>
+    <string name="toast_example">Show an example</string>
+    <string name="toast_example_hint">In game: shows one over the game when you resume.</string>
+    <string name="percent_value">%1$d%%</string>
+    <string name="seconds_value">%1$s s</string>
+    <string name="toast_pos_0">Top left</string>
+    <string name="toast_pos_1">Top</string>
+    <string name="toast_pos_2">Top right</string>
+    <string name="toast_pos_3">Left</string>
+    <string name="toast_pos_4">Right</string>
+    <string name="toast_pos_5">Bottom left</string>
+    <string name="toast_pos_6">Bottom</string>
+    <string name="toast_pos_7">Bottom right</string>
 </resources>

@@ -45,7 +45,11 @@ class GameActivity : SDLActivity() {
     /** Back in game (asura_wrath_app.h OpenAndroidMenu, on SDL's thread): the menu over the game, which pauses. */
     @Suppress("unused")
     fun openMenu() {
-        runOnUiThread { startActivity(Intent(this, InGameMenuActivity::class.java)) }
+        runOnUiThread {
+            startActivity(Intent(this, InGameMenuActivity::class.java))
+            // Over the game at once, no slide-in (the theme has no window animation either).
+            @Suppress("DEPRECATION") overridePendingTransition(0, 0)
+        }
     }
 
     // SDL is linked into librexruntime.so (its JNI_OnLoad registers SDL's
@@ -70,6 +74,9 @@ class GameActivity : SDLActivity() {
             private set
         var startConfig: LauncherConfig? = null
             private set
+
+        /** asura_wrath_app.h: the menu closed (reload launcher.cfg, maybe open the game menu). */
+        @JvmStatic external fun nativeMenuClosed()
     }
 }
 
@@ -81,4 +88,17 @@ class GameActivity : SDLActivity() {
  */
 class InGameMenuActivity : LauncherActivity() {
     override val inGame = true
+
+    override fun finish() {
+        super.finish()
+        @Suppress("DEPRECATION") overridePendingTransition(0, 0)
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // Not when the game ends (Quit, Restart): only when it carries on.
+        if (GameActivity.current?.isFinishing == false) {
+            try { GameActivity.nativeMenuClosed() } catch (e: UnsatisfiedLinkError) { }
+        }
+    }
 }

@@ -18,4 +18,5 @@
     <!-- In game: the paused game behind the menu, dimmed; the sidebar over it. -->
     <color name="in_game_dim">#B3000000</color>
     <color name="in_game_sidebar">#E619191B</color>
+    <color name="in_game_panel">#EB998F80</color>
 </resources>

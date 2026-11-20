@@ -46,6 +46,7 @@
 #include "fps_counter.h"
 #include "../input/pad_remap.h"
 #include "../mantra_renderer/render_scale.h"
+#include "../game/graphics_effects.h"
 #include "../mantra_renderer/shader_cache_format.h"
 #include "../platform/platform.h"
 #include "about_info.h"
@@ -326,7 +327,7 @@ bool LauncherSettings::Load(const std::filesystem::path& path) {
   if (!in) return false;
   std::string line;
   // Before render_scale: "Higher resolution" + a render height.
-  bool native_render = false, have_scale = false;
+  bool native_render = false, have_scale = false, have_toast_position = false;
   int render_height = 720;
   while (std::getline(in, line)) {
     const size_t eq = line.find('=');
@@ -357,6 +358,12 @@ bool LauncherSettings::Load(const std::filesystem::path& path) {
     else if (key == "hide_cursor") hide_cursor = on;
     else if (key == "mute_background") mute_background = on;
     else if (key == "skip_intro") skip_intro = on;
+    else if (key.rfind("fx_", 0) == 0) {
+      for (size_t e = 0; e < game::kGraphicsEffectCount; ++e) {
+        if (key.compare(3, std::string::npos, game::kGraphicsEffects[e].key) != 0) continue;
+        effects_off = on ? effects_off & ~(1u << e) : effects_off | (1u << e);
+      }
+    }
     else if (key == "detailed_logs") detailed_logs = on;
     else if (key == "turbo") {
       turbo = 0;
@@ -374,7 +381,16 @@ bool LauncherSettings::Load(const std::filesystem::path& path) {
       have_scale = true;
     }
     else if (key == "toasts") toasts = on;
-    else if (key == "toast_corner") toast_corner = std::clamp(std::atoi(value.c_str()), 0, 3);
+    else if (key == "toast_position") {
+      toast_position = std::clamp(std::atoi(value.c_str()), 0, 7);
+      have_toast_position = true;
+    } else if (key == "toast_corner" && !have_toast_position) {
+      // Before the 8 positions: top left, top right, bottom left, bottom right.
+      static constexpr int kCorner[] = {0, 2, 5, 7};
+      toast_position = kCorner[std::clamp(std::atoi(value.c_str()), 0, 3)];
+    } else if (key == "toast_size") {
+      toast_size = std::clamp((std::atoi(value.c_str()) + 5) / 10 * 10, 50, 250);
+    }
     else if (key == "toast_seconds")
       toast_seconds = std::clamp(std::strtod(value.c_str(), nullptr), 1.0, 15.0);
     else if (key == "trace_picture") trace_picture = on;
@@ -408,12 +424,16 @@ std::string LauncherSettings::Serialize() const {
       << window_width << "x" << window_height << "\nlanguage=" << language
       << "\ngame_data=" << game_data << "\ndata_folder=" << data_folder << "\ndeadzone_left=" << deadzone_left
       << "\ndeadzone_right=" << deadzone_right << "\nvibration=" << vibration
-      << "\nshow_fps=" << show_fps << "\nfps_corner=" << fps_corner << "\nfps_cap=" << fps_cap << "\nrender_scale=" << render_scale << "\ntoasts=" << toasts << "\ntoast_corner=" << toast_corner
+      << "\nshow_fps=" << show_fps << "\nfps_corner=" << fps_corner << "\nfps_cap=" << fps_cap << "\nrender_scale=" << render_scale << "\ntoasts=" << toasts << "\ntoast_position=" << toast_position << "\ntoast_size=" << toast_size
       << "\ntoast_seconds=" << toast_seconds << "\ntrace_picture=" << trace_picture
       << "\ntrace_notice=" << trace_notice << "\ntrace_notice_position=" << trace_notice_position
       << "\nhide_cursor=" << hide_cursor
       << "\nmute_background=" << mute_background << "\nskip_intro=" << skip_intro
-      << "\ndetailed_logs=" << detailed_logs << "\nturbo=";
+      << "\ndetailed_logs=" << detailed_logs;
+  for (size_t e = 0; e < game::kGraphicsEffectCount; ++e) {
+    out << "\nfx_" << game::kGraphicsEffects[e].key << "=" << !(effects_off & (1u << e));
+  }
+  out << "\nturbo=";
   for (int c = 0, n = 0; c < input::kPadControlCount; ++c) {
     if (turbo & (1u << c)) out << (n++ ? "," : "") << input::PadControlName(c);
   }
@@ -453,10 +473,28 @@ bool RenderScaleFromEnvironment() {
 }
 
 
+ToastOptions ToastOptionsFrom(const LauncherSettings& s) {
+  ToastOptions o;
+  o.enabled = s.toasts;
+  o.position = s.toast_position;
+  o.size = s.toast_size / 100.0f;
+  o.seconds = float(s.toast_seconds);
+  return o;
+}
+
 void ApplyLauncherDefaults(const LauncherSettings& s) {
   SetIfUnset("vulkan_device", std::to_string(s.gpu));
-  SetIfUnset("vulkan_allow_present_mode_immediate", s.vsync ? "false" : "true");
-  SetIfUnset("vulkan_allow_present_mode_mailbox", s.vsync ? "false" : "true");
+  // Android always presents in step with the screen (FIFO): without it
+  // (mailbox) the phone's driver queued frames up, and the picture fell
+  // further and further behind, down to 1 fps on screen while the game ran
+  // at 30. Android composes in step with the display anyway.
+#ifdef __ANDROID__
+  const bool vsync = true;
+#else
+  const bool vsync = s.vsync;
+#endif
+  SetIfUnset("vulkan_allow_present_mode_immediate", vsync ? "false" : "true");
+  SetIfUnset("vulkan_allow_present_mode_mailbox", vsync ? "false" : "true");
   SetIfUnset("fullscreen", s.fullscreen ? "true" : "false");
   SetIfUnset("fullscreen_exclusive", s.exclusive ? "true" : "false");
   SetIfUnset("monitor", std::to_string(s.monitor));
@@ -503,7 +541,7 @@ void ApplyLauncherDefaults(const LauncherSettings& s) {
                                                 ? std::to_string(RenderScale(s)).c_str()
                                                 : nullptr);
   }
-  SetToastOptions({s.toasts, s.toast_corner, float(s.toast_seconds)});
+  SetToastOptions(ToastOptionsFrom(s));
   SetFpsCorner(s.fps_corner);
   // The game started by Play inherits it (its own settings set it live too).
   platform::SetEnv("MANTRA_TRACE_CAPTURE", s.trace_picture ? "1" : "0");
@@ -541,7 +579,7 @@ void ApplyLiveSettings(const LauncherSettings& s) {
   input::SetTurboControls(s.turbo);
   game::SetFrameRateCap(s.fps_cap);
   if (!RenderScaleFromEnvironment()) RequestRenderScale(RenderScale(s));
-  SetToastOptions({s.toasts, s.toast_corner, float(s.toast_seconds)});
+  SetToastOptions(ToastOptionsFrom(s));
   SetFpsCorner(s.fps_corner);
   SetTraceOptions({s.trace_notice, s.trace_notice_position, s.trace_picture});
 }
@@ -550,7 +588,8 @@ bool NeedsRestart(const LauncherSettings& before, const LauncherSettings& after)
   return before.gpu != after.gpu || before.vsync != after.vsync ||
          before.monitor != after.monitor ||
          (before.fullscreen && before.exclusive) != (after.fullscreen && after.exclusive) ||
-         (before.aspect == AspectMode::kFill) != (after.aspect == AspectMode::kFill);
+         (before.aspect == AspectMode::kFill) != (after.aspect == AspectMode::kFill) ||
+         before.effects_off != after.effects_off;
 }
 
 void ApplyOrangeAccent(ImGuiStyle& imgui_style, rex::ui::Style& ui_style) {
@@ -1168,6 +1207,22 @@ LauncherDialog::Image LauncherDialog::LoadImage(const std::filesystem::path& pat
 
 // The list read from default.xex (game_assets.h), with the unlocks the SDK
 // saves in <user data>/achievements/<title id>.toml.
+rex::system::AchievementEvent LauncherDialog::ToastSample() {
+  if (!achievements_loaded_) LoadAchievements();
+  rex::system::AchievementEvent event;
+  if (!achievements_.empty()) {
+    const Achievement& a = achievements_.front();
+    event.achievement.id = a.id;
+    event.achievement.label = a.name;
+    event.achievement.gamerscore = a.gamerscore;
+    event.achievement.icon_path = (AchievementCacheDir() / (std::to_string(a.id) + ".png")).string();
+  } else {
+    event.achievement.label = T("Achievement name");
+    event.achievement.gamerscore = 20;
+  }
+  return event;
+}
+
 void LauncherDialog::LoadAchievements() {
   achievements_loaded_ = true;
   achievements_.clear();
@@ -2478,6 +2533,35 @@ void LauncherDialog::DrawController(float scale, bool test) {
     ImGui::SetTooltip("%s", T("Vibrates the controller at this strength."));
   }
 
+  // Held buttons repeat (controller, after the remap).
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted(T("Turbo"));
+  ImGui::SameLine(label_w);
+  {
+    struct TurboButton {
+      const char* name;
+      input::PadControl control;
+    };
+    static const TurboButton kTurbo[] = {{"A", input::kPadA},   {"B", input::kPadB},
+                                         {"X", input::kPadX},   {"Y", input::kPadY},
+                                         {"LB", input::kPadLB}, {"RB", input::kPadRB}};
+    bool first = true;
+    for (const auto& b : kTurbo) {
+      if (!first) ImGui::SameLine(0, 18 * scale);
+      first = false;
+      bool on = settings_.turbo & (1u << b.control);
+      if (ImGui::Checkbox(b.name, &on)) {
+        settings_.turbo = on ? settings_.turbo | (1u << b.control) : settings_.turbo & ~(1u << b.control);
+        input::SetTurboControls(settings_.turbo);
+        SaveSettings();
+      }
+    }
+  }
+  ImGui::SetCursorPosX(label_w);
+  ImGui::PushTextWrapPos(0);
+  ImGui::TextDisabled("%s", T("Hold a ticked button instead of mashing it (controller only)."));
+  ImGui::PopTextWrapPos();
+
   ImGui::Spacing();
   ImGui::TextDisabled("%s", pad_capture_ >= 0
                                 ? T("Press the controller button to use, Esc to cancel.")
@@ -2533,6 +2617,8 @@ void LauncherDialog::DrawController(float scale, bool test) {
     settings_.deadzone_left = settings_.deadzone_right = 0;
     settings_.vibration = 100;
     input::SetVibrationStrength(100);
+    settings_.turbo = 0;
+    input::SetTurboControls(0);
     SetIfUnset("left_stick_deadzone_percentage", "0");
     SetIfUnset("right_stick_deadzone_percentage", "0");
     SaveSettings();
@@ -3161,11 +3247,22 @@ void LauncherDialog::DrawSystem(float scale) {
   label(T("Show achievements"));
   changed |= ImGui::Checkbox("##toasts", &settings_.toasts);
   ImGui::BeginDisabled(!settings_.toasts);
-  label(T("Corner"));
+  label(T("Position"));
   {
-    const char* corners[] = {T("Top left"), T("Top right"), T("Bottom left"), T("Bottom right")};
+    const char* positions[] = {T("Top left"), T("Top"),         T("Top right"),
+                               T("Left"),     T("Right"),       T("Bottom left"),
+                               T("Bottom"),   T("Bottom right")};
     ImGui::SetNextItemWidth(260 * scale);
-    changed |= ImGui::Combo("##corner", &settings_.toast_corner, corners, 4);
+    changed |= ImGui::Combo("##toast_position", &settings_.toast_position, positions, 8);
+  }
+  label(T("Size"));
+  {
+    int size = settings_.toast_size;
+    ImGui::SetNextItemWidth(260 * scale);
+    if (ImGui::SliderInt("##toast_size", &size, 50, 250, "%d%%", ImGuiSliderFlags_AlwaysClamp)) {
+      settings_.toast_size = (size + 5) / 10 * 10;
+      changed = true;
+    }
   }
   label(T("Duration"));
   {
@@ -3177,6 +3274,11 @@ void LauncherDialog::DrawSystem(float scale) {
     }
   }
   ImGui::EndDisabled();
+  ImGui::SetCursorPosX(label_w);
+  if (ImGui::Button(T("Show an example"))) {
+    SetToastOptions(ToastOptionsFrom(settings_));
+    PreviewToast(ToastSample());
+  }
 
   SubHeading(HeadingFont(), T("Frame traces"), scale);
   label(T("Save the picture"));
@@ -3221,7 +3323,8 @@ void LauncherDialog::DrawSystem(float scale) {
   if (ResetButton("settings")) {
     const LauncherSettings defaults;
     settings_.toasts = defaults.toasts;
-    settings_.toast_corner = defaults.toast_corner;
+    settings_.toast_position = defaults.toast_position;
+    settings_.toast_size = defaults.toast_size;
     settings_.toast_seconds = defaults.toast_seconds;
     settings_.trace_picture = defaults.trace_picture;
     settings_.trace_notice = defaults.trace_notice;
@@ -3231,7 +3334,7 @@ void LauncherDialog::DrawSystem(float scale) {
   }
 
   if (changed) {
-    SetToastOptions({settings_.toasts, settings_.toast_corner, float(settings_.toast_seconds)});
+    SetToastOptions(ToastOptionsFrom(settings_));
     SetTraceOptions(
         {settings_.trace_notice, settings_.trace_notice_position, settings_.trace_picture});
     SaveSettings();
@@ -3535,6 +3638,24 @@ void LauncherDialog::DrawSettings(float scale) {
   LockedNote("present_letterbox");
   hint(T("On screens that aren't 16:9 (ultrawide, 16:10, 4:3), how the game's 16:9 picture "
          "fills the rest."));
+
+  // The game's own switches (game/graphics_effects.h), read at start.
+  restart_label(T("Effects"));
+  {
+    bool first = true;
+    for (size_t e = 0; e < game::kGraphicsEffectCount; ++e) {
+      if (!first) ImGui::SetCursorPosX(label_w);
+      first = false;
+      bool on = !(settings_.effects_off & (1u << e));
+      if (ImGui::Checkbox(T(game::kGraphicsEffects[e].label), &on)) {
+        settings_.effects_off =
+            on ? settings_.effects_off & ~(1u << e) : settings_.effects_off | (1u << e);
+        changed = true;
+      }
+    }
+  }
+  hint(T("Turning effects off makes the game lighter for weak graphics cards and phones, or "
+         "the picture cleaner. Shadows baked into the levels stay."));
   restart_legend();
   if (ResetButton("display")) {
     const LauncherSettings defaults;
@@ -3547,6 +3668,7 @@ void LauncherDialog::DrawSettings(float scale) {
     settings_.window_height = defaults.window_height;
     settings_.aspect = defaults.aspect;
     settings_.render_scale = defaults.render_scale;
+    settings_.effects_off = defaults.effects_off;
     changed = true;
   }
   ImGui::EndChild();  // ##tab_body
@@ -3604,29 +3726,6 @@ void LauncherDialog::DrawSettings(float scale) {
     hint(T("Above 30 is experimental: parts of the game may run too fast or behave oddly."));
   }
 
-  // Held buttons repeat (controller, after the remap).
-  label(T("Turbo"));
-  {
-    struct TurboButton {
-      const char* name;
-      input::PadControl control;
-    };
-    static const TurboButton kTurbo[] = {{"A", input::kPadA},   {"B", input::kPadB},
-                                         {"X", input::kPadX},   {"Y", input::kPadY},
-                                         {"LB", input::kPadLB}, {"RB", input::kPadRB}};
-    bool first = true;
-    for (const auto& b : kTurbo) {
-      if (!first) ImGui::SameLine(0, 18 * scale);
-      first = false;
-      bool on = settings_.turbo & (1u << b.control);
-      if (ImGui::Checkbox(b.name, &on)) {
-        settings_.turbo = on ? settings_.turbo | (1u << b.control) : settings_.turbo & ~(1u << b.control);
-        input::SetTurboControls(settings_.turbo);
-        changed = true;
-      }
-    }
-  }
-  hint(T("Hold a ticked button instead of mashing it (controller only)."));
 
   restart_label(T("Intro"));
   changed |= ImGui::Checkbox(T("Skip the logos at start"), &settings_.skip_intro);
@@ -3647,11 +3746,9 @@ void LauncherDialog::DrawSettings(float scale) {
     settings_.show_fps = defaults.show_fps;
     settings_.fps_corner = defaults.fps_corner;
     settings_.fps_cap = defaults.fps_cap;
-    settings_.turbo = defaults.turbo;
     settings_.skip_intro = defaults.skip_intro;
     settings_.hide_cursor = defaults.hide_cursor;
     settings_.mute_background = defaults.mute_background;
-    input::SetTurboControls(settings_.turbo);
     changed = true;
   }
   ImGui::EndChild();  // ##tab_body
@@ -3721,7 +3818,12 @@ uint64_t FolderBytes(const std::filesystem::path& dir, std::filesystem::file_tim
 
 std::string FormatTime(std::filesystem::file_time_type t) {
   if (t == std::filesystem::file_time_type::min()) return "-";
+#ifdef _WIN32
+  // MSVC's file_clock has no to_sys (clock_cast covers it).
+  const auto sys = std::chrono::clock_cast<std::chrono::system_clock>(t);
+#else
   const auto sys = std::chrono::file_clock::to_sys(t);
+#endif
   const std::time_t tt = std::chrono::system_clock::to_time_t(
       std::chrono::time_point_cast<std::chrono::system_clock::duration>(sys));
   const std::tm tm = platform::LocalTime(tt);

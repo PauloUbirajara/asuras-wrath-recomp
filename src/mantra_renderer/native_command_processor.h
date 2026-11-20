@@ -289,6 +289,12 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
   // CPU-decoded vertex inputs are built here (cached memory), then copied
   // into upload memory at once.
   std::vector<float> expanded_scratch_;
+  // Whether the GPU reads `format` from vertex buffers (asked once per
+  // format). The scaled formats are optional in Vulkan and missing on many
+  // Android GPUs (Adreno 6xx): those inputs are decoded on the CPU instead.
+  // MANTRA_FORCE_VERTEX_DECODE=1 treats every scaled format as missing.
+  bool VertexFormatSupported(VkFormat format);
+  int8_t vertex_format_support_[256] = {};  // 0 unknown, 1 yes, -1 no
 
   // --- Guest shader constants -------------------------------------------------
   // Uploads this draw's VS/PS float constants and shared constants into the

@@ -31,6 +31,7 @@
 #include <vector>
 
 #include <imgui.h>
+#include <rex/system/achievement_manager.h>
 #include <rex/ui/imgui_dialog.h>
 #include <rex/ui/style.h>
 #include <rex/ui/window_listener.h>
@@ -77,6 +78,7 @@ struct LauncherSettings {
   int fps_corner = 0;                        // 0 top left, 1 top right, 2 bottom left, 3 bottom right
   int fps_cap = 30;                          // frame rate limit, 30 = the game's, 0 = unlimited
   bool skip_intro = false;                   // skip the logos and the autosave notice at start
+  uint32_t effects_off = 0;                  // bit n = game/graphics_effects.h kGraphicsEffects[n] off (fx_<key>=0)
   bool detailed_logs = false;                // Game data > Logs: log_level debug, for bug reports
   uint32_t turbo = 0;                        // Turbo: held controls repeat (bit = PadControl)
   bool hide_cursor = true;                   // mouse cursor hides while it isn't moving, in game
@@ -84,7 +86,14 @@ struct LauncherSettings {
   // Internal resolution, % of the game's 1280x720 (5..400, steps of 5).
   int render_scale = 100;
   bool toasts = true;                        // achievement pop-ups
-  int toast_corner = 3;                      // 0 top left, 1 top right, 2 bottom left, 3 bottom right
+  // 0 top left, 1 top, 2 top right, 3 left, 4 right, 5 bottom left, 6 bottom,
+  // 7 bottom right (toast_position; the older toast_corner is read too).
+  int toast_position = 7;
+#ifdef __ANDROID__
+  int toast_size = 140;                      // percent; larger on phones' small screens
+#else
+  int toast_size = 100;                      // percent of the 300x70 (at 720p) toast
+#endif
   double toast_seconds = 4.5;                // how long each pop-up stays
   // Settings > Frame traces.
   bool trace_picture = true;                 // save the traced frame as <trace>.png
@@ -312,6 +321,8 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   void DrawStory(const SaveSummary& progress, float label_w, float scale);
   void DrawSettings(float scale);
   void LoadAchievements();
+  // Settings' "Show an example": the first achievement (its cached icon), or a placeholder.
+  rex::system::AchievementEvent ToastSample();
   void UseDroppedPath(const std::filesystem::path& path);
   // In game: Quit the game (top right) and its confirmation.
   void DrawQuit(float scale);

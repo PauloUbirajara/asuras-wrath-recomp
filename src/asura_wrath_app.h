@@ -43,6 +43,7 @@
 #include "debug/script_input.h"
 #include "game/frame_rate.h"
 #include "game/skip_intro.h"
+#include "game/graphics_effects.h"
 #include "input/pad_remap.h"
 #include "ui/game_assets.h"
 #include "ui/game_font.h"
@@ -58,7 +59,22 @@ REXCVAR_DECLARE(bool, launcher);
 class AsuraWrathApp : public rex::ReXApp {
  public:
   using rex::ReXApp::ReXApp;
-  ~AsuraWrathApp() override { SDL_RemoveEventWatch(&AsuraWrathApp::BackWatch, this); }
+  ~AsuraWrathApp() override {
+    SDL_RemoveEventWatch(&AsuraWrathApp::BackWatch, this);
+#ifdef __ANDROID__
+    if (android_app_ == this) android_app_ = nullptr;
+#endif
+  }
+
+#ifdef __ANDROID__
+  // InGameMenuActivity closed (GameActivity.nativeMenuClosed, any thread):
+  // the game may not get a foreground event under a translucent activity.
+  static void NotifyMenuClosed() {
+    if (AsuraWrathApp* app = android_app_) {
+      app->app_context().CallInUIThreadDeferred([app] { app->OnMenuClosed(); });
+    }
+  }
+#endif
 
   static std::unique_ptr<rex::ui::WindowedApp> Create(
       rex::ui::WindowedAppContext& ctx) {
@@ -162,6 +178,23 @@ class AsuraWrathApp : public rex::ReXApp {
         }
       }
     }
+    // The achievement list (names, icons) for the launcher's Achievements
+    // page, in the game's language: on Android the launcher can't read
+    // default.xex itself, so the game writes it (in the background).
+    if (asura::ui::CachedAchievementLanguage() != launcher_settings_.language &&
+        launcher_settings_.language != 0) {
+      std::error_code ec;
+      const std::filesystem::path game = launcher_settings_.game_data;
+      if (!game.empty() && std::filesystem::is_regular_file(game / "default.xex", ec)) {
+        std::thread([game, language = launcher_settings_.language] {
+          std::string error;
+          if (!asura::ui::ExtractAchievementList(game, asura::ui::AchievementCacheDir(), language,
+                                                 &error)) {
+            REXLOG_WARN("Achievement list: {}", error);
+          }
+        }).detach();
+      }
+    }
     toast_font_ = asura::ui::AddGameFontFamily(atlas, "MediumFont");
     title_font_ = asura::ui::AddGameFontFamily(atlas, "TitleFont");
     // Until the game's fonts are extracted: the bundled Noto Serif (with the
@@ -188,12 +221,17 @@ class AsuraWrathApp : public rex::ReXApp {
     toast_ = toast.get();
     return toast;
   }
+  // Game files swapped for copies (skip the logos, graphics effects): before
+  // the game thread starts, which reads its config first thing.
+  void OnPreLaunchModule() override {
+    if (launcher_settings_.skip_intro) asura::game::SkipIntroMovies(runtime());
+    asura::game::ApplyGraphicsEffects(runtime(), launcher_settings_.effects_off);
+  }
   // Debug: ASURA_TEST_TOAST=N shows the game's first N achievements as toasts
   // (4.5 s each) once the title is running.
   void OnPostLaunchModule(rex::system::XThread* thread) override {
     (void)thread;
     asura::game::StartFrameRateHook(runtime());
-    if (launcher_settings_.skip_intro) asura::game::SkipIntroMovies(runtime());
     DumpAchievementIcons();
     StartTraceWatcher();
     const char* env = std::getenv("ASURA_TEST_TOAST");
@@ -297,6 +335,9 @@ class AsuraWrathApp : public rex::ReXApp {
     // rebindable key. SDL calls the watch on the thread that queues the event
     // (Android's UI thread), so the work goes to this app's UI thread.
     SDL_AddEventWatch(&AsuraWrathApp::BackWatch, this);
+#ifdef __ANDROID__
+    android_app_ = this;
+#endif
     // F3 in game: trace the next frame (Game data > Traces). The SDK's
     // performance overlay, F3 by default, gets no key (ApplyLauncherDefaults).
     rex::ui::RegisterBind("bind_trace", "F3", "Trace the next frame (in game)", [this] {
@@ -322,6 +363,15 @@ class AsuraWrathApp : public rex::ReXApp {
           context->CallInUIThreadDeferred(std::move(f));
         },
         [] { Restart(/*show_launcher=*/true); });
+    // Settings' "Show an example" before the game runs (the SDK makes the
+    // game's toast dialog once it starts).
+    if (!toast_) {
+      launcher_toast_ = std::make_unique<asura::ui::GameToastDialog>(
+          imgui_drawer(), immediate_drawer(), nullptr, toast_font_,
+          [context = &app_context()](std::function<void()> f) {
+            context->CallInUIThreadDeferred(std::move(f));
+          });
+    }
     if (!asura::platform::CanStartSelf()) {
       // Android: Play starts the game here, as the SDK would have without
       // the launcher (the paths with the game folder chosen in it).
@@ -398,12 +448,6 @@ class AsuraWrathApp : public rex::ReXApp {
     if (launcher_) {
       launcher_->Back();
     } else {
-#ifdef __ANDROID__
-      if (game_running_) {
-        if (OpenAndroidMenu()) return;
-        REXLOG_WARN("Back: GameActivity.openMenu failed; opening the game menu instead");
-      }
-#endif
       ToggleLauncherInGame();
     }
   }
@@ -443,13 +487,30 @@ class AsuraWrathApp : public rex::ReXApp {
     }
     std::error_code ec;
     const auto note = launcher_settings_path_.parent_path() / ".open_game_menu";
-    if (std::filesystem::remove(note, ec)) ToggleLauncherInGame();
+    if (std::filesystem::remove(note, ec)) {
+      REXLOG_INFO("Android menu closed: opening the game menu");
+      ToggleLauncherInGame(/*game_menu=*/true);
+    }
+    // Settings' "Show an example": the first achievement, as a toast.
+    if (std::filesystem::remove(launcher_settings_path_.parent_path() / ".toast_example", ec)) {
+      rex::system::AchievementEvent sample;
+      const auto list = achievements().ListAchievements();
+      if (!list.empty()) {
+        sample.achievement = list.front();
+      } else {
+        sample.achievement.label = "Achievement";
+        sample.achievement.gamerscore = 20;
+      }
+      asura::ui::PreviewToast(sample);
+    }
   }
 #endif
 
   // bind_launcher (Esc): opens the launcher over the game, or resumes from it.
   // The game keeps running underneath.
-  void ToggleLauncherInGame() {
+  // On Android every way in (Back, Esc, a pad's bind) opens the app's own
+  // menu; only its "Game menu" row (game_menu) opens this one.
+  void ToggleLauncherInGame(bool game_menu = false) {
     if (!game_running_ || !imgui_drawer()) return;
     // Esc also closes the SDK's console and settings overlays.
     if (ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput) return;
@@ -457,6 +518,12 @@ class AsuraWrathApp : public rex::ReXApp {
       launcher_->Back();
       return;
     }
+#ifdef __ANDROID__
+    if (!game_menu) {
+      if (OpenAndroidMenu()) return;
+      REXLOG_WARN("GameActivity.openMenu failed; opening the game menu instead");
+    }
+#endif
     if (window()) window()->SetCursorVisibility(rex::ui::Window::CursorVisibility::kVisible);
     launcher_ = std::make_unique<asura::ui::LauncherDialog>(
         imgui_drawer(), immediate_drawer(), window(), toast_font_, title_font_, launcher_settings_,
@@ -582,6 +649,7 @@ class AsuraWrathApp : public rex::ReXApp {
   ImFont* toast_font_ = nullptr;  // MediumFont, also the launcher's text
   ImFont* title_font_ = nullptr;  // TitleFont, the launcher's titles
   asura::ui::GameToastDialog* toast_ = nullptr;  // owned by the SDK
+  std::unique_ptr<asura::ui::GameToastDialog> launcher_toast_;  // examples before the game runs
 
   // "Frame N traced" at the top of the screen when mantra finishes a trace
   // (F3 or Game data > Traces): <trigger>.done is rewritten with its number.
@@ -659,4 +727,14 @@ class AsuraWrathApp : public rex::ReXApp {
   std::string log_name_prefix_;
   std::unique_ptr<asura::ui::LauncherDialog> launcher_;
   std::unique_ptr<asura::ui::FpsCounterDialog> fps_counter_;
+#ifdef __ANDROID__
+  static inline AsuraWrathApp* android_app_ = nullptr;
+#endif
 };
+
+#ifdef __ANDROID__
+extern "C" JNIEXPORT void JNICALL
+Java_org_asurawrath_recompiled_GameActivity_nativeMenuClosed(JNIEnv*, jclass) {
+  AsuraWrathApp::NotifyMenuClosed();
+}
+#endif

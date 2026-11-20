@@ -889,6 +889,34 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::UploadIndices(
   return DrawResult::kDrawn;
 }
 
+bool NativeCommandProcessor::VertexFormatSupported(VkFormat format) {
+  if (uint32_t(format) >= std::size(vertex_format_support_)) return true;
+  int8_t& known = vertex_format_support_[format];
+  if (!known) {
+    static const bool force = [] {
+      const char* env = std::getenv("MANTRA_FORCE_VERTEX_DECODE");
+      return env && *env && std::strcmp(env, "0") != 0;
+    }();
+    const bool scaled =
+        format == VK_FORMAT_R8G8B8A8_SSCALED || format == VK_FORMAT_R8G8B8A8_USCALED ||
+        format == VK_FORMAT_A2B10G10R10_SSCALED_PACK32 ||
+        format == VK_FORMAT_A2B10G10R10_USCALED_PACK32 || format == VK_FORMAT_R16G16_SSCALED ||
+        format == VK_FORMAT_R16G16_USCALED || format == VK_FORMAT_R16G16B16A16_SSCALED ||
+        format == VK_FORMAT_R16G16B16A16_USCALED;
+    VkFormatProperties props = {};
+    vulkan_device_->vulkan_instance()->functions().vkGetPhysicalDeviceFormatProperties(
+        vulkan_device_->physical_device(), format, &props);
+    const bool supported = (props.bufferFeatures & VK_FORMAT_FEATURE_VERTEX_BUFFER_BIT) &&
+                           !(force && scaled);
+    known = supported ? 1 : -1;
+    if (!supported) {
+      MANTRA_INFO("vertex format {} not supported by the GPU{}: decoded on the CPU",
+                  uint32_t(format), force && scaled ? " (MANTRA_FORCE_VERTEX_DECODE)" : "");
+    }
+  }
+  return known > 0;
+}
+
 bool NativeCommandProcessor::CachedVertexData(uint32_t buffer_address, uint32_t buffer_size,
                                               xenos::Endian endian, uint32_t start,
                                               uint32_t size, VkBuffer& buffer,
@@ -1018,8 +1046,13 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::UploadGeometry(
         (in.format == VF::k_8_8_8_8 || in.format == VF::k_2_10_10_10 ||
          in.format == VF::k_16_16 || in.format == VF::k_16_16_16_16 ||
          in.format == VF::k_16_16_FLOAT || in.format == VF::k_16_16_16_16_FLOAT);
+    // A float input in a format the GPU can't fetch (scaled formats on
+    // Android GPUs): decoded on the CPU.
+    const bool host_unsupported = !in.is_uint && format != VK_FORMAT_UNDEFINED &&
+                                  VertexElementWords(in.format) &&
+                                  !VertexFormatSupported(format);
     if (in.valid && fetch.type == xenos::FetchConstantType::kVertex && in.offset_words >= 0 &&
-        (vs.vertex_index_divisor > 1 ||
+        (vs.vertex_index_divisor > 1 || host_unsupported ||
          (!in.is_uint && (packed_format || (in.exp_adjust && VertexElementWords(in.format)))) ||
          uint_as_float_bits || cpu_unpack ||
          (in.is_uint && in.exp_adjust && !packed_format &&

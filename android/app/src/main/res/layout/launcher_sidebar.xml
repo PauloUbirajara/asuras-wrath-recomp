@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- The sidebar (landscape) or drawer (portrait): logo, the pages, Play. -->
+<!-- The drawer behind the menu button: the logo and the pages (scrolling
+     when the screen is short), Play at the bottom. In game, Play gives way
+     to Resume and Restart at the page's bottom right (launcher_panel.xml). -->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/sidebar"
     android:layout_width="300dp"
@@ -8,6 +10,17 @@
     android:orientation="vertical"
     android:clickable="true"
     android:focusable="false">
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true">
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingBottom="12dp"
+        android:orientation="vertical">
 
     <ImageView
         android:id="@+id/logo"
@@ -43,6 +56,9 @@
         <org.asurawrath.recompiled.MenuButton android:id="@+id/menu_controls"
             android:layout_width="match_parent" android:layout_height="48dp"
             android:text="@string/page_controls" />
+        <org.asurawrath.recompiled.MenuButton android:id="@+id/menu_achievements"
+            android:layout_width="match_parent" android:layout_height="48dp"
+            android:text="@string/page_achievements" />
         <org.asurawrath.recompiled.MenuButton android:id="@+id/menu_settings"
             android:layout_width="match_parent" android:layout_height="48dp"
             android:text="@string/page_settings" />
@@ -50,38 +66,9 @@
             android:layout_width="match_parent" android:layout_height="48dp"
             android:text="@string/page_about" />
     </LinearLayout>
-
-    <Space
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1" />
-
-    <!-- In game (InGameMenuActivity): Restart and Quit, above Resume. -->
-    <LinearLayout
-        android:id="@+id/in_game_actions"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:visibility="gone">
-        <Button
-            android:id="@+id/restart"
-            style="?android:attr/borderlessButtonStyle"
-            android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:text="@string/in_game_restart"
-            android:textAllCaps="false"
-            android:textColor="@color/sidebar_text"
-            android:textSize="18sp" />
-        <Button
-            android:id="@+id/quit"
-            style="?android:attr/borderlessButtonStyle"
-            android:layout_width="match_parent"
-            android:layout_height="52dp"
-            android:text="@string/in_game_quit"
-            android:textAllCaps="false"
-            android:textColor="@color/sidebar_text"
-            android:textSize="18sp" />
     </LinearLayout>
+    </ScrollView>
+
     <TextView
         android:id="@+id/play_notice"
         android:layout_width="match_parent"

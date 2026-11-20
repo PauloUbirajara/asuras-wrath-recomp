@@ -56,12 +56,23 @@ std::atomic<uint64_t> g_map{Pack(IdentityPadMap())};
 std::atomic<int> g_vibration{100};
 std::atomic<uint32_t> g_turbo{0};
 
-// Held turbo controls read as released every other 40 ms (the game polls
-// at 30 fps, so each phase spans at least one of its frames).
+// Held turbo controls alternate between pressed and released from one read
+// of the pad to the next (the game reads it once a frame), at most every
+// 33 ms: so each phase spans at least one frame whatever the frame rate. A
+// clock-based phase missed presses when frames were slower than the phase
+// (low frame rates read the same phase several frames in a row).
+std::atomic<int64_t> g_turbo_switched_ms{0};
+std::atomic<bool> g_turbo_released{false};
+
 void ApplyTurbo(X_INPUT_GAMEPAD& pad, uint32_t mask) {
   using namespace std::chrono;
-  const auto ms = duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
-  if ((ms / 40) % 2 == 0) return;  // the "pressed" phase
+  const int64_t ms = duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+  int64_t last = g_turbo_switched_ms.load(std::memory_order_relaxed);
+  if (ms - last >= 33 && g_turbo_switched_ms.compare_exchange_strong(last, ms)) {
+    g_turbo_released.store(!g_turbo_released.load(std::memory_order_relaxed),
+                           std::memory_order_relaxed);
+  }
+  if (!g_turbo_released.load(std::memory_order_relaxed)) return;  // the "pressed" phase
   for (int c = 0; c < kPadControlCount; ++c) {
     if (!(mask & (1u << c))) continue;
     if (c == kPadLT) {

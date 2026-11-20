@@ -1503,6 +1503,7 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
   bool uploaded = false;
   for (int attempt = 0; attempt < 2 && !uploaded; ++attempt) {
     if (!BeginCommands()) {
+      draw_fail_reason_ = "commands";
       return DrawResult::kFailed;
     }
     const uint64_t submission = submission_current_;
@@ -1524,7 +1525,8 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
     }
     shared.vertex_index_base = upload.vertex_index_base;
     PhaseNs phase{frame_timing_.phase_ns[2]};
-    if (!PrepareDrawConstants(offsets, shared)) {
+    if (!PrepareDrawConstants(vs, ps, offsets, shared)) {
+      draw_fail_reason_ = "constants";
       return DrawResult::kFailed;
     }
     if (submission_current_ != submission) {
@@ -1540,6 +1542,7 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
     uploaded = true;
   }
   if (!uploaded) {
+    draw_fail_reason_ = "upload";
     return DrawResult::kFailed;
   }
 
@@ -1602,6 +1605,7 @@ NativeCommandProcessor::DrawResult NativeCommandProcessor::DrawGuest(
   }
   if (!pipeline) {
     ++guest_draw_stats_.failed_pipeline;
+    draw_fail_reason_ = "pipeline";
     return DrawResult::kFailed;
   }
 

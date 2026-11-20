@@ -97,8 +97,17 @@ void RenderTargetPool::SetPresentation(const RtKey& key) {
   }
 }
 
+// Widest guest pitch (pixels) always rendered at native scale.
+constexpr uint32_t kNativePitchMax = 128;
+
 uint32_t RenderTargetPool::ScaleFor(const RtKey& key) const {
   const uint32_t rscale = RenderScaleUnits();
+  // Narrow targets hold data, not pictures: lookup tables (Episode 2's 16-wide
+  // color grading LUT, whose half-scale copy blends neighbouring entries and
+  // maps black to green), luminance reductions. Keep them texel-exact.
+  if (key.pitch_px <= kNativePitchMax) {
+    return kScaleOne;
+  }
   if (rscale < kScaleOne && NativeHud() && key.cls == RtClass::kColor32 &&
       presentation_keys_.contains(key.Hash())) {
     return kScaleOne;

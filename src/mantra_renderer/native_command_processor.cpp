@@ -1033,6 +1033,10 @@ bool NativeCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t 
     const DrawResult result = DrawGuest(prim_type, index_count, index_buffer_info);
     trace_current_draw_ = false;
     outcome = result == DrawResult::kDrawn ? "drawn" : result == DrawResult::kSkipped ? "SKIPPED" : "FAILED";
+    if (result == DrawResult::kFailed && draw_fail_reason_) {
+      MANTRA_FRAME_TRACE("draw failed: {}", draw_fail_reason_);
+    }
+    draw_fail_reason_ = nullptr;
     if (result == DrawResult::kDrawn) {
       ++gpu_profiler_.pass_draws;
       if (gpu_profiler_.mode == 2 && rendering_.active) {
@@ -1258,7 +1262,9 @@ bool NativeCommandProcessor::Resolve() {
       mantra::ResolvedSurface* surface = resolved_surfaces_.Get(
           dest_address, std::max<uint32_t>(dest_pitch.copy_dest_pitch, rect.x + rect.width),
           std::max<uint32_t>(dest_pitch.copy_dest_height, rect.y + rect.height), dest_format,
-          frame, false, SurfaceScaleUnits());
+          frame, false,
+          // A native-scale target (lookup tables) resolves texel for texel.
+          rt->image.rscale == mantra::kScaleOne ? mantra::kScaleOne : SurfaceScaleUnits());
       // The target the game presents from keeps the guest resolution (sharp
       // HUD); everything drawn before it may be scaled.
       if (last_frontbuffer_.address &&
@@ -2218,6 +2224,14 @@ void NativeCommandProcessor::CaptureImage(mantra::TrackedImage& image, VkFormat 
           std::fwrite(bytes, 8, size_t(width) * height, f16);
           std::fclose(f16);
         }
+      } else if (format == VK_FORMAT_R16G16B16A16_SNORM) {
+        // Raw fixed16 (int16 = value * 32767 / 32): the .ppm clamps to [0, 1].
+        std::filesystem::path raw = path;
+        raw.replace_extension(".rgba16s");
+        if (std::FILE* s16 = std::fopen(raw.string().c_str(), "wb")) {
+          std::fwrite(bytes, 8, size_t(width) * height, s16);
+          std::fclose(s16);
+        }
       }
       dfn.vkUnmapMemory(device, memory);
     }
@@ -2793,10 +2807,11 @@ bool NativeCommandProcessor::UploadConstants(const void* data, uint32_t size, ui
   return BeginCommands() && shader_interface_.Upload(data, size, offset);
 }
 
-bool NativeCommandProcessor::PrepareDrawConstants(mantra::DrawConstantOffsets& offsets,
+bool NativeCommandProcessor::PrepareDrawConstants(const MantraShader* vs, const MantraShader* ps,
+                                                  mantra::DrawConstantOffsets& offsets,
                                                   const mantra::SharedConstants& draw_shared) {
-  auto* vs = static_cast<MantraShader*>(active_vertex_shader());
-  auto* ps = static_cast<MantraShader*>(active_pixel_shader());
+  // vs / ps as the draw uses them: ps is null for a depth-only pass that
+  // drops its untranslated pixel shader (DrawGuest).
   if (!vs || !vs->module || (ps && !ps->module)) {
     ++constant_stats_.no_translation;
     return false;

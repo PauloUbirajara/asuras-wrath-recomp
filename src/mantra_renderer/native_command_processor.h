@@ -295,7 +295,8 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
   // registers did not change). `shared` provides the draw-specific shared
   // constants (viewport transform); booleans and the alpha threshold are
   // filled here. Returns false if nothing could be uploaded.
-  bool PrepareDrawConstants(mantra::DrawConstantOffsets& offsets,
+  bool PrepareDrawConstants(const MantraShader* vs, const MantraShader* ps,
+                            mantra::DrawConstantOffsets& offsets,
                             const mantra::SharedConstants& shared);
   bool UploadConstants(const void* data, uint32_t size, uint32_t& offset);
   void DestroyShaderModules();
@@ -352,6 +353,7 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
   uint32_t pass_capture_index_ = 0;
   // Set around DrawGuest in a traced frame: logs the draw's fixed-function state.
   bool trace_current_draw_ = false;
+  const char* draw_fail_reason_ = nullptr;  // why the last guest draw failed (trace)
   // Logs a swap summary at most every few seconds (gpu.mantra, info level).
   void ReportSwapStats();
 

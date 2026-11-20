@@ -411,7 +411,28 @@ TextureCache::Binding TextureCache::Get(const xenos::xe_gpu_texture_fetch_t& fet
   }
   Texture& texture = *it->second;
   if (inserted) {
-    const HostFormat host_format = GetHostFormat(fetch);
+    HostFormat host_format = GetHostFormat(fetch);
+    {
+      // Resolved fixed16 render targets hold signed bits (value / 32). An
+      // unsigned fetch of them reads a slightly negative value as almost 1.0
+      // (x64 after the bias): the console's math doesn't produce those
+      // negatives, ours can (rounding), and they show as saturated blocks
+      // in blurred passes (Episode 2's green reflections). Read them signed;
+      // non-negative values read the same either way.
+      // Debug: MANTRA_FIXED16_UNSIGNED=1 keeps the unsigned view.
+      static const bool keep_unsigned = std::getenv("MANTRA_FIXED16_UNSIGNED") != nullptr;
+      const uint32_t base = (fetch.base_address << 12) & kPhysicalMask;
+      if (!keep_unsigned && base && ResolvedValid(base)) {
+        switch (host_format.format) {
+          case VK_FORMAT_R16_UNORM: host_format.format = VK_FORMAT_R16_SNORM; break;
+          case VK_FORMAT_R16G16_UNORM: host_format.format = VK_FORMAT_R16G16_SNORM; break;
+          case VK_FORMAT_R16G16B16A16_UNORM:
+            if (!host_format.decode) host_format.format = VK_FORMAT_R16G16B16A16_SNORM;
+            break;
+          default: break;
+        }
+      }
+    }
     texture.format = host_format.format;
     texture.component_count = host_format.component_count;
     for (uint32_t i = 0; i < 4; ++i) texture.channels[i] = uint8_t(host_format.channels[i]);

@@ -11,6 +11,7 @@ import android.hardware.input.InputManager
 import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.View
+import android.view.WindowInsets
 import androidx.core.content.ContextCompat
 import java.util.Locale
 import kotlin.math.hypot
@@ -205,6 +206,22 @@ class TouchControlsView(context: Context, private val editing: Boolean = false) 
         visibility = if (show) VISIBLE else GONE
     }
 
+    // The camera cutout's edges (punch holes, notches): kept clear.
+    private val area = RectF()
+    private var safeLeft = 0; private var safeTop = 0; private var safeRight = 0; private var safeBottom = 0
+
+    override fun onApplyWindowInsets(insets: WindowInsets): WindowInsets {
+        val cutout = insets.displayCutout
+        val l = cutout?.safeInsetLeft ?: 0; val t = cutout?.safeInsetTop ?: 0
+        val r = cutout?.safeInsetRight ?: 0; val b = cutout?.safeInsetBottom ?: 0
+        if (l != safeLeft || t != safeTop || r != safeRight || b != safeBottom) {
+            safeLeft = l; safeTop = t; safeRight = r; safeBottom = b
+            layoutControls(width, height)
+            invalidate()
+        }
+        return super.onApplyWindowInsets(insets)
+    }
+
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         layoutControls(w, h)
@@ -212,12 +229,26 @@ class TouchControlsView(context: Context, private val editing: Boolean = false) 
 
     private fun layoutControls(w: Int, h: Int) {
         if (w <= 0 || h <= 0) return
-        val dp = resources.displayMetrics.density * size
+        // The controls' area: the view less the cutout (the view's own
+        // offset in the window taken off, as the screen padding moves it).
+        val at = IntArray(2).also { getLocationInWindow(it) }
+        val root = rootView
+        val left = maxOf(0, safeLeft - at[0]).toFloat()
+        val top = maxOf(0, safeTop - at[1]).toFloat()
+        val right = w - maxOf(0, safeRight - (root.width - at[0] - w)).toFloat()
+        val bottom = h - maxOf(0, safeBottom - (root.height - at[1] - h)).toFloat()
+        val aw = maxOf(1f, right - left)
+        val ah = maxOf(1f, bottom - top)
+        area.set(left, top, left + aw, top + ah)
+        // Sized in dp, but never so large that the default layout overlaps
+        // or runs off a small screen (designed on 640x288 dp and up).
+        val fit = min(1f, min(aw / (640 * resources.displayMetrics.density), ah / (288 * resources.displayMetrics.density)))
+        val dp = resources.displayMetrics.density * size * fit
         for (c in controls) {
-            val half = c.sizeDp * c.scale * dp / 2
+            val half = minOf(c.sizeDp * c.scale * dp / 2, aw / 2, ah / 2)
             // Kept on screen whatever the size.
-            val cx = (c.fx * w).coerceIn(half, maxOf(half, w - half))
-            val cy = (c.fy * h).coerceIn(half, maxOf(half, h - half))
+            val cx = (left + c.fx * aw).coerceIn(left + half, maxOf(left + half, right - half))
+            val cy = (top + c.fy * ah).coerceIn(top + half, maxOf(top + half, bottom - half))
             c.rect.set(cx - half, cy - half, cx + half, cy + half)
         }
         ring.strokeWidth = 3 * dp
@@ -312,8 +343,8 @@ class TouchControlsView(context: Context, private val editing: Boolean = false) 
             }
             MotionEvent.ACTION_MOVE -> selected?.let { c ->
                 if (width > 0 && height > 0) {
-                    c.fx = ((event.x + dragDx) / width).coerceIn(0f, 1f)
-                    c.fy = ((event.y + dragDy) / height).coerceIn(0f, 1f)
+                    c.fx = ((event.x + dragDx - area.left) / area.width()).coerceIn(0f, 1f)
+                    c.fy = ((event.y + dragDy - area.top) / area.height()).coerceIn(0f, 1f)
                     layoutControls(width, height)
                 }
             }
@@ -442,10 +473,6 @@ class TouchControlsView(context: Context, private val editing: Boolean = false) 
         const val MAX_SCALE = 250
 
         /** A controller (not the phone's own buttons) is connected. */
-        fun controllerConnected(): Boolean = InputDevice.getDeviceIds().any { id ->
-            val device = InputDevice.getDevice(id) ?: return@any false
-            !device.isVirtual && (device.sources and InputDevice.SOURCE_GAMEPAD == InputDevice.SOURCE_GAMEPAD ||
-                device.sources and InputDevice.SOURCE_JOYSTICK == InputDevice.SOURCE_JOYSTICK)
-        }
+        fun controllerConnected(): Boolean = PadState.connectedPad() != null
     }
 }

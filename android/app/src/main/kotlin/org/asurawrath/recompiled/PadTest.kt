@@ -197,8 +197,27 @@ class PadState {
         fun hasAxis(d: InputDevice?, vararg axes: Int) =
             d != null && axes.any { d.getMotionRange(it, InputDevice.SOURCE_JOYSTICK) != null }
 
-        fun isPad(d: InputDevice?): Boolean = d != null && !d.isVirtual &&
-            (d.supportsSource(InputDevice.SOURCE_GAMEPAD) || d.supportsSource(InputDevice.SOURCE_JOYSTICK))
+        /**
+         * A real controller. Phones list built-in inputs as gamepads or
+         * joysticks too (Xiaomi's fingerprint readers, uinput-fpc and
+         * uinput-goodix; gpio keys; shoulder triggers), which hid the touch
+         * controls as if a controller were connected: a controller here also
+         * has a stick, a hat or an A button, and isn't one of those by name.
+         */
+        fun isPad(d: InputDevice?): Boolean {
+            if (d == null || d.isVirtual) return false
+            if (!d.supportsSource(InputDevice.SOURCE_GAMEPAD) && !d.supportsSource(InputDevice.SOURCE_JOYSTICK)) return false
+            val name = d.name.lowercase()
+            if (BUILT_IN.any { it in name }) return false
+            val stick = (d.getMotionRange(MotionEvent.AXIS_X, InputDevice.SOURCE_JOYSTICK) != null &&
+                d.getMotionRange(MotionEvent.AXIS_Y, InputDevice.SOURCE_JOYSTICK) != null) ||
+                d.getMotionRange(MotionEvent.AXIS_HAT_X, InputDevice.SOURCE_JOYSTICK) != null
+            return stick || d.hasKeys(KeyEvent.KEYCODE_BUTTON_A)[0]
+        }
+
+        // Names of built-in inputs that claim to be gamepads.
+        private val BUILT_IN = listOf("uinput", "fpc", "goodix", "fingerprint", "gpio", "gf_input",
+            "silead", "egis", "qwerty", "virtual", "xiaomi-touch", "touchscreen", "pmic", "keypad")
 
         /** The first controller connected, or null. */
         fun connectedPad(): InputDevice? =

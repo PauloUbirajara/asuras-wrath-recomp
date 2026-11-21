@@ -1525,8 +1525,10 @@ open class LauncherActivity : AppCompatActivity() {
             remap.show()
             val touchShown = config.bool("touch_show", true)
             findViewById<View>(R.id.touch_hide_with_pad).isEnabled = touchShown
-            findViewById<TextView>(R.id.touch_status).text = getString(
-                if (TouchControlsView.controllerConnected()) R.string.touch_status_pad else R.string.touch_status_none)
+            // With the controller's name: what hides them, if it isn't one.
+            findViewById<TextView>(R.id.touch_status).text = PadState.connectedPad()?.let {
+                getString(R.string.touch_status_pad) + " (" + it.name + ")"
+            } ?: getString(R.string.touch_status_none)
             findViewById<View>(R.id.touch_options).alpha = if (touchShown) 1f else 0.5f
             val touchSize = config.int("touch_size", 100).coerceIn(50, 200) / 10 * 10
             findViewById<Slider>(R.id.touch_size).value = touchSize.toFloat()

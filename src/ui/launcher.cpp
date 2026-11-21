@@ -1,5 +1,7 @@
 #include "launcher.h"
 
+#include <cstdarg>
+
 #include <algorithm>
 #include <bit>
 #include <chrono>
@@ -55,6 +57,7 @@
 #include "game_toast.h"
 #include "notice_toast.h"
 #include "launcher_text.h"
+#include "translation.h"
 
 extern "C" unsigned char* stbi_load_from_memory(const unsigned char* buffer, int len, int* x,
                                                  int* y, int* channels_in_file,
@@ -68,6 +71,18 @@ namespace asura::ui {
 namespace {
 
 constexpr uint32_t kTitleId = 0x43430817;
+
+// Greyed text that wraps at the panel's (or table cell's) edge instead of
+// running past it: hints are long in some languages.
+void HintText(const char* fmt, ...) IM_FMTARGS(1);
+void HintText(const char* fmt, ...) {
+  ImGui::PushTextWrapPos(0);
+  va_list args;
+  va_start(args, fmt);
+  ImGui::TextDisabledV(fmt, args);
+  va_end(args);
+  ImGui::PopTextWrapPos();
+}
 
 // Keyboard bindings shown in Controls, in the game's button order.
 struct BindRow {
@@ -500,7 +515,8 @@ void ApplyLauncherDefaults(const LauncherSettings& s) {
   SetIfUnset("fullscreen_exclusive", s.exclusive ? "true" : "false");
   SetIfUnset("monitor", std::to_string(s.monitor));
   SetIfUnset("mnk_mode", s.keyboard ? "true" : "false");
-  if (s.language) SetIfUnset("user_language", std::to_string(s.language));
+  // A translation runs the game in the language whose files it replaces.
+  if (s.language) SetIfUnset("user_language", std::to_string(GameLanguage(s.language)));
   if (s.window_width > 0 && s.window_height > 0) {
     SetIfUnset("window_width", std::to_string(s.window_width));
     SetIfUnset("window_height", std::to_string(s.window_height));
@@ -1742,7 +1758,7 @@ void LauncherDialog::DrawQuit(float scale) {
                                              ImGuiWindowFlags_AlwaysAutoResize);
   if (quit_confirm_) {
     ImGui::TextUnformatted(T("Quit the game?"));
-    ImGui::TextDisabled("%s", T("Progress since the last save is lost."));
+    HintText("%s", T("Progress since the last save is lost."));
     ImGui::Spacing();
     ImGui::Spacing();
     const float w = 180 * scale;
@@ -1777,7 +1793,7 @@ bool LauncherDialog::DrawRestartConfirm(float scale) {
                                                 ImGuiWindowFlags_AlwaysAutoResize);
   if (restart_confirm_) {
     ImGui::TextUnformatted(T("Restart the game?"));
-    ImGui::TextDisabled("%s", T("Progress since the last save is lost."));
+    HintText("%s", T("Progress since the last save is lost."));
     ImGui::Spacing();
     ImGui::Spacing();
     const float w = 180 * scale;
@@ -2007,7 +2023,7 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
     ImGui::BeginTooltip();
     ImGui::TextUnformatted(T("Closes the game: progress since the last save is lost."));
     ImGui::PushTextWrapPos(ImGui::GetFontSize() * 24.0f);
-    ImGui::TextDisabled("%s", T("Settings changed here apply the next time the game starts. In "
+    HintText("%s", T("Settings changed here apply the next time the game starts. In "
                                 "game, Esc changes them right away."));
     ImGui::PopTextWrapPos();
     ImGui::EndTooltip();
@@ -2019,7 +2035,7 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14 * scale, 10 * scale));
     ImGui::BeginTooltip();
     ImGui::TextUnformatted(T("Restarts the game: progress since the last save is lost."));
-    ImGui::TextDisabled("%s", T("Esc goes back to the game; the change then applies next time."));
+    HintText("%s", T("Esc goes back to the game; the change then applies next time."));
     ImGui::EndTooltip();
     ImGui::PopStyleVar();
     ImGui::PopFont();
@@ -2051,7 +2067,7 @@ void LauncherDialog::DrawSidebar(const ImVec2& pos, const ImVec2& size, float sc
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(14 * scale, 10 * scale));
     ImGui::BeginTooltip();
     ImGui::TextUnformatted(T("Wait for the current task to finish"));
-    if (!detail.empty()) ImGui::TextDisabled("%s", detail.c_str());
+    if (!detail.empty()) HintText("%s", detail.c_str());
     if (fraction >= 0.0f) {
       ImGui::ProgressBar(fraction, ImVec2(360 * scale, 8 * scale), "");
     }
@@ -2242,7 +2258,7 @@ void SubHeading(ImFont* font, const char* text, float scale) {
 bool LockedNote(std::string_view flag) {
   if (!SetElsewhere(flag)) return false;
   ImGui::SameLine();
-  ImGui::TextDisabled("%s", rex::cvar::GetFlagSource(flag) == rex::cvar::Source::kCommandLine
+  HintText("%s", rex::cvar::GetFlagSource(flag) == rex::cvar::Source::kCommandLine
                                 ? T("(set by command line)")
                                 : T("(set by config)"));
   return true;
@@ -2436,7 +2452,7 @@ void LauncherDialog::DrawController(float scale, bool test) {
   if (connected) {
     ImGui::Text(T("Controller: %s"), pad_name_.empty() ? "?" : pad_name_.c_str());
   } else {
-    ImGui::TextDisabled("%s", T("No controller found. Connect one to test it here."));
+    HintText("%s", T("No controller found. Connect one to test it here."));
   }
 
   // Rebinding: the first control pressed after the click.
@@ -2512,7 +2528,7 @@ void LauncherDialog::DrawController(float scale, bool test) {
   }
   ImGui::Spacing();
   ImGui::PushTextWrapPos(0);
-  ImGui::TextDisabled("%s", T("The buttons light up as the game sees them, after the changes in "
+  HintText("%s", T("The buttons light up as the game sees them, after the changes in "
                               "Controller; the shaded circles are the stick deadzones."));
   ImGui::PopTextWrapPos();
   return;
@@ -2586,11 +2602,11 @@ void LauncherDialog::DrawController(float scale, bool test) {
   }
   ImGui::SetCursorPosX(label_w);
   ImGui::PushTextWrapPos(0);
-  ImGui::TextDisabled("%s", T("Hold a ticked button instead of mashing it (controller only)."));
+  HintText("%s", T("Hold a ticked button instead of mashing it (controller only)."));
   ImGui::PopTextWrapPos();
 
   ImGui::Spacing();
-  ImGui::TextDisabled("%s", pad_capture_ >= 0
+  HintText("%s", pad_capture_ >= 0
                                 ? T("Press the controller button to use, Esc to cancel.")
                                 : T("Click a button to change it, right-click to reset it."));
   const float table_h = ImGui::GetContentRegionAvail().y - ImGui::GetFrameHeightWithSpacing() * 1.6f;
@@ -2673,7 +2689,7 @@ void LauncherDialog::DrawKeyboard(float scale) {
     ImGui::EndDisabled();
 
     ImGui::Spacing();
-    ImGui::TextDisabled("%s", capture_flag_.empty()
+    HintText("%s", capture_flag_.empty()
                                   ? T("Click a key to change it, right-click to clear it.")
                                   : T("Press the new key (combos like Shift+Up work), Esc to cancel."));
     const float table_h =
@@ -2749,7 +2765,7 @@ void LauncherDialog::DrawKeyboard(float scale) {
     SaveSettings();
   }
   ImGui::SameLine();
-  ImGui::TextDisabled(T("In game: %s trace a frame, %s settings, %s achievements, %s console."),
+  HintText(T("In game: %s trace a frame, %s settings, %s achievements, %s console."),
                       FlagValue("bind_trace").c_str(), FlagValue("bind_settings").c_str(),
                       FlagValue("bind_achievements").c_str(), FlagValue("bind_console").c_str());
 }
@@ -2789,7 +2805,7 @@ void LauncherDialog::DrawAchievements(float scale) {
   ImGui::AlignTextToFramePadding();
   ImGui::Text("%d / %d", unlocked, count);
   ImGui::SameLine();
-  ImGui::TextDisabled("%uG / %uG", earned_gs, total_gs);
+  HintText("%uG / %uG", earned_gs, total_gs);
   ImGui::SameLine(ImGui::GetContentRegionMax().x - combo_w - view_w - ImGui::GetStyle().ItemSpacing.x);
   for (int v = 0; v < 2; ++v) {
     const bool selected = settings_.achievements_grid == (v == 1);
@@ -2867,13 +2883,13 @@ void LauncherDialog::DrawAchievements(float scale) {
         ImGui::PopStyleColor();
         ImGui::PopFont();
         ImGui::SameLine();
-        ImGui::TextDisabled("%uG", a.gamerscore);
+        HintText("%uG", a.gamerscore);
         const std::string date = date_of(a);
         if (!date.empty()) {
           ImGui::SameLine();
           const float date_w = ImGui::CalcTextSize(date.c_str()).x;
           ImGui::SetCursorScreenPos(ImVec2(row_right - date_w - pad, ImGui::GetCursorScreenPos().y));
-          ImGui::TextDisabled("%s", date.c_str());
+          HintText("%s", date.c_str());
         }
         ImGui::PushStyleColor(ImGuiCol_Text, is_unlocked ? kPanelText : kPanelTextDim);
         ImGui::PushTextWrapPos(row_right - pad - ImGui::GetWindowPos().x);
@@ -2934,7 +2950,7 @@ void LauncherDialog::DrawAchievements(float scale) {
           ImGui::PopFont();
           const float after_name = ImGui::GetCursorPosY();
           ImGui::SetCursorPos(ImVec2(pad + inner_w - points_w, name_y + 2 * scale));
-          ImGui::TextDisabled("%s", points);
+          HintText("%s", points);
           ImGui::SetCursorPosY(after_name);
           ImGui::PushStyleColor(ImGuiCol_Text, is_unlocked ? kPanelText : kPanelTextDim);
           ImGui::PushTextWrapPos(pad + inner_w);
@@ -2944,7 +2960,7 @@ void LauncherDialog::DrawAchievements(float scale) {
           const std::string date = date_of(a);
           if (!date.empty()) {
             ImGui::SetCursorPosY(card_h - pad - ImGui::GetTextLineHeight());
-            ImGui::TextDisabled("%s", date.c_str());
+            HintText("%s", date.c_str());
           }
         }
         ImGui::EndChild();
@@ -2994,9 +3010,9 @@ void LauncherDialog::DrawGameFolder(float label_w, float scale) {
   LockedNote("game_data_root");
   ImGui::SetCursorPosX(label_w);
   if (GameDataValid()) {
-    ImGui::TextDisabled("%s", T("default.xex found"));
+    HintText("%s", T("default.xex found"));
   } else if (iso_path_.empty()) {
-    ImGui::TextDisabled("%s", T("Drop the extracted game folder or the disc .iso on this window."));
+    HintText("%s", T("Drop the extracted game folder or the disc .iso on this window."));
   }
 
   if (iso_path_.empty()) return;
@@ -3029,7 +3045,7 @@ void LauncherDialog::DrawGameFolder(float label_w, float scale) {
     ImGui::SameLine();
     if (ImGui::Button(T("Cancel"), ImVec2(-1, 0))) iso_extract_.cancel = true;
     ImGui::SetCursorPosX(label_w);
-    ImGui::TextDisabled("%s", iso_extract_.Message().c_str());
+    HintText("%s", iso_extract_.Message().c_str());
   } else {
     ImGui::BeginDisabled(game_.Running());
     const bool extract =
@@ -3042,7 +3058,7 @@ void LauncherDialog::DrawGameFolder(float label_w, float scale) {
     if (ImGui::Button(T("Dismiss"))) iso_path_.clear();
     if (state == IsoExtract::kFailed) {
       ImGui::SetCursorPosX(label_w);
-      ImGui::TextDisabled("%s%s", T("Failed: "), iso_extract_.Message().c_str());
+      HintText("%s%s", T("Failed: "), iso_extract_.Message().c_str());
     }
   }
 }
@@ -3170,7 +3186,7 @@ void LauncherDialog::DrawFilesFolder(float label_w, float scale) {
   ImGui::EndDisabled();
   ImGui::SetCursorPosX(label_w);
   ImGui::PushTextWrapPos(0);
-  ImGui::TextDisabled("%s", T("Everything the game makes: saves, the shader cache, logs and "
+  HintText("%s", T("Everything the game makes: saves, the shader cache, logs and "
                               "traces. Drop a folder on this window to use it."));
   ImGui::PopTextWrapPos();
 
@@ -3191,7 +3207,7 @@ void LauncherDialog::DrawFilesFolder(float label_w, float scale) {
   }
   ImGui::SetCursorPosX(label_w);
   if (moving) {
-    ImGui::TextDisabled(T("Moving %s..."), move_files_.Message().c_str());
+    HintText(T("Moving %s..."), move_files_.Message().c_str());
     return;
   }
   // One inside the other: moving would put the folder into itself.
@@ -3201,11 +3217,11 @@ void LauncherDialog::DrawFilesFolder(float label_w, float scale) {
     return !rel.empty() && *rel.begin() != "..";
   };
   ImGui::PushTextWrapPos(0);
-  ImGui::TextDisabled(T("The previous folder still has files: %s"), files_at_start_.string().c_str());
+  HintText(T("The previous folder still has files: %s"), files_at_start_.string().c_str());
   ImGui::PopTextWrapPos();
   ImGui::SetCursorPosX(label_w);
   if (inside(files_at_start_, now) || inside(now, files_at_start_)) {
-    ImGui::TextDisabled("%s", T("One folder is inside the other; move the files yourself."));
+    HintText("%s", T("One folder is inside the other; move the files yourself."));
     return;
   }
   ImGui::BeginDisabled(busy);
@@ -3213,7 +3229,7 @@ void LauncherDialog::DrawFilesFolder(float label_w, float scale) {
   ImGui::EndDisabled();
   if (move_files_.state == MoveFiles::kFailed) {
     ImGui::SetCursorPosX(label_w);
-    ImGui::TextDisabled("%s%s", T("Failed: "), move_files_.Message().c_str());
+    HintText("%s%s", T("Failed: "), move_files_.Message().c_str());
   }
 }
 
@@ -3239,18 +3255,21 @@ void LauncherDialog::DrawSystem(float scale) {
     uint32_t id;
     const char* name;  // in that language
   };
-  // The languages on the disc (BCGame/CookedXbox360/*_LOC_<lang>.xxx).
-  // Alphabetical by their own names.
+  // The languages on the disc (BCGame/CookedXbox360/*_LOC_<lang>.xxx), and
+  // the fan translations shipped with the launcher (translation.h), named
+  // with who made them. Alphabetical by their own names.
   static constexpr Language kLanguages[] = {
       {3, "Deutsch"},  {1, "English"},  {5, "Español"},
-      {4, "Français"}, {6, "Italiano"}, {2, "日本語"}};
+      {4, "Français"}, {6, "Italiano"},
+      {kLanguagePortugueseBrazil, "Português (Brasil) - joao13"},
+      {2, "日本語"}};
   const char* language_name = "English";
   for (const auto& l : kLanguages) {
     if (l.id == settings_.language) language_name = l.name;
   }
   auto set_language = [&](uint32_t id) {
     settings_.language = id;
-    SetIfUnset("user_language", std::to_string(id));
+    SetIfUnset("user_language", std::to_string(GameLanguage(id)));
     SetLauncherLanguage(id);
     changed = true;
   };
@@ -3264,11 +3283,24 @@ void LauncherDialog::DrawSystem(float scale) {
   ImGui::EndDisabled();
   LockedNote("user_language");
   ImGui::SetCursorPosX(label_w);
-  ImGui::TextDisabled("%s", T("The game's menus and subtitles, the achievements and this launcher."));
+  HintText("%s", T("The game's menus and subtitles, the achievements and this launcher."));
+  if (IsTranslation(settings_.language)) {
+    // Credit where the translation comes from (assets/translations/pt-BR/CREDITS.txt).
+    ImGui::SetCursorPosX(label_w);
+    ImGui::PushTextWrapPos(0);
+    HintText("%s", T("Fan translation by XEX Brasil and Brazilian Warriors "
+                                "(joao13traducoes.com)."));
+    ImGui::PopTextWrapPos();
+    if (TranslationDir(settings_.language).empty()) {
+      ImGui::SetCursorPosX(label_w);
+      ImGui::TextColored(kRestartMark, "%s",
+                         T("Not installed: assets/translations is missing next to the launcher."));
+    }
+  }
   ImGui::SetCursorPosX(label_w);
   ImGui::TextColored(kRestartMark, "*");
   ImGui::SameLine(0, 6 * scale);
-  ImGui::TextDisabled("%s", T("Takes effect the next time the game starts."));
+  HintText("%s", T("Takes effect the next time the game starts."));
 
   SubHeading(HeadingFont(), T("Achievement pop-ups"), scale);
   label(T("Show achievements"));
@@ -3311,7 +3343,7 @@ void LauncherDialog::DrawSystem(float scale) {
   label(T("Save the picture"));
   changed |= ImGui::Checkbox("##trace_picture", &settings_.trace_picture);
   ImGui::SameLine();
-  ImGui::TextDisabled("%s", T("The traced frame as a .png next to its trace."));
+  HintText("%s", T("The traced frame as a .png next to its trace."));
   label(T("Show a notice"));
   changed |= ImGui::Checkbox("##trace_notice", &settings_.trace_notice);
   ImGui::BeginDisabled(!settings_.trace_notice);
@@ -3342,7 +3374,7 @@ void LauncherDialog::DrawSystem(float scale) {
   } else if (asset_job_.running) {
     ImGui::TextUnformatted(T("Reading them from the game..."));
   } else {
-    ImGui::TextDisabled("%s", T("Read from the game folder once it is set"));
+    HintText("%s", T("Read from the game folder once it is set"));
   }
   }
 
@@ -3385,7 +3417,7 @@ void LauncherDialog::DrawAbout(float scale) {
   ImGui::TextUnformatted("Asura's Wrath Recompiled");
   ImGui::PopFont();
   ImGui::PushTextWrapPos(0);
-  ImGui::TextDisabled("%s", T("The Xbox 360 game, recompiled to run natively on PC. It needs your "
+  HintText("%s", T("The Xbox 360 game, recompiled to run natively on PC. It needs your "
                               "own copy of the game."));
   ImGui::PopTextWrapPos();
   ImGui::Spacing();
@@ -3438,19 +3470,19 @@ void LauncherDialog::DrawAbout(float scale) {
   }
   ImGui::SameLine();
   if (copied_at_ == -2.0) {
-    ImGui::TextDisabled("%s %s", T("Could not copy."), copy_error_.c_str());
+    HintText("%s %s", T("Could not copy."), copy_error_.c_str());
   } else if (ImGui::GetTime() - copied_at_ < 2.0) {
-    ImGui::TextDisabled("%s", T("Copied."));
+    HintText("%s", T("Copied."));
   } else {
-    ImGui::TextDisabled("%s", T("Copies the above as text, for bug reports."));
+    HintText("%s", T("Copies the above as text, for bug reports."));
   }
 
   SubHeading(HeadingFont(), T("Notice"), scale);
   ImGui::PushTextWrapPos(0);
-  ImGui::TextDisabled("%s", T("This is an unofficial fan project. It is not affiliated with, endorsed "
+  HintText("%s", T("This is an unofficial fan project. It is not affiliated with, endorsed "
                               "or sponsored by Capcom or CyberConnect2. Asura's Wrath is a trademark "
                               "of Capcom. No game files are included."));
-  ImGui::TextDisabled("%s", T("Built with the ReXGlue SDK and other open-source software: see the "
+  HintText("%s", T("Built with the ReXGlue SDK and other open-source software: see the "
                               "README for credits and licenses."));
   ImGui::PopTextWrapPos();
 }
@@ -3467,7 +3499,7 @@ void LauncherDialog::DrawSettings(float scale) {
   auto hint = [&](const char* text) {
     ImGui::SetCursorPosX(label_w);
     ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("%s", text);
+    HintText("%s", text);
     ImGui::PopTextWrapPos();
   };
   // "*" after a setting (or one of its choices) that applies only when the
@@ -3484,7 +3516,7 @@ void LauncherDialog::DrawSettings(float scale) {
     ImGui::TextColored(kRestartMark, "*");
     ImGui::SameLine(0, 6 * scale);
     ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("%s", T("Takes effect the next time the game starts."));
+    HintText("%s", T("Takes effect the next time the game starts."));
     ImGui::PopTextWrapPos();
   };
   if (!ImGui::BeginTabBar("##settings_tabs")) return;
@@ -3609,7 +3641,7 @@ void LauncherDialog::DrawSettings(float scale) {
     ImGui::EndDisabled();
     if (!LockedNote("window_width") && borderless) {
       ImGui::SameLine();
-      ImGui::TextDisabled("%s", T("(uses the screen's size)"));
+      HintText("%s", T("(uses the screen's size)"));
     }
   }
 
@@ -3942,7 +3974,7 @@ void LauncherDialog::DrawShaders(float scale) {
   auto hint = [&](const char* text) {
     ImGui::SetCursorPosX(label_w);
     ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("%s", text);
+    HintText("%s", text);
     ImGui::PopTextWrapPos();
   };
   label(T("Shader cache"));
@@ -3979,7 +4011,7 @@ void LauncherDialog::DrawShaders(float scale) {
     }
     if (shaders_not_in_cache_) {
       ImGui::SetCursorPosX(label_w);
-      ImGui::TextDisabled(T("%d shaders seen while playing are missing from the cache."),
+      HintText(T("%d shaders seen while playing are missing from the cache."),
                           int(shaders_not_in_cache_));
     }
   } else {
@@ -4029,12 +4061,12 @@ void LauncherDialog::DrawShaders(float scale) {
   ImGui::EndDisabled();
   if (state == ShaderBuild::kStopped && stopped_at) {
     ImGui::SetCursorPosX(label_w);
-    ImGui::TextDisabled("%s", T("Stopped: the next build continues from there."));
+    HintText("%s", T("Stopped: the next build continues from there."));
   }
   if (state == ShaderBuild::kFailed) {
     ImGui::SetCursorPosX(label_w);
     const std::string line = shader_build_.Line();
-    ImGui::TextDisabled("%s%s", T("Failed: "), line.c_str());
+    HintText("%s%s", T("Failed: "), line.c_str());
   }
   label(T("Location"));
   ImGui::PushTextWrapPos(0);
@@ -4047,7 +4079,7 @@ void LauncherDialog::DrawShaders(float scale) {
   }
   if (!have_tool) {
     ImGui::SetCursorPosX(label_w);
-    ImGui::TextDisabled("%s", T("mantra_shadergen not found next to the game"));
+    HintText("%s", T("mantra_shadergen not found next to the game"));
   }
 }
 
@@ -4062,7 +4094,7 @@ void LauncherDialog::DrawLogs(float scale) {
   auto hint = [&](const char* text) {
     ImGui::SetCursorPosX(label_w);
     ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("%s", text);
+    HintText("%s", text);
     ImGui::PopTextWrapPos();
   };
   const std::filesystem::path dir = LogDirectory();
@@ -4159,7 +4191,7 @@ void LauncherDialog::DrawLogs(float scale) {
     if (logs_.empty()) {
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
-      ImGui::TextDisabled("%s", T("No logs yet."));
+      HintText("%s", T("No logs yet."));
     }
     ImGui::EndTable();
   }
@@ -4236,7 +4268,7 @@ void LauncherDialog::DrawTraces(float scale) {
   std::error_code ec;
   const std::filesystem::path trigger = TraceTrigger();
   ImGui::PushTextWrapPos(0);
-  ImGui::TextDisabled("%s", T("A trace writes what the renderer does during one frame into a "
+  HintText("%s", T("A trace writes what the renderer does during one frame into a "
                               "file of its own, for bug reports about the picture. Go to the "
                               "moment that looks wrong, then trace it. The newest 30 are kept."));
   ImGui::PopTextWrapPos();
@@ -4254,11 +4286,11 @@ void LauncherDialog::DrawTraces(float scale) {
   ImGui::EndDisabled();
   ImGui::SameLine();
   if (waiting) {
-    ImGui::TextDisabled("%s", picked_up    ? T("Tracing...")
+    HintText("%s", picked_up    ? T("Tracing...")
                               : OverGame() ? T("The game traces it once you resume.")
                                            : T("Waiting for the game..."));
   } else if (!running) {
-    ImGui::TextDisabled("%s", T("Start the game first."));
+    HintText("%s", T("Start the game first."));
   }
 
   // The trace files, checked every few seconds.
@@ -4344,7 +4376,7 @@ void LauncherDialog::DrawTraces(float scale) {
     if (traces_.empty()) {
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
-      ImGui::TextDisabled("%s", T("No traces yet."));
+      HintText("%s", T("No traces yet."));
     }
     ImGui::EndTable();
   }
@@ -4375,7 +4407,7 @@ void LauncherDialog::DrawSaves(float scale) {
   // Info: the save itself (when, size, folder, open/delete).
   auto info = [&] {
   ImGui::PushTextWrapPos(0);
-  ImGui::TextDisabled("%s", T("The game keeps one save with all your progress and loads it by "
+  HintText("%s", T("The game keeps one save with all your progress and loads it by "
                               "itself."));
   ImGui::PopTextWrapPos();
   if (!save_message_.empty()) ImGui::TextUnformatted(save_message_.c_str());
@@ -4415,7 +4447,7 @@ void LauncherDialog::DrawSaves(float scale) {
       ImGui::SetCursorPosX(label_w);
       for (size_t i = 0; i < save.files.size(); ++i) {
         if (i) ImGui::SameLine();
-        ImGui::TextDisabled("%s (%s)%s", save.files[i].first.c_str(),
+        HintText("%s (%s)%s", save.files[i].first.c_str(),
                             FormatBytes(save.files[i].second).c_str(),
                             i + 1 < save.files.size() ? "," : "");
       }
@@ -4542,7 +4574,7 @@ void LauncherDialog::DrawStory(const SaveSummary& progress, float label_w, float
   label(T("Enemies defeated"));
   ImGui::Text("%d", progress.enemies_defeated);
   if (episodes_.empty()) {
-    ImGui::TextDisabled("%s", T("Set the game folder in Game data > Folders to see the episodes."));
+    HintText("%s", T("Set the game folder in Game data > Folders to see the episodes."));
     return;
   }
 
@@ -4568,7 +4600,7 @@ void LauncherDialog::DrawStory(const SaveSummary& progress, float label_w, float
       ImGui::TableNextColumn();
       const std::string rank = r ? r->rank[d] : std::string();
       if (rank.empty()) {
-        ImGui::TextDisabled("-");
+        HintText("-");
       } else {
         ImGui::PushFont(HeadingFont());
         ImGui::TextUnformatted(rank.c_str());
@@ -4587,7 +4619,7 @@ void LauncherDialog::DrawStory(const SaveSummary& progress, float label_w, float
       static const char* const kRoman[] = {"", "I", "II", "III", "IV"};
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
-      ImGui::TextDisabled("%s %s", T("Part"), part >= 0 && part < 5 ? kRoman[part] : "");
+      HintText("%s %s", T("Part"), part >= 0 && part < 5 ? kRoman[part] : "");
     }
     std::string number = e.number.substr(0, e.number.find('_'));
     if (hidden) number += std::string(" (") + T("True") + ")";
@@ -4604,7 +4636,7 @@ void LauncherDialog::DrawStory(const SaveSummary& progress, float label_w, float
       extras = true;
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
-      ImGui::TextDisabled("%s", T("Extra"));
+      HintText("%s", T("Extra"));
     }
     row("+", EpisodeTitle(settings_.game_data, settings_.language, r.id), &r);
   }

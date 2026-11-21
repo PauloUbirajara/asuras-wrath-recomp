@@ -43,7 +43,9 @@
 
 #include "debug/script_input.h"
 #include "game/frame_rate.h"
+#include "game/game_files.h"
 #include "game/skip_intro.h"
+#include "game/translation.h"
 #include "game/graphics_effects.h"
 #include "input/controller_mappings.h"
 #include "input/pad_remap.h"
@@ -230,8 +232,11 @@ class AsuraWrathApp : public rex::ReXApp {
   // Game files swapped for copies (skip the logos, graphics effects): before
   // the game thread starts, which reads its config first thing.
   void OnPreLaunchModule() override {
+    asura::game::ApplyTranslation(runtime(), launcher_settings_.language);
     if (launcher_settings_.skip_intro) asura::game::SkipIntroMovies(runtime());
-    asura::game::ApplyGraphicsEffects(runtime(), launcher_settings_.effects_off);
+    asura::game::ApplyGraphicsEffects(runtime(), launcher_settings_.effects_off,
+                                      launcher_settings_.language);
+    asura::game::FixGameToc(runtime());  // after all the replacements
   }
   // Debug: ASURA_TEST_TOAST=N shows the game's first N achievements as toasts
   // (4.5 s each) once the title is running.

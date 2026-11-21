@@ -125,6 +125,8 @@
     <!-- Settings › System -->
     <string name="language">Language</string>
     <string name="language_hint">The game\'s menus and subtitles, the achievements and this launcher.</string>
+    <!-- Not translated: it only shows for Português (Brasil) (values-pt-rBR has it in Portuguese). -->
+    <string name="language_credit_ptbr" translatable="false">Fan translation by XEX Brasil and Brazilian Warriors (joao13traducoes.com).</string>
     <string name="toasts">Achievement pop-ups</string>
     <string name="toasts_hint">A pop-up in game when an achievement unlocks.</string>
 

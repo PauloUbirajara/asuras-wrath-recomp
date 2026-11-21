@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <thread>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
@@ -519,6 +520,8 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
   const ui::vulkan::VulkanDevice* vulkan_device_ = nullptr;
 
   FrameSlot frame_slots_[kFrameSlots];
+  // Debug: MANTRA_FENCE_WATCHDOG=1 logs submissions the GPU never finishes.
+  std::jthread fence_watchdog_;
   uint64_t submission_current_ = 1;  // the one being recorded
   uint64_t submission_completed_ = 0;
   bool recording_ = false;

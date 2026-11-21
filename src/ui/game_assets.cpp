@@ -14,6 +14,7 @@
 #include <rex/system/util/xdbf_utils.h>
 
 #include "game_font.h"
+#include "translation.h"
 #include "xxx_package.h"  // tools/mantra_shadergen: .xxx (UE3 + LZX) decompression
 #include "../platform/platform.h"
 
@@ -618,7 +619,8 @@ bool ExtractAchievementList(const fs::path& game_dir, const fs::path& out_dir, u
     Fail(error, "default.xex achievement data is damaged");
     return false;
   }
-  const auto lang = db.GetExistingLanguage(rex::system::XLanguage(language));
+  // A translation: the game's language, with the translation's names on top.
+  const auto lang = db.GetExistingLanguage(rex::system::XLanguage(GameLanguage(language)));
   std::error_code ec;
   fs::create_directories(out_dir, ec);
   auto clean = [](std::string s) {
@@ -629,10 +631,15 @@ bool ExtractAchievementList(const fs::path& game_dir, const fs::path& out_dir, u
   std::string tsv = "id\tgamerscore\tname\tdescription\tlocked_description\n";
   for (const auto& a : db.GetAchievements()) {
     const uint32_t id = a.id;
+    std::string name = db.GetStringTableEntry(lang, a.label_id);
+    std::string description = db.GetStringTableEntry(lang, a.description_id);
+    std::string locked = db.GetStringTableEntry(lang, a.unachieved_id);
+    if (const TranslatedAchievement t = TranslatedAchievementText(language, id); !t.name.empty()) {
+      name = t.name;
+      description = locked = t.description;
+    }
     tsv += std::to_string(id) + '\t' + std::to_string(uint32_t(a.gamerscore)) + '\t' +
-           clean(db.GetStringTableEntry(lang, a.label_id)) + '\t' +
-           clean(db.GetStringTableEntry(lang, a.description_id)) + '\t' +
-           clean(db.GetStringTableEntry(lang, a.unachieved_id)) + '\n';
+           clean(name) + '\t' + clean(description) + '\t' + clean(locked) + '\n';
     if (const auto icon = db.GetEntry(rex::system::util::XdbfSection::kImage, a.image_id)) {
       WriteFile(out_dir / (std::to_string(id) + ".png"), icon.buffer, icon.size);
     }

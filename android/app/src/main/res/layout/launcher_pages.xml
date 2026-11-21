@@ -460,6 +460,11 @@
             <TextView style="@style/Text.Paper.Hint"
                 android:layout_width="match_parent" android:layout_height="wrap_content"
                 android:layout_marginTop="6dp" android:text="@string/language_hint" />
+            <!-- Português (Brasil): who made the translation (LauncherActivity.showLanguageCredit). -->
+            <TextView android:id="@+id/language_credit" style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:text="@string/language_credit_ptbr"
+                android:visibility="gone" />
         </LinearLayout>
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
             android:orientation="vertical">

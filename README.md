@@ -266,7 +266,7 @@ The launcher opens first:
   - *Setup*: for a controller the game reads wrongly (a trigger moving the camera, a stick doing nothing). Each control (buttons, triggers, D-pad, every stick direction) is a row, named with both the Xbox and PlayStation labels where they differ (LT / L2, LB / L1, L3): *Set* waits up to 10 seconds for you to press it on the controller, and *Start setup* goes through them all in turn. Each answer is saved at once as an SDL mapping for that controller, in `controller_mappings.txt` next to `launcher.cfg`. On Android it's *Controls > Controller setup* (saved in `controller_setup_android.txt`).
 - **Achievements**: list or grid, filtered by unlocked / locked.
 - **Settings**
-  - *System*: language (game, achievements and launcher), achievement pop-ups.
+  - *System*: language (game, achievements and launcher), achievement pop-ups. *Português (Brasil) - joao13* is a fan translation shipped with the launcher (see Credits).
   - *Display*: GPU, VSync, display mode, monitor, resolution, *Higher resolution* (experimental), how 16:9 fills other screens, and *Effects* (bloom, depth of field, motion and radial blur, shadows, ambient occlusion, light shafts, lens flares, distortion; turning some off helps slow GPUs, applies at the next start).
   - *Enhancements*: FPS counter, frame rate limit (above 30 is experimental), skip the intro logos, hide the cursor, mute in the background.
 - **About**: version, this computer's details with a *Copy* button for bug reports.
@@ -348,6 +348,8 @@ At the default `info` level the renderer logs a `frame times` line every 5 secon
 ## 7. Credits
 
 - Powered by **ReXGlue** (https://github.com/rexglue/rexglue-sdk), an open-source static recompilation framework for Xbox 360 software.
+- Shader translation by **XenosRecomp** (https://github.com/hedge-dev/XenosRecomp), © hedge-dev and contributors, MIT License (`thirdparty/XenosRecomp/LICENSE.md`): `mantra_shadergen` uses it to turn the game's Xenos shaders into the shader cache.
+- Brazilian Portuguese translation (*Settings > System > Language > Português (Brasil) - joao13*) by **XEX Brasil** and **Brazilian Warriors** (Xujozer, Angel Forgotten, Sergio-F), revised by JMC360, published at https://joao13traducoes.com/2021/07/x360-asura-wrath-xex-brasil-e-brazilian-warriors/. It ships in `assets/translations/pt-BR` (`CREDITS.txt` there), with the few lines it left in Spanish or untranslated completed; `tools/make_ptbr_pack.py` rebuilds it from the downloaded patch. Its translated images (title menu, Game Over, end screens) are included; the launcher gives the game a table of contents (`Xbox360TOC.txt`) with their new sizes, as the patch does.
 - UI touch controls made possible by using **kenney.nl** Xbox gamepad assets (https://kenney.nl/assets/input-prompts)
 - *Asura's Wrath* and its artwork are © **CAPCOM** (https://www.capcom.com). The launcher and pop-up images in `assets/ui` come from the game, with some parts edited by hand for the launcher. The game itself, its fonts and other assets are not included: they are read from your own copy.
 - Fallback fonts: **Noto Serif** and **Noto Serif CJK JP** (https://notofonts.github.io), © The Noto Project Authors and Google, under the SIL Open Font License 1.1 (`assets/ui/OFL.txt`). `NotoSerifJP-Launcher.awf` is a subset rendered from Noto Serif CJK JP.

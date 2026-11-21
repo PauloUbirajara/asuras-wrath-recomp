@@ -149,6 +149,7 @@ open class LauncherActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         folders = AppFolders(this)
+        GameProgress.translations = folders::translation
         folders.prepare()
         drivers = GpuDrivers(this)
         config = LauncherConfig.load(folders.config)
@@ -225,10 +226,13 @@ open class LauncherActivity : AppCompatActivity() {
     // --- Language --------------------------------------------------------------
 
     // The languages on the disc (XLanguage ids, as launcher.cfg's language=)
-    // and the launcher's own translations of them.
+    // and the launcher's own translations of them; then the fan translations
+    // shipped with the app (src/ui/translation.h), named with who made them.
     private val languages = listOf(
         3 to ("Deutsch" to "de"), 1 to ("English" to "en"), 5 to ("Español" to "es"),
-        4 to ("Français" to "fr"), 6 to ("Italiano" to "it"), 2 to ("日本語" to "ja"),
+        4 to ("Français" to "fr"), 6 to ("Italiano" to "it"),
+        AppFolders.LANGUAGE_PT_BR to ("Português (Brasil) - joao13" to "pt-BR"),
+        2 to ("日本語" to "ja"),
     )
 
     /** Sets the app's language to launcher.cfg's (AppCompat recreates the activity when it changes). */
@@ -1177,6 +1181,11 @@ open class LauncherActivity : AppCompatActivity() {
         languages.firstOrNull { it.first == id }?.second?.first ?: "English"
     }
 
+    // The fan translation's credit under the language (Settings › System).
+    private fun showLanguageCredit() {
+        findViewById<View>(R.id.language_credit).isVisible = config.int("language", 1) == AppFolders.LANGUAGE_PT_BR
+    }
+
     private fun setUpSettings() {
         val language = findViewById<MaterialAutoCompleteTextView>(R.id.language)
         // An adapter that never filters: AutoCompleteTextView filters its list by
@@ -1200,7 +1209,9 @@ open class LauncherActivity : AppCompatActivity() {
             config["language"] = languages[position].first.toString()
             config.save()
             applyLanguage()
+            showLanguageCredit()
         }
+        showLanguageCredit()
 
         findViewById<Button>(R.id.gpu_driver_choose).setOnClickListener { chooseDriver() }
         findViewById<Button>(R.id.gpu_driver_install).setOnClickListener {

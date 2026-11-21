@@ -65,6 +65,7 @@ set(ASURAWRATH_SOURCES
     src/game/skip_intro.cpp
     src/game/game_files.cpp
     src/game/graphics_effects.cpp
+    src/game/translation.cpp
     src/platform/gpu_driver.cpp
     src/input/controller_mappings.cpp
     src/input/pad_remap.cpp
@@ -79,6 +80,7 @@ set(ASURAWRATH_SOURCES
     src/ui/launcher_text.cpp
     src/ui/notice_toast.cpp
     src/ui/save_data.cpp
+    src/ui/translation.cpp
     src/ui/window_icon.cpp
     $<$<PLATFORM_ID:Windows>:src/res/asura_wrath.rc>
 )

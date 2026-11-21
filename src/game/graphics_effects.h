@@ -39,7 +39,9 @@ inline constexpr GraphicsEffect kGraphicsEffects[] = {
 inline constexpr size_t kGraphicsEffectCount = sizeof(kGraphicsEffects) / sizeof(kGraphicsEffects[0]);
 
 // `off`: bit n = kGraphicsEffects[n] turned off. Call before the game reads its
-// config (OnPreLaunchModule). Nothing to do when no bit is set.
-void ApplyGraphicsEffects(rex::Runtime* runtime, uint32_t off);
+// config (OnPreLaunchModule), after ApplyTranslation. Nothing to do when no
+// bit is set. `language`: launcher.cfg's language= (a translation's config is
+// the one patched).
+void ApplyGraphicsEffects(rex::Runtime* runtime, uint32_t off, uint32_t language);
 
 }  // namespace asura::game

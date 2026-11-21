@@ -12,7 +12,7 @@ import java.io.File
  *   launcher.cfg          the launcher's settings (the game reads them too)
  *   extracted/            a place to copy the game to, found by default
  *   asura_wrath_recomp/   the default Files folder: saves, cache/ (shader cache), logs/
- *   assets/               the launcher's art, unpacked from the APK (the in-game menu uses it)
+ *   assets/               the launcher's art and the fan translations, unpacked from the APK
  */
 class AppFolders(private val context: Context) {
     val root: File = context.getExternalFilesDir(null) ?: context.filesDir
@@ -30,6 +30,10 @@ class AppFolders(private val context: Context) {
         config["data_folder"]?.takeIf { it.isNotEmpty() }?.let(::File) ?: defaultFiles
 
     fun shaderCache(config: LauncherConfig): File = File(files(config), "cache/mantra_shaders.mshc")
+
+    /** A fan translation's unpacked files (src/ui/translation.h), null if `language` isn't one. */
+    fun translation(language: Int): File? =
+        if (language == LANGUAGE_PT_BR) File(root, "assets/translations/pt-BR") else null
 
     /**
      * Folders, the environment the native code reads, and the unpacked art.
@@ -52,13 +56,17 @@ class AppFolders(private val context: Context) {
         unpackAssets()
     }
 
-    // The APK's assets/ui (the repo's assets/ folder) as files, once per install.
+    // The APK's assets/ui and assets/translations (the repo's assets/ folder)
+    // as files, once per install: the fan translations' game files take the
+    // place of the game's own (src/game/translation.cpp).
     private fun unpackAssets() {
         val stamp = File(root, "assets/.installed")
         val version = context.packageManager.getPackageInfo(context.packageName, 0).lastUpdateTime.toString()
         if (stamp.isFile && stamp.readText() == version) return
         try {
             copyAssetDir("ui", File(root, "assets/ui"))
+            File(root, "assets/translations").deleteRecursively()
+            copyAssetDir("translations", File(root, "assets/translations"))
             stamp.writeText(version)
         } catch (e: Exception) {
             Log.e(TAG, "unpacking the assets failed", e)
@@ -78,5 +86,7 @@ class AppFolders(private val context: Context) {
 
     companion object {
         const val TAG = "AsurasWrath"
+        /** launcher.cfg language= for Português (Brasil), the fan translation (src/ui/translation.h). */
+        const val LANGUAGE_PT_BR = 9
     }
 }

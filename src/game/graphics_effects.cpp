@@ -12,6 +12,7 @@
 #include <rex/runtime.h>
 
 #include "../ui/game_assets.h"
+#include "../ui/translation.h"
 #include "game_files.h"
 
 namespace asura::game {
@@ -119,7 +120,7 @@ class Patcher {
 
 }  // namespace
 
-void ApplyGraphicsEffects(rex::Runtime* runtime, uint32_t off) {
+void ApplyGraphicsEffects(rex::Runtime* runtime, uint32_t off, uint32_t language) {
   namespace fs = std::filesystem;
   off &= (1u << kGraphicsEffectCount) - 1;
   if (!off || !runtime) return;
@@ -139,7 +140,10 @@ void ApplyGraphicsEffects(rex::Runtime* runtime, uint32_t off) {
   for (const auto& entry : fs::directory_iterator(cooked, ec)) {
     const std::string name = entry.path().filename().string();
     if (name.rfind("Coalesced_", 0) != 0 || entry.path().extension() != ".bin") continue;
-    std::ifstream in(entry.path(), std::ios::binary);
+    // A translation's copy when it has one (it is in the game's place now).
+    std::ifstream in(asura::ui::GameFileFor(runtime->game_data_root(), language,
+                                            fs::path("BCGame") / "CookedXbox360" / name),
+                     std::ios::binary);
     const std::vector<uint8_t> data((std::istreambuf_iterator<char>(in)), {});
     int changed = 0;
     const std::vector<uint8_t> out = Patcher(data, off).Run(changed);

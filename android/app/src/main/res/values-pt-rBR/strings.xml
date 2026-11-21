@@ -1,0 +1,409 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The launcher in Brazilian Portuguese (Settings › System › Português (Brasil), the
+     fan translation: src/ui/translation.h): the English values/strings.xml translated
+     (the wording follows src/ui/launcher_text.cpp). Keep the two in step. -->
+<resources>
+    <string name="play">Jogar</string>
+    <string name="play_anyway">Jogar mesmo assim</string>
+    <string name="cancel">Cancelar</string>
+    <string name="close">Fechar</string>
+    <string name="choose_folder">Escolher pasta…</string>
+    <string name="use_default">Padrão</string>
+    <string name="open_settings">Abrir configurações</string>
+    <string name="menu">Menu</string>
+    <string name="off">Desligado</string>
+    <string name="folder">Pasta</string>
+    <string name="location">Local</string>
+    <string name="not_on_android">Ainda não disponível no Android</string>
+    <string name="next_start">Vale no próximo início do jogo.</string>
+
+    <!-- Pages and their sections -->
+    <string name="page_game">Dados do jogo</string>
+    <string name="page_controls">Controles</string>
+    <string name="page_settings">Configurações</string>
+    <string name="page_about">Sobre</string>
+    <string name="section_folders">Pastas</string>
+    <string name="section_shaders">Cache de shaders</string>
+    <string name="section_saves">Saves</string>
+    <string name="section_logs">Logs</string>
+    <string name="section_traces">Registros de quadro</string>
+    <string name="section_progress">Progresso</string>
+    <string name="section_test">Teste</string>
+    <string name="section_controller">Controle</string>
+    <string name="section_system">Sistema</string>
+    <string name="section_display">Tela</string>
+    <string name="section_enhancements">Melhorias</string>
+
+    <!-- A section's line in its page's list -->
+    <string name="summary_game">Jogo encontrado: %1$s</string>
+    <string name="summary_saves">Último save: %1$s</string>
+    <plurals name="summary_logs">
+        <item quantity="one">%1$d log</item>
+        <item quantity="many">%1$d logs</item>
+        <item quantity="other">%1$d logs</item>
+    </plurals>
+    <string name="summary_controller">Vibração %1$d%% · zonas mortas %2$d%% / %3$d%%</string>
+    <string name="summary_display">Resolução de renderização %1$d%% · %2$s</string>
+    <string name="summary_enhancements">Limite de quadros: %1$s</string>
+
+    <string name="notice_game">Escolha a pasta do jogo: Dados do jogo › Pastas</string>
+    <string name="notice_shaders">Os shaders ainda não foram criados: Dados do jogo › Cache de shaders</string>
+
+    <!-- Game data › Folders -->
+    <string name="game_folder">Pasta do jogo</string>
+    <string name="game_not_chosen">Ainda não escolhida</string>
+    <string name="game_found">default.xex encontrado</string>
+    <string name="game_missing">Não há default.xex nesta pasta. Escolha a pasta do jogo extraído (a que contém o default.xex).</string>
+    <string name="game_missing_short">Não há default.xex na pasta do jogo</string>
+    <string name="game_hint">O jogo extraído, ou extraia aqui a imagem do disco (.iso); também dá para copiar uma pasta de um computador (por exemplo, com o extract-xiso).</string>
+    <string name="iso_extract">Extrair um .iso…</string>
+    <string name="iso_title">Extraindo a imagem do disco</string>
+    <string name="iso_channel">Extração da imagem do disco</string>
+    <string name="iso_reading">Lendo a imagem do disco…</string>
+    <string name="iso_not_disc">Não é uma imagem de disco de jogo do Xbox 360</string>
+    <string name="iso_not_game">A imagem do disco não tem default.xex</string>
+    <string name="iso_no_space">Espaço livre insuficiente: %1$s necessários, %2$s livres</string>
+    <string name="iso_stop">Parar</string>
+    <string name="iso_progress">%1$d%% · %2$s</string>
+    <string name="iso_done">Imagem do disco extraída</string>
+    <string name="iso_stopped">Extração interrompida</string>
+    <string name="iso_failed">A extração falhou: %1$s</string>
+    <string name="game_needed">Escolha a pasta do jogo primeiro.</string>
+    <string name="section_files">Pasta de arquivos</string>
+    <string name="files_hint">Tudo o que o jogo cria: saves, o cache de shaders, logs. Mudá-la não move o que já está na pasta antiga.</string>
+
+    <!-- Game data › Shader cache -->
+    <string name="shaders_ready">Pronto (%1$s)</string>
+    <string name="shaders_missing">Ausente: sem ele o jogo vai travar bastante</string>
+    <string name="shaders_outdated">Antigo demais para esta resolução de renderização (versão %1$d). Recrie-o.</string>
+    <string name="shaders_unknown">Não é um cache de shaders que esta versão possa usar (versão %1$d). Recrie-o.</string>
+    <string name="shaders_hint">Crie-o aqui, uma vez (demora um pouco no celular: deixe-o carregando; continua com a tela desligada), ou crie-o em um computador (launcher do PC: Dados do jogo › Shaders) e importe o mantra_shaders.mshc.</string>
+    <string name="shaders_build">Criar o cache de shaders</string>
+    <string name="shaders_rebuild">Recriar tudo</string>
+    <string name="shaders_build_continue">Continuar a criação (%1$d shaders prontos)</string>
+    <string name="shaders_build_start_over">Recomeçar</string>
+    <string name="shaders_build_stop">Parar a criação</string>
+    <string name="shaders_build_starting">Iniciando…</string>
+    <string name="shaders_build_reading">Lendo os arquivos do jogo: %1$d de %2$d</string>
+    <string name="shaders_build_translating">Traduzindo shaders: %1$d de %2$d</string>
+    <string name="shaders_build_done">O cache de shaders foi criado.</string>
+    <string name="shaders_build_stopped">Parado: a próxima criação continua de onde parou.</string>
+    <string name="shaders_build_failed">Falhou: %1$s</string>
+    <string name="shaders_build_channel">Criação do cache de shaders</string>
+    <string name="shaders_building">Aguarde a criação dos shaders terminar ou pare-a (Dados do jogo › Cache de shaders).</string>
+    <string name="shaders_import">Importar cache de shaders…</string>
+    <string name="shaders_imported">Cache de shaders importado</string>
+    <string name="shaders_import_failed">Não é um cache de shaders: %1$s</string>
+    <string name="shaders_needed">Sem o cache de shaders, o jogo não consegue desenhar a maior parte dos gráficos.</string>
+
+    <!-- Game data › Saves -->
+    <string name="saves_hint">O jogo mantém um único save com todo o seu progresso e o carrega sozinho.</string>
+    <string name="saves_none">Nenhum save ainda. O jogo cria um quando você começa um novo jogo.</string>
+    <string name="saves_none_short">Nenhum save ainda</string>
+    <string name="save_last">Último save</string>
+    <string name="save_size">Tamanho</string>
+    <string name="save_profile">Perfil</string>
+    <string name="save_delete">Excluir</string>
+    <string name="save_delete_title">Excluir o save?</string>
+    <string name="save_delete_text">O jogo recomeça do início. Isso não pode ser desfeito.</string>
+    <string name="save_deleted">Save excluído.</string>
+    <string name="save_delete_failed">Não foi possível excluir o save.</string>
+
+    <!-- Game data › Logs -->
+    <string name="logs_hint">Cada vez que o jogo inicia, ele grava um .game.log aqui. Toque em um log para lê-lo ou compartilhá-lo (para relatar bugs).</string>
+    <string name="logs_none">Nenhum log ainda: o jogo grava um a cada início.</string>
+    <string name="detailed_logs">Logs detalhados</string>
+    <string name="detailed_logs_hint">Para relatar bugs: grava também mensagens de depuração. Os logs ficam bem maiores; desligue depois.</string>
+    <string name="log_share">Compartilhar</string>
+
+    <!-- Controls -->
+    <string name="pad_connected">Controle: %1$s</string>
+    <string name="pad_none">Nenhum controle encontrado. Conecte um para testá-lo aqui.</string>
+    <string name="pad_none_short">Nenhum controle encontrado</string>
+    <string name="pad_test_hint">Os botões acendem como o jogo os vê, após o remapeamento; os círculos sombreados são as zonas mortas dos analógicos.</string>
+    <string name="pad_up">Cima</string>
+    <string name="pad_down">Baixo</string>
+    <string name="pad_left">Esquerda</string>
+    <string name="pad_right">Direita</string>
+    <string name="vibration">Vibração</string>
+    <string name="vibration_test">Testar</string>
+    <string name="vibration_none">Este controle não vibra (ou nenhum está conectado).</string>
+    <string name="deadzone_left">Zona morta do analógico esquerdo</string>
+    <string name="deadzone_right">Zona morta do analógico direito</string>
+    <string name="deadzone_hint">Quanto um analógico se move antes que o jogo o perceba: aumente se a câmera ou o personagem se mover sozinho.</string>
+
+    <!-- Settings › System -->
+    <string name="language">Idioma</string>
+    <string name="language_hint">Os menus e legendas do jogo, as conquistas e este launcher.</string>
+    <string name="language_credit_ptbr">Tradução de fãs por XEX Brasil e Brazilian Warriors (joao13traducoes.com).</string>
+    <string name="toasts">Avisos de conquistas</string>
+    <string name="toasts_hint">Um aviso no jogo quando uma conquista é desbloqueada.</string>
+
+    <!-- Settings › Display -->
+    <string name="render_resolution">Resolução de renderização</string>
+    <string name="render_resolution_game">%1$d%% (%2$d × %3$d, a do jogo)</string>
+    <string name="render_resolution_hint">Menor é mais rápido, para celulares mais fracos (os menus e textos continuam nítidos). Acima de 100% é mais nítido e experimental.</string>
+    <string name="aspect">Telas largas</string>
+    <string name="aspect_screen">Esta tela é %1$s:1; o jogo é 16:9 (1,78:1).</string>
+    <string name="aspect_fit">Ajustar: 16:9 com barras pretas</string>
+    <string name="aspect_fill">Preencher: cortar em cima e embaixo</string>
+    <string name="aspect_stretch">Esticar: preencher a tela, com distorção</string>
+    <string name="aspect_fit_short">Ajustar</string>
+    <string name="aspect_fill_short">Preencher</string>
+    <string name="aspect_stretch_short">Esticar</string>
+    <string name="aspect_hint">Em telas que não são 16:9, como a maioria dos celulares (19,5:9, 20:9), como a imagem 16:9 do jogo preenche o resto.</string>
+    <string name="screen_padding">Margem da tela</string>
+    <string name="screen_padding_value">%1$d dp</string>
+    <string name="screen_padding_hint">Uma borda preta em volta da imagem, para que ela não fique colada nos cantos arredondados e nas bordas da tela.</string>
+
+    <!-- Settings › Enhancements -->
+    <string name="fps_cap">Limite de quadros</string>
+    <string name="fps_value">%1$d fps</string>
+    <string name="fps_value_game">%1$d fps (o do jogo)</string>
+    <string name="fps_unlimited">Ilimitado</string>
+    <string name="fps_cap_hint">30 é o do jogo. Acima de 30 é experimental: partes do jogo podem rodar rápido demais ou se comportar de forma estranha.</string>
+    <string name="show_fps">Mostrar a taxa de quadros</string>
+    <string name="skip_intro">Pular os logos ao iniciar</string>
+    <string name="skip_intro_hint">Vai direto para a tela de título, sem o aviso de salvamento automático.</string>
+
+    <!-- About -->
+    <string name="about_text">O jogo de Xbox 360, recompilado para rodar nativamente no Android. É necessária a sua própria cópia do jogo.\n\nNo jogo, Voltar abre o menu do jogo (controles, configurações, sair).</string>
+    <string name="about_repository">Repositório</string>
+    <string name="about_version_label">Versão</string>
+    <string name="about_built">Compilado</string>
+    <string name="about_shader_format">Formato do cache de shaders</string>
+    <string name="about_device">Este aparelho</string>
+    <string name="about_copy">Copiar</string>
+    <string name="about_copy_hint">Copia o conteúdo acima como texto, para relatar bugs.</string>
+    <string name="about_copied">Copiado.</string>
+    <string name="about_notice">Aviso</string>
+    <string name="about_notice_text">Este é um projeto de fã não oficial. Não é afiliado, endossado nem patrocinado pela Capcom ou pela CyberConnect2. Asura\'s Wrath é uma marca registrada da Capcom. Nenhum arquivo do jogo está incluído.</string>
+    <string name="about_credits">Feito com o SDK ReXGlue e outros softwares de código aberto: veja o README para créditos e licenças. Tradução PT-BR do jogo: XEX Brasil e Brazilian Warriors (joao13traducoes.com).</string>
+    <string name="info_device">Aparelho</string>
+    <string name="info_processor">Processador</string>
+    <string name="info_memory">Memória</string>
+    <string name="info_gpu">Gráficos</string>
+    <string name="info_screen">Tela</string>
+
+    <!-- In game (Back: InGameMenuActivity) -->
+    <string name="in_game_resume">Continuar</string>
+    <string name="in_game_restart">Reiniciar</string>
+    <string name="in_game_quit">Sair do jogo</string>
+    <string name="restart_title">Reiniciar o jogo?</string>
+    <string name="quit_title">Sair do jogo?</string>
+    <string name="progress_lost">O progresso desde o último save será perdido.</string>
+    <string name="restart">Reiniciar</string>
+    <string name="quit">Sair</string>
+    <string name="later">Depois</string>
+    <string name="restart_needed">Preencher, os efeitos, o driver de GPU, o idioma e a pasta do jogo mudam quando o jogo iniciar de novo: reinicie agora ou depois.</string>
+    <string name="shaders_in_game">Não com o jogo rodando: saia dele primeiro.</string>
+
+    <!-- Storage access -->
+    <string name="access_title">Permitir acesso aos seus arquivos</string>
+    <string name="access_text">O jogo lê os arquivos direto da pasta que você escolher. Para isso, o Android pede que você permita \"Acesso a todos os arquivos\".</string>
+    <string name="folder_unsupported">Este local não pode ser usado. Escolha uma pasta no armazenamento interno ou em um cartão SD.</string>
+    <string name="files_not_writable">O jogo não consegue gravar nesta pasta.</string>
+
+    <!-- Achievements; Game data › Info and › Progress -->
+    <string name="section_info">Informações</string>
+    <string name="page_achievements">Conquistas</string>
+    <string name="filter_all">Todas</string>
+    <string name="filter_unlocked">Desbloqueadas</string>
+    <string name="filter_locked">Bloqueadas</string>
+    <string name="achievements_no_game">Escolha a pasta do jogo (Dados do jogo › Pastas) para ver as conquistas.</string>
+    <string name="achievements_missing">Inicie o jogo uma vez: ele lê a lista de conquistas dos arquivos do jogo.</string>
+    <string name="achievements_language">Em outro idioma: o jogo atualiza a lista no próximo início.</string>
+    <string name="episodes">Episódios</string>
+    <string name="episodes_cleared">%1$d de %2$d episódios concluídos</string>
+    <string name="difficulty">Dificuldade</string>
+    <string name="easy">Fácil</string>
+    <string name="normal">Normal</string>
+    <string name="hard">Difícil</string>
+    <string name="battle_points">Pontos de Batalha</string>
+    <string name="battle_points_value">%1$d Pontos de Batalha</string>
+    <string name="enemies_defeated">Inimigos derrotados</string>
+    <string name="episodes_no_game">Escolha a pasta do jogo (Dados do jogo › Pastas) para ver os episódios.</string>
+    <string name="part">Parte %1$s</string>
+    <string name="episode">Episódio %1$s</string>
+    <string name="true_episode">Verdadeiro</string>
+    <string name="extra">Extra</string>
+    <string name="press_back_again">Pressione Voltar de novo para sair</string>
+
+    <!-- Game data › Traces; Logs' and Traces' folder buttons -->
+    <string name="open_folder">Abrir a pasta</string>
+    <string name="delete_all">Excluir tudo</string>
+    <string name="traces_hint">Um registro grava o que o renderizador faz durante um quadro em um arquivo próprio, para relatar problemas na imagem. Vá até o momento que parece errado e registre-o. Os 30 mais recentes são mantidos.</string>
+    <string name="trace_now">Registrar o próximo quadro</string>
+    <string name="trace">Registrar</string>
+    <string name="trace_on_resume">O jogo registra quando você voltar a jogar.</string>
+    <string name="trace_in_game">No jogo: Voltar › Registrar.</string>
+    <string name="trace_resume_hint">O quadro logo depois que você voltar a jogar é registrado.</string>
+    <string name="traces_none">Nenhum registro ainda.</string>
+    <string name="trace_picture">Salvar uma imagem do quadro</string>
+    <string name="trace_picture_hint">O quadro registrado como .png ao lado do registro.</string>
+    <string name="trace_frame">Quadro %1$s</string>
+    <string name="picture">Imagem</string>
+    <string name="trace_read">Ler o registro</string>
+    <string name="delete_logs_title">Excluir os logs?</string>
+    <string name="delete_traces_title">Excluir os registros?</string>
+    <string name="delete_trace_title">Excluir este registro?</string>
+    <string name="nothing_to_delete">Nada para excluir.</string>
+    <string name="delete_failed">%1$d arquivos não puderam ser excluídos.</string>
+    <string name="folder_path_copied">O Android não deixa gerenciadores de arquivos abrirem esta pasta; o caminho foi copiado: %1$s</string>
+    <plurals name="summary_traces">
+        <item quantity="one">%1$d registro</item>
+        <item quantity="many">%1$d registros</item>
+        <item quantity="other">%1$d registros</item>
+    </plurals>
+    <plurals name="delete_files">
+        <item quantity="one">%1$d arquivo será excluído. Isso não pode ser desfeito.</item>
+        <item quantity="many">%1$d arquivos serão excluídos. Isso não pode ser desfeito.</item>
+        <item quantity="other">%1$d arquivos serão excluídos. Isso não pode ser desfeito.</item>
+    </plurals>
+    <!-- Controls › Controller › Turbo; Settings › Display › Effects -->
+    <string name="turbo">Turbo</string>
+    <string name="turbo_hint">Segure um botão marcado em vez de apertá-lo várias vezes (só no controle).</string>
+    <string name="effects">Efeitos</string>
+    <string name="effects_hint">Desligar efeitos deixa o jogo mais leve para o celular, ou a imagem mais limpa. As sombras fixas das fases continuam. Vale no próximo início do jogo.</string>
+    <string name="fx_bloom">Bloom</string>
+    <string name="fx_depth_of_field">Profundidade de campo (desfoque do fundo)</string>
+    <string name="fx_motion_blur">Desfoque de movimento</string>
+    <string name="fx_radial_blur">Desfoque radial</string>
+    <string name="fx_shadows">Sombras dinâmicas</string>
+    <string name="fx_ambient_occlusion">Oclusão de ambiente</string>
+    <string name="fx_light_shafts">Feixes de luz</string>
+    <string name="fx_lens_flares">Reflexos de lente</string>
+    <string name="fx_distortion">Distorção e efeito de calor</string>
+    <!-- Settings › System › Achievement pop-ups -->
+    <string name="toast_position">Posição</string>
+    <string name="toast_size">Tamanho</string>
+    <string name="toast_seconds">Duração</string>
+    <string name="toast_example">Mostrar um exemplo</string>
+    <string name="toast_example_hint">No jogo: mostra um sobre o jogo quando você voltar a jogar.</string>
+    <string name="percent_value">%1$d%%</string>
+    <string name="seconds_value">%1$s s</string>
+    <string name="toast_pos_0">Superior esquerdo</string>
+    <string name="toast_pos_1">Topo</string>
+    <string name="toast_pos_2">Superior direito</string>
+    <string name="toast_pos_3">Esquerda</string>
+    <string name="toast_pos_4">Direita</string>
+    <string name="toast_pos_5">Inferior esquerdo</string>
+    <string name="toast_pos_6">Base</string>
+    <string name="toast_pos_7">Inferior direito</string>
+    <string name="gpu_driver">Driver de GPU</string>
+    <string name="gpu_driver_system">O driver do próprio celular</string>
+    <string name="gpu_driver_choose">Escolher…</string>
+    <string name="gpu_driver_install">Instalar de um .zip…</string>
+    <string name="gpu_driver_use">Usar</string>
+    <string name="gpu_driver_delete">Excluir</string>
+    <string name="gpu_driver_delete_title">Excluir este driver?</string>
+    <string name="gpu_driver_installed">%1$s instalado: usado no próximo início do jogo.</string>
+    <string name="gpu_driver_install_failed">Não foi possível instalar o driver: %1$s</string>
+    <string name="gpu_driver_hint">Para celulares Snapdragon (GPUs Adreno): um driver Vulkan personalizado, como o Mesa Turnip, de um .zip de driver (o tipo que outros emuladores de Android usam). Ele pode ser mais rápido ou corrigir a imagem, ou o jogo pode não iniciar com ele: nesse caso, escolha de novo o driver do próprio celular. Vale no próximo início do jogo.</string>
+    <string name="section_touch">Controles de toque</string>
+    <string name="touch_show">Mostrar controles de toque</string>
+    <string name="touch_auto">Mostrados quando nenhum controle está conectado</string>
+    <string name="touch_on">Sempre mostrados</string>
+    <string name="touch_off">Desligados</string>
+    <string name="touch_status_pad">Um controle está conectado.</string>
+    <string name="touch_status_none">Nenhum controle conectado.</string>
+    <string name="touch_size">Tamanho</string>
+    <string name="touch_opacity">Opacidade</string>
+    <string name="touch_hide_with_pad">Escondê-los enquanto um controle estiver conectado</string>
+    <string name="section_setup">Configuração do controle</string>
+    <string name="setup_none">Não configurado: mapeamento do próprio SDL</string>
+    <plurals name="setup_some">
+        <item quantity="one">%d controle configurado</item>
+        <item quantity="many">%d controles configurados</item>
+        <item quantity="other">%d controles configurados</item>
+    </plurals>
+    <string name="setup_text">Para um controle que o jogo lê errado (um gatilho movendo a câmera, um analógico que não faz nada). Toque em um comando abaixo e pressione-o no controle, ou em Iniciar configuração para que cada um seja pedido em sequência. Cada um espera 10 segundos e é salvo na hora; o jogo o usa quando você voltar a ele.</string>
+    <string name="setup_start">Iniciar configuração</string>
+    <string name="setup_forget">Esquecer minha configuração</string>
+    <string name="setup_skip">Pular</string>
+    <string name="setup_stop">Parar</string>
+    <string name="setup_forgotten">Esquecida: o mapeamento do SDL vale a partir do próximo início.</string>
+    <string name="setup_no_pad">Nenhum controle encontrado. Conecte um para configurá-lo.</string>
+    <string name="setup_uses_yours">%1$s: usa a sua configuração.</string>
+    <string name="setup_uses_default">%1$s: usa o mapeamento do próprio SDL.</string>
+    <string name="setup_listening">%1$s (%2$d s)</string>
+    <string name="setup_let_go">Solte tudo primeiro.</string>
+    <string name="setup_timeout">Nada foi pressionado em 10 segundos: parado.</string>
+    <string name="setup_done">Pronto: todos os comandos estão definidos.</string>
+    <string name="setup_not_set">Não definido</string>
+    <string name="setup_input_button">Botão %1$s</string>
+    <string name="setup_input_axis">Eixo %1$s</string>
+    <string name="remap">Remapear botões</string>
+    <string name="remap_hint">Toque na linha de um botão e pressione o botão do controle que deve agir como ele (10 segundos). Dois botões trocam de lugar, para que todos continuem acessíveis. Um toque longo restaura uma linha.</string>
+    <string name="remap_reset">Restaurar o remapeamento</string>
+    <string name="remap_listening">%1$s: pressione o botão do controle a usar (%2$d s)</string>
+    <string name="section_touch_layout">Layout de toque</string>
+    <string name="touch_layout_text">Onde fica cada controle de toque e qual o tamanho dele: mova-os com o dedo em uma tela cheia como a do jogo e redimensione o que escolher.</string>
+    <string name="touch_layout_edit">Editar layout</string>
+    <string name="touch_layout_reset">Restaurar</string>
+    <string name="touch_layout_done">Pronto</string>
+    <string name="touch_layout_pick">Toque em um controle para escolhê-lo, arraste-o para movê-lo.</string>
+    <string name="touch_layout_size">%1$s: %2$d%%</string>
+    <string name="touch_layout_default">Padrão</string>
+    <string name="touch_left_stick">Analógico esquerdo</string>
+    <string name="touch_right_stick">Analógico direito</string>
+    <string name="touch_hide">Esconder</string>
+    <string name="touch_hint">Dois analógicos, A B X Y, os botões de ombro e gatilhos, Back e Start, sobre o jogo; Esconder, entre Back e Start, esconde os outros até ser tocado de novo (para cenas). Eles funcionam junto com um controle, com o mesmo remapeamento e Turbo. As mudanças valem quando você voltar ao jogo.</string>
+    <plurals name="touch_layout_changed">
+        <item quantity="one">%d controle movido ou redimensionado</item>
+        <item quantity="many">%d controles movidos ou redimensionados</item>
+        <item quantity="other">%d controles movidos ou redimensionados</item>
+    </plurals>
+    <string-array name="setup_labels">
+        <item>A</item>
+        <item>B</item>
+        <item>X</item>
+        <item>Y</item>
+        <item>Botão de ombro esquerdo</item>
+        <item>Botão de ombro direito</item>
+        <item>Gatilho esquerdo</item>
+        <item>Gatilho direito</item>
+        <item>Back</item>
+        <item>Start</item>
+        <item>Pressionar analógico esquerdo</item>
+        <item>Pressionar analógico direito</item>
+        <item>Direcional para cima</item>
+        <item>Direcional para baixo</item>
+        <item>Direcional para a esquerda</item>
+        <item>Direcional para a direita</item>
+        <item>Analógico esquerdo para cima</item>
+        <item>Analógico esquerdo para baixo</item>
+        <item>Analógico esquerdo para a esquerda</item>
+        <item>Analógico esquerdo para a direita</item>
+        <item>Analógico direito para cima</item>
+        <item>Analógico direito para baixo</item>
+        <item>Analógico direito para a esquerda</item>
+        <item>Analógico direito para a direita</item>
+    </string-array>
+    <string-array name="setup_prompts">
+        <item>Pressione A (o botão frontal de baixo)</item>
+        <item>Pressione B (o botão frontal da direita)</item>
+        <item>Pressione X (o botão frontal da esquerda)</item>
+        <item>Pressione Y (o botão frontal de cima)</item>
+        <item>Pressione o botão de ombro esquerdo (LB / L1)</item>
+        <item>Pressione o botão de ombro direito (RB / R1)</item>
+        <item>Puxe o gatilho esquerdo (LT / L2)</item>
+        <item>Puxe o gatilho direito (RT / R2)</item>
+        <item>Pressione Back (Select, View, Share)</item>
+        <item>Pressione Start (Menu, Options)</item>
+        <item>Pressione o analógico esquerdo (L3)</item>
+        <item>Pressione o analógico direito (R3)</item>
+        <item>Pressione para cima no direcional</item>
+        <item>Pressione para baixo no direcional</item>
+        <item>Pressione para a esquerda no direcional</item>
+        <item>Pressione para a direita no direcional</item>
+        <item>Empurre o analógico esquerdo para cima</item>
+        <item>Empurre o analógico esquerdo para baixo</item>
+        <item>Empurre o analógico esquerdo para a esquerda</item>
+        <item>Empurre o analógico esquerdo para a direita</item>
+        <item>Empurre o analógico direito para cima</item>
+        <item>Empurre o analógico direito para baixo</item>
+        <item>Empurre o analógico direito para a esquerda</item>
+        <item>Empurre o analógico direito para a direita</item>
+    </string-array>
+</resources>

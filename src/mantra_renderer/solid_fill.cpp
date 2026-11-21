@@ -257,6 +257,13 @@ NativeCommandProcessor::SolidFillResult NativeCommandProcessor::TrySolidFillRect
         render_targets_.ClearDepthStencil(cmd, *alias.rt, alias.rect, write_depth, depth,
                                           write_stencil, stencil_ref,
                                           mantra::RenderTargetPool::DeferAliasClears());
+        // HUD passes below 100% render scale use the alias's native twin
+        // (e.g. Scaleform mask stencil cleared at 4x / half pitch).
+        if (mantra::RenderTarget* twin = render_targets_.DepthTwin(*alias.rt)) {
+          render_targets_.ClearDepthStencil(cmd, *twin, alias.rect, write_depth, depth,
+                                            write_stencil, stencil_ref,
+                                            mantra::RenderTargetPool::DeferAliasClears());
+        }
       }
       // The native twin used by HUD passes (render scale with a native HUD).
       if (mantra::RenderTarget* twin = render_targets_.DepthTwin(*rt)) {

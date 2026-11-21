@@ -52,4 +52,11 @@ void RemapPad(rex::input::X_INPUT_GAMEPAD& pad, const PadMap& map);
 
 std::unique_ptr<rex::system::IInputSystem> CreateInputSystem(bool tool_mode);
 
+// Android's touch controls (TouchControlsView.kt): a synthetic pad fed with
+// the controls held (bit = PadControl) and the sticks (-1..1, up positive).
+void SetTouchPad(uint32_t controls, float lx, float ly, float rx, float ry);
+// While the game's own menu is open the controls hide (it takes touches).
+void SetTouchControlsSuspended(bool suspended);
+bool TouchControlsSuspended();
+
 }  // namespace asura::input

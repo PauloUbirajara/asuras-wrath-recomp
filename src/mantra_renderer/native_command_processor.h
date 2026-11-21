@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <thread>
 #include <tuple>
 #include <unordered_map>
 #include <vector>
@@ -19,6 +20,7 @@
 #include <rex/string/buffer.h>
 #include <rex/ui/vulkan/api.h>
 
+#include "../platform/stop_thread.h"
 #include "buffer_cache.h"
 #include "memexport.h"
 #include "copy_pipelines.h"
@@ -519,6 +521,8 @@ class NativeCommandProcessor : public CommandProcessor, private mantra::TextureC
   const ui::vulkan::VulkanDevice* vulkan_device_ = nullptr;
 
   FrameSlot frame_slots_[kFrameSlots];
+  // Debug: MANTRA_FENCE_WATCHDOG=1 logs submissions the GPU never finishes.
+  asura::StopThread fence_watchdog_;
   uint64_t submission_current_ = 1;  // the one being recorded
   uint64_t submission_completed_ = 0;
   bool recording_ = false;

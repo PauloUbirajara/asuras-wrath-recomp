@@ -140,8 +140,13 @@ object GameProgress {
     )
 
     private fun languageCode(language: Int) = when (language) {
-        2 -> "JPN"; 3 -> "DEU"; 4 -> "FRA"; 5 -> "ESN"; 6 -> "ITA"; else -> "INT"
+        2 -> "JPN"; 3 -> "DEU"; 4 -> "FRA"; 5 -> "ESN"; 6 -> "ITA"
+        AppFolders.LANGUAGE_PT_BR -> "ESN"  // the Spanish files, translated
+        else -> "INT"
     }
+
+    /** The unpacked fan translations (AppFolders.translation), set by the launcher. */
+    var translations: ((Int) -> File?)? = null
 
     private fun parseCoalesced(d: ByteArray): Coalesced? {
         var pos = 0
@@ -200,14 +205,15 @@ object GameProgress {
     private val cache = HashMap<String, Coalesced?>()
 
     private fun coalesced(game: File, language: Int): Coalesced? {
-        val file = File(game, "BCGame/CookedXbox360/Coalesced_${languageCode(language)}.bin")
+        val name = "BCGame/CookedXbox360/Coalesced_${languageCode(language)}.bin"
+        val file = translations?.invoke(language)?.let { File(it, name) }?.takeIf { it.isFile } ?: File(game, name)
         val parsed = synchronized(cache) {
             cache.getOrPut(file.path) { try { parseCoalesced(file.readBytes()) } catch (e: Exception) { null } }
         }
         return parsed ?: if (language != 1) coalesced(game, 1) else null
     }
 
-    /** The main story's episodes in order (`language`: XLanguage, 1 English ... 6 Italian). */
+    /** The main story's episodes in order (`language`: launcher.cfg's, XLanguage 1 English ... 6 Italian, 9 PT-BR). */
     fun episodes(game: File, language: Int): List<Episode> {
         val c = coalesced(game, language) ?: return emptyList()
         return c.chapters.values.filter { it["bDLC"] != "TRUE" }.map { keys ->

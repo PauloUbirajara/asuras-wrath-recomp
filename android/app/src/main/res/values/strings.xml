@@ -49,7 +49,6 @@
 
     <string name="notice_game">Choose the game folder: Game data › Folders</string>
     <string name="notice_shaders">The shaders aren\'t built yet: Game data › Shader cache</string>
-    <string name="settings_more">The button remap, achievements and the other settings: in game, Back › Settings › Game menu.</string>
 
     <!-- Game data › Folders -->
     <string name="game_folder">Game folder</string>
@@ -57,7 +56,19 @@
     <string name="game_found">default.xex found</string>
     <string name="game_missing">No default.xex in this folder. Choose the extracted game folder (the one with default.xex).</string>
     <string name="game_missing_short">No default.xex in the game folder</string>
-    <string name="game_hint">The extracted game, copied to the phone (for example with extract-xiso on a computer).</string>
+    <string name="game_hint">The extracted game, or extract the disc image (.iso) here; a folder can also be copied from a computer (for example with extract-xiso).</string>
+    <string name="iso_extract">Extract an .iso…</string>
+    <string name="iso_title">Extracting the disc image</string>
+    <string name="iso_channel">Disc image extraction</string>
+    <string name="iso_reading">Reading the disc image…</string>
+    <string name="iso_not_disc">Not an Xbox 360 game disc image</string>
+    <string name="iso_not_game">The disc image has no default.xex</string>
+    <string name="iso_no_space">Not enough free space: %1$s needed, %2$s free</string>
+    <string name="iso_stop">Stop</string>
+    <string name="iso_progress">%1$d%% · %2$s</string>
+    <string name="iso_done">Disc image extracted</string>
+    <string name="iso_stopped">Extraction stopped</string>
+    <string name="iso_failed">Extraction failed: %1$s</string>
     <string name="game_needed">Choose the game folder first.</string>
     <string name="section_files">Files folder</string>
     <string name="files_hint">Everything the game makes: saves, the shader cache, logs. Changing it doesn\'t move what is already in the old folder.</string>
@@ -122,11 +133,12 @@
     <string name="deadzone_left">Left stick deadzone</string>
     <string name="deadzone_right">Right stick deadzone</string>
     <string name="deadzone_hint">How far a stick moves before the game sees it: raise it if the camera or character drifts.</string>
-    <string name="remap_hint">The buttons can be remapped in game: Back › Controls › Game menu.</string>
 
     <!-- Settings › System -->
     <string name="language">Language</string>
     <string name="language_hint">The game\'s menus and subtitles, the achievements and this launcher.</string>
+    <!-- Not translated: it only shows for Português (Brasil) (values-pt-rBR has it in Portuguese). -->
+    <string name="language_credit_ptbr" translatable="false">Fan translation by XEX Brasil and Brazilian Warriors (joao13traducoes.com).</string>
     <string name="toasts">Achievement pop-ups</string>
     <string name="toasts_hint">A pop-up in game when an achievement unlocks.</string>
 
@@ -189,9 +201,7 @@
     <string name="restart">Restart</string>
     <string name="quit">Quit</string>
     <string name="later">Later</string>
-    <string name="restart_needed">Fill, the effects, the language and the game folder change when the game starts again: restart it now, or later.</string>
-    <string name="game_menu">Game menu</string>
-    <string name="game_menu_summary">The button remap, keyboard, achievements and the other settings</string>
+    <string name="restart_needed">Fill, the effects, the GPU driver, the language and the game folder change when the game starts again: restart it now, or later.</string>
     <string name="shaders_in_game">Not while the game runs: quit it first.</string>
 
     <!-- Storage access -->
@@ -286,4 +296,118 @@
     <string name="toast_pos_5">Bottom left</string>
     <string name="toast_pos_6">Bottom</string>
     <string name="toast_pos_7">Bottom right</string>
+    <string name="gpu_driver">GPU driver</string>
+    <string name="gpu_driver_system">The phone\'s own driver</string>
+    <string name="gpu_driver_choose">Choose…</string>
+    <string name="gpu_driver_install">Install from .zip…</string>
+    <string name="gpu_driver_use">Use</string>
+    <string name="gpu_driver_delete">Delete</string>
+    <string name="gpu_driver_delete_title">Delete this driver?</string>
+    <string name="gpu_driver_installed">Installed %1$s: used the next time the game starts.</string>
+    <string name="gpu_driver_install_failed">Couldn\'t install the driver: %1$s</string>
+    <string name="gpu_driver_hint">For Snapdragon phones (Adreno GPUs): a custom Vulkan driver such as Mesa Turnip, from a driver .zip (the kind other Android emulators use). It can be faster or fix the picture, or the game may not start with it: then choose the phone\'s own driver again. Applies the next time the game starts.</string>
+    <string name="section_touch">Touch controls</string>
+    <string name="touch_show">Show touch controls</string>
+    <string name="touch_auto">Shown when no controller is connected</string>
+    <string name="touch_on">Always shown</string>
+    <string name="touch_off">Off</string>
+    <string name="touch_status_pad">A controller is connected.</string>
+    <string name="touch_status_none">No controller connected.</string>
+    <string name="touch_size">Size</string>
+    <string name="touch_opacity">Opacity</string>
+    <string name="touch_hide_with_pad">Hide them while a controller is connected</string>
+    <string name="section_setup">Controller setup</string>
+    <string name="setup_none">Not set up: SDL\'s own mapping</string>
+    <plurals name="setup_some">
+        <item quantity="one">%d controller set up</item>
+        <item quantity="other">%d controllers set up</item>
+    </plurals>
+    <string name="setup_text">For a controller the game reads wrongly (a trigger moving the camera, a stick doing nothing). Tap a control below and press it on the controller, or Start setup to be asked for each in turn. Each waits 10 seconds, and is saved at once; the game uses it when you go back to it.</string>
+    <string name="setup_start">Start setup</string>
+    <string name="setup_forget">Forget my setup</string>
+    <string name="setup_skip">Skip</string>
+    <string name="setup_stop">Stop</string>
+    <string name="setup_forgotten">Forgotten: SDL\'s own mapping applies from the next start.</string>
+    <string name="setup_no_pad">No controller found. Connect one to set it up.</string>
+    <string name="setup_uses_yours">%1$s: uses your setup.</string>
+    <string name="setup_uses_default">%1$s: uses SDL\'s own mapping.</string>
+    <string name="setup_listening">%1$s (%2$d s)</string>
+    <string name="setup_let_go">Let go of everything first.</string>
+    <string name="setup_timeout">Nothing was pressed in 10 seconds: stopped.</string>
+    <string name="setup_done">Done: every control is set.</string>
+    <string name="setup_not_set">Not set</string>
+    <string name="setup_input_button">Button %1$s</string>
+    <string name="setup_input_axis">Axis %1$s</string>
+    <string name="remap">Button remap</string>
+    <string name="remap_hint">Tap a button\'s row, then press the controller button that should act as it (10 seconds). Two buttons trade places, so each stays reachable. A long tap resets a row.</string>
+    <string name="remap_reset">Reset the remap</string>
+    <string name="remap_listening">%1$s: press the controller button to use (%2$d s)</string>
+    <string name="section_touch_layout">Touch layout</string>
+    <string name="touch_layout_text">Where each touch control sits and how big it is: move them with your finger on a full screen like the game\'s, and resize the one you pick.</string>
+    <string name="touch_layout_edit">Edit layout</string>
+    <string name="touch_layout_reset">Reset</string>
+    <string name="touch_layout_done">Done</string>
+    <string name="touch_layout_pick">Tap a control to pick it, drag it to move it.</string>
+    <string name="touch_layout_size">%1$s: %2$d%%</string>
+    <string name="touch_layout_default">As it comes</string>
+    <string name="touch_left_stick">Left stick</string>
+    <string name="touch_right_stick">Right stick</string>
+    <string name="touch_hide">Hide</string>
+    <string name="touch_hint">Two sticks, A B X Y, the bumpers and triggers, Back and Start, over the game; Hide, between Back and Start, hides the others until tapped again (for cutscenes). They work alongside a controller, with the same button remap and Turbo. Changes apply when you go back to the game.</string>
+    <plurals name="touch_layout_changed">
+        <item quantity="one">%d control moved or resized</item>
+        <item quantity="other">%d controls moved or resized</item>
+    </plurals>
+    <string-array name="setup_labels">
+        <item>A</item>
+        <item>B</item>
+        <item>X</item>
+        <item>Y</item>
+        <item>Left shoulder</item>
+        <item>Right shoulder</item>
+        <item>Left trigger</item>
+        <item>Right trigger</item>
+        <item>Back</item>
+        <item>Start</item>
+        <item>Left stick press</item>
+        <item>Right stick press</item>
+        <item>D-pad up</item>
+        <item>D-pad down</item>
+        <item>D-pad left</item>
+        <item>D-pad right</item>
+        <item>Left stick up</item>
+        <item>Left stick down</item>
+        <item>Left stick left</item>
+        <item>Left stick right</item>
+        <item>Right stick up</item>
+        <item>Right stick down</item>
+        <item>Right stick left</item>
+        <item>Right stick right</item>
+    </string-array>
+    <string-array name="setup_prompts">
+        <item>Press A (the bottom face button)</item>
+        <item>Press B (the right face button)</item>
+        <item>Press X (the left face button)</item>
+        <item>Press Y (the top face button)</item>
+        <item>Press the left bumper (LB / L1)</item>
+        <item>Press the right bumper (RB / R1)</item>
+        <item>Pull the left trigger (LT / L2)</item>
+        <item>Pull the right trigger (RT / R2)</item>
+        <item>Press Back (Select, View, Share)</item>
+        <item>Press Start (Menu, Options)</item>
+        <item>Click the left stick in (L3)</item>
+        <item>Click the right stick in (R3)</item>
+        <item>Press up on the D-pad</item>
+        <item>Press down on the D-pad</item>
+        <item>Press left on the D-pad</item>
+        <item>Press right on the D-pad</item>
+        <item>Push the left stick up</item>
+        <item>Push the left stick down</item>
+        <item>Push the left stick left</item>
+        <item>Push the left stick right</item>
+        <item>Push the right stick up</item>
+        <item>Push the right stick down</item>
+        <item>Push the right stick left</item>
+        <item>Push the right stick right</item>
+    </string-array>
 </resources>

@@ -68,12 +68,17 @@ import java.util.Locale
  *   Game data   Folders, Shader cache (built here by ShaderBuildService or
  *               imported), Saves, Logs; Traces and Progress listed, not yet
  *               on Android
- *   Controls    Test (the controller live), Controller (vibration, deadzones)
- *   Settings    System (language: also this launcher's), Display, Enhancements
+ *   Controls    Test (the controller live), Controller (vibration, Turbo,
+ *               deadzones, the button remap), Controller setup (ControllerSetup:
+ *               what the game reads from each control), Touch controls
+ *               (TouchControlsView), Touch layout (TouchLayoutActivity)
+ *   Settings    System (language: also this launcher's), Display, Enhancements,
+ *               GPU driver (Snapdragon phones: GpuDrivers)
  *   About       the build, this device (Copy), the notice
  *
- * It edits launcher.cfg (LauncherConfig) and starts GameActivity; the button
- * remap and the other settings are in the in-game menu, which Back opens.
+ * It edits launcher.cfg (LauncherConfig) and starts GameActivity. In game,
+ * Back opens it again (InGameMenuActivity): the game's own menu, as there is
+ * no other on Android.
  */
 open class LauncherActivity : AppCompatActivity() {
 
@@ -82,6 +87,7 @@ open class LauncherActivity : AppCompatActivity() {
 
     private lateinit var folders: AppFolders
     private lateinit var config: LauncherConfig
+    private lateinit var drivers: GpuDrivers
     private var binding = false  // filling the views: their listeners don't save
     private var drawer: DrawerLayout? = null  // portrait only
 
@@ -95,17 +101,21 @@ open class LauncherActivity : AppCompatActivity() {
         PROGRESS(R.id.section_progress, R.string.section_progress),
         TEST(R.id.section_test, R.string.section_test),
         CONTROLLER(R.id.section_controller, R.string.section_controller),
+        TOUCH(R.id.section_touch, R.string.section_touch),
+        SETUP(R.id.section_setup, R.string.section_setup),
+        TOUCH_LAYOUT(R.id.section_touch_layout, R.string.section_touch_layout),
         SYSTEM(R.id.section_system, R.string.section_system),
         DISPLAY(R.id.section_display, R.string.section_display),
         ENHANCEMENTS(R.id.section_enhancements, R.string.section_enhancements),
+        GPU(R.id.section_gpu, R.string.gpu_driver),  // Android only; listed where GpuDrivers.supported
     }
 
     private enum class Page(val menu: Int, val title: Int, val sections: List<Section>, val view: Int = 0) {
         GAME(R.id.menu_game, R.string.page_game,
             listOf(Section.FOLDERS, Section.SHADERS, Section.SAVES, Section.LOGS, Section.TRACES, Section.PROGRESS)),
-        CONTROLS(R.id.menu_controls, R.string.page_controls, listOf(Section.TEST, Section.CONTROLLER)),
+        CONTROLS(R.id.menu_controls, R.string.page_controls, listOf(Section.TEST, Section.CONTROLLER, Section.SETUP, Section.TOUCH, Section.TOUCH_LAYOUT)),
         ACHIEVEMENTS(R.id.menu_achievements, R.string.page_achievements, emptyList(), R.id.page_achievements),
-        SETTINGS(R.id.menu_settings, R.string.page_settings, listOf(Section.SYSTEM, Section.DISPLAY, Section.ENHANCEMENTS)),
+        SETTINGS(R.id.menu_settings, R.string.page_settings, listOf(Section.SYSTEM, Section.DISPLAY, Section.ENHANCEMENTS, Section.GPU)),
         ABOUT(R.id.menu_about, R.string.page_about, emptyList(), R.id.page_about),
     }
     private var page = Page.GAME
@@ -132,11 +142,19 @@ open class LauncherActivity : AppCompatActivity() {
     private val pickShaders = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let(::importShaders)
     }
+    private val pickIso = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let(::extractIso)
+    }
+    private val pickDriver = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let(::installDriver)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         folders = AppFolders(this)
+        GameProgress.translations = folders::translation
         folders.prepare()
+        drivers = GpuDrivers(this)
         config = LauncherConfig.load(folders.config)
         // The launcher's language is the game's (Settings › System); set
         // again at each start (Android before 13 doesn't keep it).
@@ -146,13 +164,21 @@ open class LauncherActivity : AppCompatActivity() {
         if (inGame) overGame()
         LauncherArt.applyFonts(window.decorView)
         LauncherArt.bitmap(this, "logo.png")?.let { findViewById<ImageView>(R.id.logo).setImageBitmap(it) }
+        setUpControls()  // before the pages: showing one stops the controls' listening
         setUpPages(savedInstanceState)
         setUpSettings()
-        setUpControls()
         setUpAbout()
         setUpFiles()
         findViewById<ChipGroup>(R.id.achievements_filter).setOnCheckedStateChangeListener { _, _ -> refreshAchievements() }
         findViewById<Button>(R.id.game_choose).setOnClickListener { choose(pickGame) }
+        findViewById<Button>(R.id.game_extract_iso).setOnClickListener {
+            if (IsoExtractService.status.state == IsoExtractService.State.RUNNING) {
+                IsoExtractService.stop(this)
+            } else {
+                // Some providers don't type .iso files; the service checks the image itself.
+                pickIso.launch(arrayOf("application/x-iso9660-image", "application/octet-stream", "*/*"))
+            }
+        }
         findViewById<Button>(R.id.files_choose).setOnClickListener { choose(pickFiles) }
         findViewById<Button>(R.id.files_default).setOnClickListener {
             config["data_folder"] = ""
@@ -183,6 +209,17 @@ open class LauncherActivity : AppCompatActivity() {
             showShaderBuild(status)
             if (status.state != ShaderBuildService.State.RUNNING) refresh()
         }
+        IsoExtractService.listener = { status ->
+            showIsoExtract(status)
+            if (status.state == IsoExtractService.State.DONE && status.out.isNotEmpty()) {
+                // The new folder is the game (once: the status stays DONE).
+                if (config["game_data"] != status.out) {
+                    config["game_data"] = status.out
+                    save()
+                }
+            }
+            if (status.state != IsoExtractService.State.RUNNING) refresh()
+        }
         (getSystemService(Context.INPUT_SERVICE) as InputManager).registerInputDeviceListener(inputListener, null)
         // The game may have changed the settings (its in-game menu).
         config = LauncherConfig.load(folders.config)
@@ -198,6 +235,7 @@ open class LauncherActivity : AppCompatActivity() {
 
     override fun onPause() {
         ShaderBuildService.listener = null
+        IsoExtractService.listener = null
         (getSystemService(Context.INPUT_SERVICE) as InputManager).unregisterInputDeviceListener(inputListener)
         super.onPause()
     }
@@ -211,10 +249,13 @@ open class LauncherActivity : AppCompatActivity() {
     // --- Language --------------------------------------------------------------
 
     // The languages on the disc (XLanguage ids, as launcher.cfg's language=)
-    // and the launcher's own translations of them.
+    // and the launcher's own translations of them; then the fan translations
+    // shipped with the app (src/ui/translation.h), named with who made them.
     private val languages = listOf(
         3 to ("Deutsch" to "de"), 1 to ("English" to "en"), 5 to ("Español" to "es"),
-        4 to ("Français" to "fr"), 6 to ("Italiano" to "it"), 2 to ("日本語" to "ja"),
+        4 to ("Français" to "fr"), 6 to ("Italiano" to "it"),
+        AppFolders.LANGUAGE_PT_BR to ("Português (Brasil) - joao13" to "pt-BR"),
+        2 to ("日本語" to "ja"),
     )
 
     /** Sets the app's language to launcher.cfg's (AppCompat recreates the activity when it changes). */
@@ -267,8 +308,11 @@ open class LauncherActivity : AppCompatActivity() {
     /** Shows a page: its section `s`, else its list (or its own view). */
     private fun showPage(p: Page, s: Section? = null) {
         if (inGame) setOverlay(false)
+        // Listening for a control stops with its section.
+        setup.pause()
+        remap.stop()
         page = p
-        section = s?.takeIf { it in p.sections && it.enabled }
+        section = s?.takeIf { it in p.sections && it.enabled && (it != Section.GPU || GpuDrivers.supported) }
         for (other in Page.entries) findViewById<MenuButton>(other.menu).current = other == p
         val shown = section?.view ?: p.view.takeIf { it != 0 } ?: R.id.section_list
         val pages = findViewById<ViewGroup>(R.id.section_list).parent as ViewGroup
@@ -293,6 +337,7 @@ open class LauncherActivity : AppCompatActivity() {
             Section.LOGS -> refreshLogs()
             Section.TRACES -> refreshTraces()
             Section.TEST -> refreshPad()
+            Section.SETUP -> setup.refresh()
             else -> if (p == Page.ACHIEVEMENTS) refreshAchievements()
         }
     }
@@ -307,14 +352,8 @@ open class LauncherActivity : AppCompatActivity() {
         val list = findViewById<LinearLayout>(R.id.section_list)
         list.removeAllViews()
         summaries.clear()
-        for (s in page.sections) {
+        for (s in page.sections.filter { it != Section.GPU || GpuDrivers.supported }) {
             list.addView(row(getString(s.title), summary(s), s.enabled, { summaries[s] = it }) { showPage(page, s) })
-        }
-        if (inGame && (page == Page.SETTINGS || page == Page.CONTROLS)) {
-            // What this menu hasn't: the game's own menu, over the game.
-            list.addView(row(getString(R.string.game_menu), getString(R.string.game_menu_summary)) { openGameMenu() })
-        } else if (page == Page.SETTINGS || page == Page.CONTROLS) {
-            list.addView(hint(getString(if (page == Page.SETTINGS) R.string.settings_more else R.string.remap_hint)))
         }
         LauncherArt.applyFonts(list)
     }
@@ -389,9 +428,15 @@ open class LauncherActivity : AppCompatActivity() {
             ?: getString(R.string.pad_none_short)
         Section.CONTROLLER -> getString(R.string.summary_controller, config.int("vibration", 100),
             percent(config.double("deadzone_left")), percent(config.double("deadzone_right")))
+        Section.TOUCH -> touchSummary()
+        Section.TOUCH_LAYOUT -> touchLayoutSummary()
+        Section.SETUP -> setups.count().let {
+            if (it == 0) getString(R.string.setup_none) else resources.getQuantityString(R.plurals.setup_some, it, it)
+        }
         Section.SYSTEM -> languageName()
         Section.DISPLAY -> getString(R.string.summary_display, config.int("render_scale", 100),
             getString(aspectNames.getValue(config["aspect"] ?: "fit")))
+        Section.GPU -> currentDriverLabel()
         Section.ENHANCEMENTS -> config.int("fps_cap", 30).let {
             getString(R.string.summary_enhancements, if (it == 0) getString(R.string.fps_unlimited) else it.toString())
         }
@@ -496,6 +541,10 @@ open class LauncherActivity : AppCompatActivity() {
 
     /** Starts the build (a stopped one continues unless `fresh`). */
     private fun buildShaders(fresh: Boolean) {
+        if (IsoExtractService.status.state == IsoExtractService.State.RUNNING) {
+            toast(IsoExtractService.statusText(this, IsoExtractService.status))
+            return
+        }
         val game = gameFolder()
         if (game == null || !gameFound()) {
             toast(getString(R.string.game_needed))
@@ -512,6 +561,45 @@ open class LauncherActivity : AppCompatActivity() {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
         ShaderBuildService.start(this, game, folders.shaderCache(config), fresh)
+    }
+
+    // --- Disc image ----------------------------------------------------------------
+
+    /** Extracts the picked .iso into the app's extracted/ folder (IsoExtractService). */
+    private fun extractIso(uri: Uri) {
+        if (ShaderBuildService.status.state == ShaderBuildService.State.RUNNING) {
+            toast(getString(R.string.shaders_building))
+            return
+        }
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+        }
+        IsoExtractService.start(this, uri, folders.defaultGame)
+        showIsoExtract(IsoExtractService.status)
+    }
+
+    private fun showIsoExtract(s: IsoExtractService.Status) {
+        val running = s.state == IsoExtractService.State.RUNNING
+        val progress = findViewById<LinearProgressIndicator>(R.id.iso_progress)
+        progress.isVisible = running
+        if (running && s.totalBytes > 0) {
+            progress.isIndeterminate = false
+            progress.max = 1000
+            progress.progress = (s.doneBytes * 1000 / s.totalBytes).toInt()
+        }
+        val text = IsoExtractService.statusText(this, s)
+        findViewById<TextView>(R.id.iso_status).apply {
+            isVisible = text.isNotEmpty()
+            this.text = text
+        }
+        findViewById<Button>(R.id.game_extract_iso).apply {
+            setText(if (running) R.string.iso_stop else R.string.iso_extract)
+            // The game reads the folder.
+            isEnabled = !inGame
+        }
+        findViewById<Button>(R.id.game_choose).isEnabled = !running
     }
 
     /** The build's progress line and buttons (as the desktop launcher's). */
@@ -1041,7 +1129,32 @@ open class LauncherActivity : AppCompatActivity() {
 
     // --- Controls --------------------------------------------------------------
 
+    private lateinit var setups: SdlPad.Setups
+    private lateinit var setup: ControllerSetup
+    private lateinit var remap: ButtonRemap
+
     private fun setUpControls() {
+        setups = SdlPad.Setups(File(folders.root, "controller_setup_android.txt"))
+        pad.setups = setups
+        setup = ControllerSetup(this, setups, ControllerSetup.Views(
+            findViewById(R.id.setup_pad), findViewById(R.id.setup_start), findViewById(R.id.setup_forget),
+            findViewById(R.id.setup_prompt), findViewById(R.id.setup_skip), findViewById(R.id.setup_stop),
+            findViewById(R.id.setup_message), findViewById(R.id.setup_rows),
+        )) { pad.reloadSetup() }
+        remap = ButtonRemap(this, { config }, pad, findViewById(R.id.remap_prompt), findViewById(R.id.remap_rows)) {
+            config.save()
+            refreshPad()
+            remap.show()
+        }
+        findViewById<Button>(R.id.remap_reset).setOnClickListener { remap.resetAll() }
+        // Controls › Touch layout.
+        findViewById<Button>(R.id.touch_layout_edit).setOnClickListener {
+            startActivity(Intent(this, TouchLayoutActivity::class.java))
+        }
+        findViewById<Button>(R.id.touch_layout_default).setOnClickListener {
+            config.remove("touch_layout")
+            save()
+        }
         findViewById<PadTestView>(R.id.pad_test).apply {
             state = pad
             labels = arrayOf("A", "B", "X", "Y", "LB", "RB", "LT", "RT", "Back", "Start", "LS", "RS",
@@ -1095,6 +1208,7 @@ open class LauncherActivity : AppCompatActivity() {
             invalidate()
         }
         if (section == null && page == Page.CONTROLS) showList()
+        if (section == Section.SETUP) setup.refresh()
     }
 
     private fun testing() = section == Section.TEST
@@ -1102,7 +1216,8 @@ open class LauncherActivity : AppCompatActivity() {
     // The controller goes to the test view (and is kept from moving the
     // focus or going Back while it shows).
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
-        if (pad.onMotion(event) && testing()) {
+        if (section == Section.SETUP && setup.onMotion(event)) return true
+        if (pad.onMotion(event) && (testing() || remap.onPad())) {
             findViewById<PadTestView>(R.id.pad_test).invalidate()
             return true
         }
@@ -1110,8 +1225,12 @@ open class LauncherActivity : AppCompatActivity() {
     }
 
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        // Controller setup listening: every key of the controller is its.
+        if (section == Section.SETUP && setup.onKey(event)) return true
         val wasNamed = pad.device != null
-        if (pad.onKey(event) && testing()) {
+        val padKey = pad.onKey(event)
+        if (padKey && remap.onPad()) return true
+        if (padKey && testing()) {
             if (!wasNamed) refreshPad()
             findViewById<PadTestView>(R.id.pad_test).invalidate()
             return true
@@ -1126,6 +1245,11 @@ open class LauncherActivity : AppCompatActivity() {
 
     private fun languageName() = config.int("language", 1).let { id ->
         languages.firstOrNull { it.first == id }?.second?.first ?: "English"
+    }
+
+    // The fan translation's credit under the language (Settings › System).
+    private fun showLanguageCredit() {
+        findViewById<View>(R.id.language_credit).isVisible = config.int("language", 1) == AppFolders.LANGUAGE_PT_BR
     }
 
     private fun setUpSettings() {
@@ -1151,8 +1275,14 @@ open class LauncherActivity : AppCompatActivity() {
             config["language"] = languages[position].first.toString()
             config.save()
             applyLanguage()
+            showLanguageCredit()
         }
+        showLanguageCredit()
 
+        findViewById<Button>(R.id.gpu_driver_choose).setOnClickListener { chooseDriver() }
+        findViewById<Button>(R.id.gpu_driver_install).setOnClickListener {
+            pickDriver.launch(arrayOf("application/zip", "application/octet-stream", "*/*"))
+        }
         findViewById<Slider>(R.id.render_scale).addOnChangeListener { _, value, fromUser ->
             showRenderScale(value.toInt())
             if (fromUser && !binding) {
@@ -1169,10 +1299,33 @@ open class LauncherActivity : AppCompatActivity() {
                 save()
             }
         }
+        // Controls › Touch controls (TouchControlsView).
+        findViewById<Slider>(R.id.touch_size).addOnChangeListener { _, value, fromUser ->
+            findViewById<TextView>(R.id.touch_size_value).text = getString(R.string.percent_value, value.toInt())
+            if (fromUser && !binding) {
+                config["touch_size"] = value.toInt().toString()
+                save()
+            }
+        }
+        findViewById<Slider>(R.id.touch_opacity).addOnChangeListener { _, value, fromUser ->
+            findViewById<TextView>(R.id.touch_opacity_value).text = getString(R.string.percent_value, value.toInt())
+            if (fromUser && !binding) {
+                config["touch_opacity"] = value.toInt().toString()
+                save()
+            }
+        }
         for ((id, cap) in fpsChips) {
             findViewById<Chip>(id).setOnClickListener {
                 config["fps_cap"] = cap.toString()
                 save()
+            }
+        }
+        for ((i, id) in fpsCornerChips.withIndex()) {
+            findViewById<Chip>(id).setOnClickListener {
+                if (!binding) {
+                    config["fps_corner"] = i.toString()
+                    save()
+                }
             }
         }
         // Achievement pop-ups (game_toast.h ToastOptions).
@@ -1257,6 +1410,8 @@ open class LauncherActivity : AppCompatActivity() {
         R.id.fx_shadows to "fx_shadows", R.id.fx_ambient_occlusion to "fx_ambient_occlusion",
         R.id.fx_light_shafts to "fx_light_shafts", R.id.fx_lens_flares to "fx_lens_flares",
         R.id.fx_distortion to "fx_distortion",
+        // Touch controls (TouchControlsView).
+        R.id.touch_show to "touch_show", R.id.touch_hide_with_pad to "touch_hide_with_pad",
     )
     // Turbo chips -> PadState.NAMES (launcher.cfg turbo=a,b,...).
     private val turboChips = listOf(
@@ -1269,9 +1424,24 @@ open class LauncherActivity : AppCompatActivity() {
         "show_fps" to false, "skip_intro" to false, "toasts" to true, "detailed_logs" to false, "trace_picture" to true,
         "fx_bloom" to true, "fx_depth_of_field" to true, "fx_motion_blur" to true, "fx_radial_blur" to true,
         "fx_shadows" to true, "fx_ambient_occlusion" to true, "fx_light_shafts" to true, "fx_lens_flares" to true,
-        "fx_distortion" to true,
+        "fx_distortion" to true, "touch_show" to true, "touch_hide_with_pad" to true,
     )
 
+    /** The Touch layout line: as it comes, or how many are moved or resized. */
+    private fun touchLayoutSummary(): String {
+        val n = (config["touch_layout"] ?: "").split(';').count { it.isNotBlank() }
+        return if (n == 0) getString(R.string.touch_layout_default)
+        else resources.getQuantityString(R.plurals.touch_layout_changed, n, n)
+    }
+
+    /** The Touch controls line: off, always, or hidden with a controller. */
+    private fun touchSummary() = getString(when {
+        !config.bool("touch_show", true) -> R.string.touch_off
+        !config.bool("touch_hide_with_pad", true) -> R.string.touch_on
+        else -> R.string.touch_auto
+    })
+
+    private val fpsCornerChips = listOf(R.id.fps_corner_0, R.id.fps_corner_1, R.id.fps_corner_2, R.id.fps_corner_3)
     private val fpsChips = listOf(R.id.fps_30 to 30, R.id.fps_60 to 60, R.id.fps_120 to 120, R.id.fps_unlimited to 0)
     private val aspectRows = mapOf(
         "fit" to (R.id.aspect_fit to R.id.aspect_fit_info),
@@ -1304,6 +1474,59 @@ open class LauncherActivity : AppCompatActivity() {
             30 -> getString(R.string.fps_value_game, cap)
             else -> getString(R.string.fps_value, cap)
         }
+    }
+
+    // Settings › Display › GPU driver (GpuDrivers.kt).
+    private fun driverLabel(d: GpuDrivers.Driver) =
+        listOf(d.name, d.version).filter { it.isNotEmpty() }.joinToString(" ")
+
+    private fun currentDriverLabel() =
+        drivers.find(config["gpu_driver"])?.let(::driverLabel) ?: getString(R.string.gpu_driver_system)
+
+    /** The installed drivers and the phone's own: pick one for the next start, or delete one. */
+    private fun chooseDriver() {
+        val installed = drivers.list()
+        val current = config["gpu_driver"] ?: ""
+        val labels = listOf(getString(R.string.gpu_driver_system)) + installed.map { d ->
+            driverLabel(d) + (if (d.author.isNotEmpty()) " · " + d.author else "")
+        }
+        var picked = installed.indexOfFirst { it.id == current } + 1  // 0: the phone's
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.gpu_driver)
+            .setSingleChoiceItems(labels.toTypedArray(), picked) { _, which -> picked = which }
+            .setPositiveButton(R.string.gpu_driver_use) { _, _ ->
+                config["gpu_driver"] = if (picked == 0) "" else installed[picked - 1].id
+                save()
+            }
+            .setNeutralButton(R.string.gpu_driver_delete) { _, _ ->
+                val driver = installed.getOrNull(picked - 1) ?: return@setNeutralButton
+                confirm(R.string.gpu_driver_delete_title, driverLabel(driver), R.string.gpu_driver_delete) {
+                    drivers.delete(driver.id)
+                    if (current == driver.id) config["gpu_driver"] = ""
+                    save()
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    /** Unpacks a driver .zip (off the UI thread) and picks it. */
+    private fun installDriver(uri: Uri) {
+        val button = findViewById<Button>(R.id.gpu_driver_install)
+        button.isEnabled = false
+        Thread {
+            val result = runCatching { drivers.install(uri) }
+            runOnUiThread {
+                button.isEnabled = true
+                result.onSuccess { d ->
+                    config["gpu_driver"] = d.id
+                    save()
+                    toast(getString(R.string.gpu_driver_installed, driverLabel(d)))
+                }.onFailure { e ->
+                    toast(getString(R.string.gpu_driver_install_failed, e.message ?: ""))
+                }
+            }
+        }.start()
     }
 
     private fun showRenderScale(percent: Int) {
@@ -1359,6 +1582,7 @@ open class LauncherActivity : AppCompatActivity() {
             val renderScale = config.int("render_scale", 100).coerceIn(5, 400) / 5 * 5
             findViewById<Slider>(R.id.render_scale).value = renderScale.toFloat()
             showRenderScale(config.int("render_scale", 100))
+            findViewById<TextView>(R.id.gpu_driver_value).text = currentDriverLabel()
             val vibration = config.int("vibration", 100).coerceIn(0, 200) / 10 * 10
             findViewById<Slider>(R.id.vibration).value = vibration.toFloat()
             showVibration(vibration)
@@ -1370,6 +1594,25 @@ open class LauncherActivity : AppCompatActivity() {
                 if (cap == 0) FPS_UNLIMITED_SLOT.toFloat() else (cap.coerceAtLeast(15) / 5 * 5).toFloat()
             showFpsCap(cap)
             for ((id, value) in fpsChips) findViewById<Chip>(id).isChecked = value == cap
+            val fpsCorner = config.int("fps_corner", 0).coerceIn(0, 3)
+            for ((i, id) in fpsCornerChips.withIndex()) findViewById<Chip>(id).isChecked = i == fpsCorner
+            findViewById<View>(R.id.fps_corner).isVisible = config.bool("show_fps", false)
+            findViewById<TextView>(R.id.touch_layout_state).text = touchLayoutSummary()
+            findViewById<View>(R.id.touch_layout_default).isEnabled = !config["touch_layout"].isNullOrEmpty()
+            remap.show()
+            val touchShown = config.bool("touch_show", true)
+            findViewById<View>(R.id.touch_hide_with_pad).isEnabled = touchShown
+            // With the controller's name: what hides them, if it isn't one.
+            findViewById<TextView>(R.id.touch_status).text = PadState.connectedPad()?.let {
+                getString(R.string.touch_status_pad) + " (" + it.name + ")"
+            } ?: getString(R.string.touch_status_none)
+            findViewById<View>(R.id.touch_options).alpha = if (touchShown) 1f else 0.5f
+            val touchSize = config.int("touch_size", 100).coerceIn(50, 200) / 10 * 10
+            findViewById<Slider>(R.id.touch_size).value = touchSize.toFloat()
+            findViewById<TextView>(R.id.touch_size_value).text = getString(R.string.percent_value, touchSize)
+            val touchOpacity = config.int("touch_opacity", 50).coerceIn(10, 100) / 5 * 5
+            findViewById<Slider>(R.id.touch_opacity).value = touchOpacity.toFloat()
+            findViewById<TextView>(R.id.touch_opacity_value).text = getString(R.string.percent_value, touchOpacity)
             val padding = config.int("screen_padding", 0).coerceIn(0, 64) / 4 * 4
             // As launcher.cpp: toast_position, or the older toast_corner; 140% on phones.
             val toastPosition = config.int("toast_position", -1).takeIf { it in 0..7 }
@@ -1401,6 +1644,7 @@ open class LauncherActivity : AppCompatActivity() {
                 Section.LOGS -> refreshLogs()
                 Section.TRACES -> refreshTraces()
                 Section.TEST -> refreshPad()
+                Section.SETUP -> setup.refresh()
                 else -> if (page == Page.ACHIEVEMENTS) refreshAchievements()
             }
         } finally {
@@ -1421,6 +1665,7 @@ open class LauncherActivity : AppCompatActivity() {
 
     private fun refreshShaders() {
         showShaderBuild(ShaderBuildService.status)
+        showIsoExtract(IsoExtractService.status)
         val cache = folders.shaderCache(config)
         val state = shaderState(cache)
         val status = findViewById<TextView>(R.id.shaders_status)
@@ -1524,6 +1769,7 @@ open class LauncherActivity : AppCompatActivity() {
         return fill(start) != fill(config) ||
             start.int("language", 1) != config.int("language", 1) ||
             (start["game_data"] ?: "") != (config["game_data"] ?: "") ||
+            (start["gpu_driver"] ?: "") != (config["gpu_driver"] ?: "") ||
             switches.any { (_, key) ->
                 key.startsWith("fx_") && start.bool(key, true) != config.bool(key, true)
             }
@@ -1562,15 +1808,13 @@ open class LauncherActivity : AppCompatActivity() {
         android.os.Process.killProcess(android.os.Process.myPid())
     }
 
-    /** The game's own menu (ImGui), opened by the game when it comes back. */
-    private fun openGameMenu() {
-        File(folders.root, ".open_game_menu").writeText("1\n")
-        finish()
-    }
-
     // --- Play ------------------------------------------------------------------
 
     private fun play() {
+        if (IsoExtractService.status.state == IsoExtractService.State.RUNNING) {
+            toast(IsoExtractService.statusText(this, IsoExtractService.status))
+            return
+        }
         // The game reads the cache at start; the build is still writing it.
         if (ShaderBuildService.status.state == ShaderBuildService.State.RUNNING) {
             toast(getString(R.string.shaders_building))

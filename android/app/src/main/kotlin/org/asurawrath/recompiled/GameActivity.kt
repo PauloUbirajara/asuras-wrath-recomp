@@ -3,6 +3,7 @@ package org.asurawrath.recompiled
 import android.content.Intent
 import android.os.Bundle
 import android.os.Process
+import java.io.File
 import org.libsdl.app.SDLActivity
 
 /**
@@ -20,13 +21,25 @@ class GameActivity : SDLActivity() {
         // The settings the game started with: the menu's Resume asks for a
         // restart when one that only applies at start has changed.
         startConfig = LauncherConfig.load(folders.config)
+        // The in-game menu's note (the toast example) is for the game it was
+        // left in: none from an earlier one (nor older builds' notes).
+        for (note in listOf(".toast_example", ".open_game_menu", ".open_controller_setup")) File(folders.root, note).delete()
         current = this
         super.onCreate(savedInstanceState)
+        // The touch controls over the game's surface (Controls › Touch controls).
+        touch = TouchControlsView(this).also {
+            mLayout?.addView(it, android.view.ViewGroup.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT, android.view.ViewGroup.LayoutParams.MATCH_PARENT))
+        }
     }
+
+    private var touch: TouchControlsView? = null
 
     override fun onResume() {
         super.onResume()
         applyScreenPadding()
+        // After the in-game menu: its touch settings.
+        touch?.reload(LauncherConfig.load(AppFolders(this).config))
     }
 
     /**
@@ -75,16 +88,23 @@ class GameActivity : SDLActivity() {
         var startConfig: LauncherConfig? = null
             private set
 
-        /** asura_wrath_app.h: the menu closed (reload launcher.cfg, maybe open the game menu). */
+        /** asura_wrath_app.h: the menu closed (reload launcher.cfg and the controller setup). */
         @JvmStatic external fun nativeMenuClosed()
+
+        /** pad_remap.cpp: the touch controls' state (bit = PadControl; sticks -1..1, up positive). */
+        @JvmStatic external fun nativeTouchPad(controls: Int, lx: Float, ly: Float, rx: Float, ry: Float)
+
+        /** pad_remap.cpp: the game's own menu is open (the touch controls hide). */
+        @JvmStatic external fun nativeTouchSuspended(): Boolean
     }
 }
 
 /**
  * The menu Back opens in game: the launcher's pages, in the game's process
- * over the paused game, with Resume (Play's place), Restart and Quit. Its
- * Game menu entry opens the game's own (ImGui) menu, for what this one
- * hasn't: the button remap, the keyboard, achievements.
+ * over the paused game, with Resume (Play's place), Restart and Quit. The
+ * game's settings, controller setup and the rest apply when it closes
+ * (asura_wrath_app.h OnMenuClosed). The desktop's in-game menu (ImGui) isn't
+ * used on Android.
  */
 class InGameMenuActivity : LauncherActivity() {
     override val inGame = true

@@ -26,4 +26,10 @@ size_t ReplaceGameFiles(rex::Runtime* runtime, const char* device,
                         const std::filesystem::path& host_folder, const std::string& game_folder,
                         const std::vector<std::string>& names);
 
+// The game reads its packages by the sizes in BCGame\Xbox360TOC.txt, and an
+// async read past the listed size never completes (the game stalls while
+// loading). Call after all ReplaceGameFiles: if a copy's size differs from
+// the TOC's, a corrected copy of the TOC (in the cache folder) replaces it.
+void FixGameToc(rex::Runtime* runtime);
+
 }  // namespace asura::game

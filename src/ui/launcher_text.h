@@ -7,7 +7,8 @@
 
 namespace asura::ui {
 
-// XLanguage: 1 English, 2 Japanese, 3 German, 4 French, 5 Spanish, 6 Italian.
+// XLanguage: 1 English, 2 Japanese, 3 German, 4 French, 5 Spanish, 6 Italian;
+// 9 Português (Brasil), the fan translation (translation.h).
 void SetLauncherLanguage(uint32_t language);
 uint32_t LauncherLanguage();
 

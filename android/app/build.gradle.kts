@@ -67,8 +67,10 @@ android {
                 // The game library and what it loads: the runtime and the GPU
                 // plugins; and mantra_shadergen (libmantra_shadergen.so, a
                 // program: the launcher's shader build).
+                // libadrenotools' hooks (custom GPU drivers, arm64; empty elsewhere).
                 targets += listOf("asura_wrath", "rexruntime", "rexgpu-mantra", "rexgpu-xenos",
-                                  "mantra_shadergen")
+                                  "mantra_shadergen", "hook_impl", "main_hook",
+                                  "file_redirect_hook", "gsl_alloc_hook")
             }
         }
     }

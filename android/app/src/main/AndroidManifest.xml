@@ -79,9 +79,23 @@
             android:screenOrientation="behind"
             android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation" />
 
+        <!-- Controls › Touch layout: the touch controls full screen, to move and resize. -->
+        <activity
+            android:name=".TouchLayoutActivity"
+            android:label="@string/section_touch_layout"
+            android:exported="false"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboard|keyboardHidden|navigation" />
+
         <!-- The shader cache build (mantra_shadergen, lib/<abi>/libmantra_shadergen.so). -->
         <service
             android:name=".ShaderBuildService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- The disc image extraction (IsoExtractService). -->
+        <service
+            android:name=".IsoExtractService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 

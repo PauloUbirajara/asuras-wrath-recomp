@@ -2,7 +2,7 @@
 
 PC port of Asura's Wrath (`default.xex`, Title ID `43430817`) via Xbox 360 static PowerPC recompilation to C++23, rendered by the in-repo Vulkan renderer `mantra`.
 
-> Note: made and tested on Linux. A Windows build can be made (natively or cross-compiled from Linux). An **experimental Android** build exists (arm64, needs a controller; see [Android](#android-experimental)).
+> Note: made and tested on Linux. A Windows build can be made (natively or cross-compiled from Linux). An **experimental Android** build exists (arm64; touch controls or a controller; see [Android](#android-experimental)).
 
 <a href="https://www.youtube.com/playlist?list=PLVyuezqTsTB0">
         <img alt="cover" src="https://github.com/user-attachments/assets/339f7f1b-85d4-48ac-9b5f-ac4fad276dad" />
@@ -163,6 +163,8 @@ Everything at once (Linux tar.gz + AppImage, Windows zip, APKs), from the builds
 tools/package.sh --all --clean --version 0.1.0
 ```
 
+`tools/package.sh` refuses a Windows or Android build older than the sources, so a failed build isn't packaged under the new version.
+
 The Windows build links the Microsoft C++ runtime dynamically: players without it install the [Visual C++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe) (the zip's README says so).
 
 For a GitHub release, attach the files in `out/package`. The default build is tuned for your CPU and may not run on others, so share only `--portable` builds. Players supply their own game: never attach game files or a shader cache built from them.
@@ -263,9 +265,10 @@ The launcher opens first:
   - *Traces*: *Trace the next frame* (or F3 in game) writes everything mantra does for one frame to `<Files folder>/traces/<date>_<time>_frame<N>.log`, for picture bugs. The newest 30 are kept.
   - *Info* / *Progress*: your save, achievements and the episodes reached (later ones stay hidden).
 - **Controls**: a live button test, controller remapping, deadzones, vibration and Turbo buttons, keyboard and mouse, key rebinding.
+  - *Setup*: for a controller the game reads wrongly (a trigger moving the camera, a stick doing nothing). Each control (buttons, triggers, D-pad, every stick direction) is a row, named with both the Xbox and PlayStation labels where they differ (LT / L2, LB / L1, L3): *Set* waits up to 10 seconds for you to press it on the controller, and *Start setup* goes through them all in turn. Each answer is saved at once as an SDL mapping for that controller, in `controller_mappings.txt` next to `launcher.cfg`. On Android it's *Controls > Controller setup* (saved in `controller_setup_android.txt`).
 - **Achievements**: list or grid, filtered by unlocked / locked.
 - **Settings**
-  - *System*: language (game, achievements and launcher), achievement pop-ups.
+  - *System*: language (game, achievements and launcher), achievement pop-ups. *Português (Brasil) - joao13* is a fan translation shipped with the launcher (see Credits).
   - *Display*: GPU, VSync, display mode, monitor, resolution, *Higher resolution* (experimental), how 16:9 fills other screens, and *Effects* (bloom, depth of field, motion and radial blur, shadows, ambient occlusion, light shafts, lens flares, distortion; turning some off helps slow GPUs, applies at the next start).
   - *Enhancements*: FPS counter, frame rate limit (above 30 is experimental), skip the intro logos, hide the cursor, mute in the background.
 - **About**: version, this computer's details with a *Copy* button for bug reports.
@@ -280,12 +283,12 @@ The render resolution is also `MANTRA_RENDER_SCALE` (a factor such as `1.5`, or 
 
 ### Android (experimental)
 
-Runs on Android 10+ with an arm64 (or x86_64) CPU and Vulkan 1.1. There are no touch controls yet: connect a controller (USB or Bluetooth).
+Runs on Android 10+ with an arm64 (or x86_64) CPU and Vulkan 1.1. On-screen touch controls show over the game; they hide while a controller (USB or Bluetooth) is connected (*Controls > Touch controls*). A Hide button between Back and Start hides the rest until tapped again (for cutscenes), and *Controls > Touch layout* moves and resizes each one. Snapdragon phones can also load a custom Vulkan driver such as Turnip (*Settings > GPU driver*).
 
 1. Install the APK (`…-android-arm64-v8a.apk` for phones, or the universal one).
-2. Copy the extracted game (the folder with `default.xex`) to the phone, then pick it in the launcher (**Game › Choose folder**, which asks for "All files access"). A copy in `Android/data/org.asurawrath.recompiled/files/extracted/` is found without asking. `.iso` extraction isn't available on the phone: extract it on a computer.
+2. Copy the extracted game (the folder with `default.xex`) to the phone, then pick it in the launcher (**Game › Choose folder**, which asks for "All files access"). A copy in `Android/data/org.asurawrath.recompiled/files/extracted/` is found without asking. Or extract the `.iso` on the phone with **Game › Extract an .iso…** (into that folder).
 3. **Shader cache**: build it on the phone (slow; keep it charging), or build it on a computer (**Game data > Shaders**) and **Import** the `.mshc` (the same file works on every platform).
-4. **Play**. In game, Back opens the in-game menu (controls, achievements, settings, Quit).
+4. **Play**. In game, Back opens the in-game menu: the launcher's own pages (controls, button remap, controller setup, achievements, settings) with Resume, Restart and Quit. The desktop's in-game menu isn't used on Android.
 
 What to expect: it is slow on mid-range phones (well below 30 fps on a Snapdragon 695 / Adreno 619 class device), and some character voices can drop out in cutscenes when the frame rate is low. Lowering *Render resolution* and turning off some *Effects* (both under *Settings > Display*) helps. Logs and frame traces (under *Game data*) are welcome in bug reports. More details: [android/README.md](android/README.md).
 
@@ -347,6 +350,8 @@ At the default `info` level the renderer logs a `frame times` line every 5 secon
 ## 7. Credits
 
 - Powered by **ReXGlue** (https://github.com/rexglue/rexglue-sdk), an open-source static recompilation framework for Xbox 360 software.
+- Shader translation by **XenosRecomp** (https://github.com/hedge-dev/XenosRecomp), © hedge-dev and contributors, MIT License (`thirdparty/XenosRecomp/LICENSE.md`): `mantra_shadergen` uses it to turn the game's Xenos shaders into the shader cache.
+- Brazilian Portuguese translation (*Settings > System > Language > Português (Brasil) - joao13*) by **XEX Brasil** and **Brazilian Warriors** (Xujozer, Angel Forgotten, Sergio-F), revised by JMC360, published at https://joao13traducoes.com/2021/07/x360-asura-wrath-xex-brasil-e-brazilian-warriors/. It ships in `assets/translations/pt-BR` (`CREDITS.txt` there), with the few lines it left in Spanish or untranslated completed; `tools/make_ptbr_pack.py` rebuilds it from the downloaded patch. Its translated images (title menu, Game Over, end screens) are included; the launcher gives the game a table of contents (`Xbox360TOC.txt`) with their new sizes, as the patch does.
 - UI touch controls made possible by using **kenney.nl** Xbox gamepad assets (https://kenney.nl/assets/input-prompts)
 - *Asura's Wrath* and its artwork are © **CAPCOM** (https://www.capcom.com). The launcher and pop-up images in `assets/ui` come from the game, with some parts edited by hand for the launcher. The game itself, its fonts and other assets are not included: they are read from your own copy.
 - Fallback fonts: **Noto Serif** and **Noto Serif CJK JP** (https://notofonts.github.io), © The Noto Project Authors and Google, under the SIL Open Font License 1.1 (`assets/ui/OFL.txt`). `NotoSerifJP-Launcher.awf` is a subset rendered from Noto Serif CJK JP.
@@ -362,14 +367,14 @@ At the default `info` level the renderer logs a `frame times` line every 5 secon
 ## 9. Issues
 
 - Episodes are still being tested: Episode 1 seems playable with some minor visual issues, the others are still to be tested.
-- Android is experimental: slow on mid-range phones, character voices can drop out at low frame rates, no touch controls.
+- Android is experimental: slow on mid-range phones, character voices can drop out at low frame rates.
 
 ---
 
 ## 10. TODO
 
 - [ ] Port to Android (experimental build available; needs performance work)
-- [ ] Add touch controls for Android (?)
+- [x] Add touch controls for Android
 - [ ] Test all episodes
 - [ ] Improve performance
 - [ ] Make DLCs work

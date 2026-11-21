@@ -36,13 +36,24 @@
     <string name="summary_enhancements">Limite d\'images par seconde : %1$s</string>
     <string name="notice_game">Choisissez le dossier du jeu : Données du jeu › Dossiers</string>
     <string name="notice_shaders">Les shaders ne sont pas encore créés : Données du jeu › Cache des shaders</string>
-    <string name="settings_more">Réaffectation des boutons, succès et autres paramètres : en jeu, Retour › Paramètres › Menu du jeu.</string>
     <string name="game_folder">Dossier du jeu</string>
     <string name="game_not_chosen">Pas encore choisi</string>
     <string name="game_found">default.xex trouvé</string>
     <string name="game_missing">Ce dossier ne contient pas default.xex. Choisissez le dossier du jeu extrait (celui avec default.xex).</string>
     <string name="game_missing_short">Pas de default.xex dans le dossier du jeu</string>
-    <string name="game_hint">Le jeu extrait, copié sur le téléphone (par exemple avec extract-xiso sur un ordinateur).</string>
+    <string name="game_hint">Le jeu extrait, ou extrayez ici l\'image du disque (.iso) ; un dossier peut aussi être copié depuis un ordinateur (par exemple avec extract-xiso).</string>
+    <string name="iso_extract">Extraire un .iso…</string>
+    <string name="iso_title">Extraction de l\'image du disque</string>
+    <string name="iso_channel">Extraction de l\'image du disque</string>
+    <string name="iso_reading">Lecture de l\'image du disque…</string>
+    <string name="iso_not_disc">Pas une image de disque de jeu Xbox 360</string>
+    <string name="iso_not_game">L\'image du disque n\'a pas de default.xex</string>
+    <string name="iso_no_space">Espace libre insuffisant : %1$s nécessaires, %2$s libres</string>
+    <string name="iso_stop">Arrêter</string>
+    <string name="iso_progress">%1$d %% · %2$s</string>
+    <string name="iso_done">Image du disque extraite</string>
+    <string name="iso_stopped">Extraction arrêtée</string>
+    <string name="iso_failed">Échec de l\'extraction : %1$s</string>
     <string name="game_needed">Choisissez d\'abord le dossier du jeu.</string>
     <string name="section_files">Dossier des fichiers</string>
     <string name="files_hint">Tout ce que le jeu crée : sauvegardes, cache des shaders, journaux. Le changer ne déplace pas ce qui est déjà dans l\'ancien dossier.</string>
@@ -98,7 +109,6 @@
     <string name="deadzone_left">Zone morte stick gauche</string>
     <string name="deadzone_right">Zone morte stick droit</string>
     <string name="deadzone_hint">La course d\'un stick avant que le jeu la voie : augmentez-la si la caméra ou le personnage dérive.</string>
-    <string name="remap_hint">Les boutons se réaffectent en jeu : Retour › Commandes › Menu du jeu.</string>
     <string name="language">Langue</string>
     <string name="language_hint">Les menus et sous-titres du jeu, les succès et ce lanceur.</string>
     <string name="toasts">Notifications de succès</string>
@@ -152,9 +162,7 @@
     <string name="restart">Redémarrer</string>
     <string name="quit">Quitter</string>
     <string name="later">Plus tard</string>
-    <string name="restart_needed">Remplir, les effets, la langue et le dossier du jeu changent au prochain lancement : redémarrez maintenant, ou plus tard.</string>
-    <string name="game_menu">Menu du jeu</string>
-    <string name="game_menu_summary">Réaffectation des boutons, clavier, succès et autres paramètres</string>
+    <string name="restart_needed">Remplir, les effets, le pilote GPU, la langue et le dossier du jeu changent au prochain lancement : redémarrez maintenant, ou plus tard.</string>
     <string name="shaders_in_game">Pas pendant que le jeu tourne : quittez-le d\'abord.</string>
     <string name="access_title">Autoriser l\'accès à vos fichiers</string>
     <string name="access_text">Le jeu lit ses fichiers directement dans le dossier choisi. Android demande pour cela d\'autoriser « Accès à tous les fichiers ».</string>
@@ -245,4 +253,118 @@
     <string name="toast_pos_5">En bas à gauche</string>
     <string name="toast_pos_6">En bas</string>
     <string name="toast_pos_7">En bas à droite</string>
+    <string name="gpu_driver">Pilote GPU</string>
+    <string name="gpu_driver_system">Le pilote du téléphone</string>
+    <string name="gpu_driver_choose">Choisir…</string>
+    <string name="gpu_driver_install">Installer depuis un .zip…</string>
+    <string name="gpu_driver_use">Utiliser</string>
+    <string name="gpu_driver_delete">Supprimer</string>
+    <string name="gpu_driver_delete_title">Supprimer ce pilote ?</string>
+    <string name="gpu_driver_installed">%1$s installé : utilisé au prochain lancement du jeu.</string>
+    <string name="gpu_driver_install_failed">Impossible d\'installer le pilote : %1$s</string>
+    <string name="gpu_driver_hint">Pour les téléphones Snapdragon (GPU Adreno) : un pilote Vulkan personnalisé comme Mesa Turnip, depuis un .zip de pilote (comme ceux des autres émulateurs Android). Il peut être plus rapide ou corriger l\'image, ou le jeu peut ne pas démarrer avec : rechoisissez alors le pilote du téléphone. S\'applique au prochain lancement du jeu.</string>
+    <string name="section_touch">Commandes tactiles</string>
+    <string name="touch_show">Afficher les commandes tactiles</string>
+    <string name="touch_auto">Affichées sans manette connectée</string>
+    <string name="touch_on">Toujours affichées</string>
+    <string name="touch_off">Désactivées</string>
+    <string name="touch_status_pad">Une manette est connectée.</string>
+    <string name="touch_status_none">Aucune manette connectée.</string>
+    <string name="touch_size">Taille</string>
+    <string name="touch_opacity">Opacité</string>
+    <string name="touch_hide_with_pad">Les masquer quand une manette est connectée</string>
+    <string name="section_setup">Configurer la manette</string>
+    <string name="setup_none">Non configurée : correspondance de SDL</string>
+    <plurals name="setup_some">
+        <item quantity="one">%d manette configurée</item>
+        <item quantity="other">%d manettes configurées</item>
+    </plurals>
+    <string name="setup_text">Pour une manette que le jeu lit mal (une gâchette bouge la caméra, un stick ne fait rien). Touchez une commande ci-dessous et appuyez dessus sur la manette, ou lancez la configuration pour qu\'on vous les demande tour à tour. Chacune attend 10 secondes et est enregistrée aussitôt ; le jeu l\'utilise à votre retour.</string>
+    <string name="setup_start">Lancer la configuration</string>
+    <string name="setup_forget">Oublier ma configuration</string>
+    <string name="setup_skip">Passer</string>
+    <string name="setup_stop">Arrêter</string>
+    <string name="setup_forgotten">Oubliée : la correspondance de SDL s\'applique au prochain lancement.</string>
+    <string name="setup_no_pad">Aucune manette trouvée. Branchez-en une pour la configurer.</string>
+    <string name="setup_uses_yours">%1$s : utilise votre configuration.</string>
+    <string name="setup_uses_default">%1$s : utilise la correspondance de SDL.</string>
+    <string name="setup_listening">%1$s (%2$d s)</string>
+    <string name="setup_let_go">Relâchez d\'abord tout.</string>
+    <string name="setup_timeout">Rien n\'a été pressé en 10 secondes : arrêté.</string>
+    <string name="setup_done">Terminé : toutes les commandes sont réglées.</string>
+    <string name="setup_not_set">Non réglé</string>
+    <string name="setup_input_button">Bouton %1$s</string>
+    <string name="setup_input_axis">Axe %1$s</string>
+    <string name="remap">Réaffectation des boutons</string>
+    <string name="remap_hint">Touchez une ligne, puis appuyez sur le bouton de la manette qui doit agir ainsi (10 secondes). Deux boutons échangent leur place, chacun reste donc accessible. Un appui long rétablit une ligne.</string>
+    <string name="remap_reset">Rétablir les boutons</string>
+    <string name="remap_listening">%1$s : appuyez sur le bouton de la manette à utiliser (%2$d s)</string>
+    <string name="section_touch_layout">Disposition tactile</string>
+    <string name="touch_layout_text">La place et la taille de chaque commande tactile : déplacez-les du doigt sur un plein écran comme celui du jeu, et redimensionnez celle choisie.</string>
+    <string name="touch_layout_edit">Modifier la disposition</string>
+    <string name="touch_layout_reset">Rétablir</string>
+    <string name="touch_layout_done">Terminé</string>
+    <string name="touch_layout_pick">Touchez une commande pour la choisir, faites-la glisser pour la déplacer.</string>
+    <string name="touch_layout_size">%1$s : %2$d %%</string>
+    <string name="touch_layout_default">Par défaut</string>
+    <string name="touch_left_stick">Stick gauche</string>
+    <string name="touch_right_stick">Stick droit</string>
+    <string name="touch_hide">Masquer</string>
+    <string name="touch_hint">Deux sticks, A B X Y, les boutons de tranche et gâchettes, Back et Start, sur le jeu ; Masquer, entre Back et Start, cache les autres jusqu\'au prochain appui (pour les cinématiques). Elles fonctionnent avec une manette, avec la même réaffectation et le même Turbo. Les changements s\'appliquent au retour dans le jeu.</string>
+    <plurals name="touch_layout_changed">
+        <item quantity="one">%d commande modifiée</item>
+        <item quantity="other">%d commandes modifiées</item>
+    </plurals>
+    <string-array name="setup_labels">
+        <item>A</item>
+        <item>B</item>
+        <item>X</item>
+        <item>Y</item>
+        <item>Bouton gauche (LB)</item>
+        <item>Bouton droit (RB)</item>
+        <item>Gâchette gauche</item>
+        <item>Gâchette droite</item>
+        <item>Back</item>
+        <item>Start</item>
+        <item>Clic stick gauche</item>
+        <item>Clic stick droit</item>
+        <item>Croix haut</item>
+        <item>Croix bas</item>
+        <item>Croix gauche</item>
+        <item>Croix droite</item>
+        <item>Stick gauche haut</item>
+        <item>Stick gauche bas</item>
+        <item>Stick gauche gauche</item>
+        <item>Stick gauche droite</item>
+        <item>Stick droit haut</item>
+        <item>Stick droit bas</item>
+        <item>Stick droit gauche</item>
+        <item>Stick droit droite</item>
+    </string-array>
+    <string-array name="setup_prompts">
+        <item>Appuyez sur A (bouton du bas)</item>
+        <item>Appuyez sur B (bouton de droite)</item>
+        <item>Appuyez sur X (bouton de gauche)</item>
+        <item>Appuyez sur Y (bouton du haut)</item>
+        <item>Appuyez sur la gâchette haute gauche (LB / L1)</item>
+        <item>Appuyez sur la gâchette haute droite (RB / R1)</item>
+        <item>Pressez la gâchette gauche (LT / L2)</item>
+        <item>Pressez la gâchette droite (RT / R2)</item>
+        <item>Appuyez sur Back (Select, Affichage, Share)</item>
+        <item>Appuyez sur Start (Menu, Options)</item>
+        <item>Enfoncez le stick gauche (L3)</item>
+        <item>Enfoncez le stick droit (R3)</item>
+        <item>Appuyez sur haut de la croix</item>
+        <item>Appuyez sur bas de la croix</item>
+        <item>Appuyez sur gauche de la croix</item>
+        <item>Appuyez sur droite de la croix</item>
+        <item>Poussez le stick gauche vers le haut</item>
+        <item>Poussez le stick gauche vers le bas</item>
+        <item>Poussez le stick gauche vers la gauche</item>
+        <item>Poussez le stick gauche vers la droite</item>
+        <item>Poussez le stick droit vers le haut</item>
+        <item>Poussez le stick droit vers le bas</item>
+        <item>Poussez le stick droit vers la gauche</item>
+        <item>Poussez le stick droit vers la droite</item>
+    </string-array>
 </resources>

@@ -1,0 +1,36 @@
+Asura's Wrath - Tradução PT-BR (V2.0, revisão 2025)
+Tradução: Brazilian Warriors (Xujozer, Angel Forgotten, Sergio-F)
+Adaptação e revisão: XEX BRASIL / JMC360
+Divulgação: https://joao13traducoes.com/2021/07/x360-asura-wrath-xex-brasil-e-brazilian-warriors/
+
+Used by Asura's Wrath Recompiled as the launcher's "Português (Brasil)"
+language, with the lines the patch left in Spanish or untranslated
+completed (tools/make_ptbr_pack.py).
+
+--- LEIA-ME original ---
+
+TRADUÇÃO / ASURA'S WRATH / X360 / REVISÃO-2025 / JMC360/XEXBRASIL
+
+Como Aplicar:
+
+1- Baixe a ISO do jogo na região (USA) e converta-o para o formato XEX/Pasta usando o "EXISOGUI" [Se já tiver o jogo convertido, desconsidere essa parte]
+
+2- Agora copie a pasta "BCGame" para a pasta Raíz do seu jogo e clique em substituir
+
+3- Pronto! Tradução aplicada, divirta-se com o jogo revisado :)
+
+Obs: Lembre-se de mudar o idioma do console para "Espanhol" para a tradução funcionar
+
+Créditos Originais:
+
+        Grupo: Brazilian Warriors
+        Responsável: Xujozer
+        Membros Envolvidos: Xujozer, Angel Forgotten, Sergio-F
+
+Informações da Adaptação
+
+        Grupo: Brazilian Warriors
+        Responsável: Xujozer
+        Membros Envolvidos: Xujozer
+        Instalador: Nenhum
+        Versão Testada: RGH/JTAG

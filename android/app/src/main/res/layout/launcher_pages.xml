@@ -38,9 +38,24 @@
             <TextView style="@style/Text.Paper.Hint"
                 android:layout_width="match_parent" android:layout_height="wrap_content"
                 android:layout_marginTop="6dp" android:text="@string/game_hint" />
-            <Button android:id="@+id/game_choose" style="@style/Widget.Paper.Button"
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:layout_marginTop="6dp" android:text="@string/choose_folder" />
+            <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:orientation="horizontal">
+                <Button android:id="@+id/game_choose" style="@style/Widget.Paper.Button"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp" android:text="@string/choose_folder" />
+                <!-- The disc image, extracted to the app's extracted/ (IsoExtractService). -->
+                <Button android:id="@+id/game_extract_iso" style="@style/Widget.Paper.Button"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp" android:layout_marginStart="8dp"
+                    android:text="@string/iso_extract" />
+            </LinearLayout>
+            <TextView android:id="@+id/iso_status"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="4dp" android:textSize="15sp" android:visibility="gone" />
+            <com.google.android.material.progressindicator.LinearProgressIndicator
+                android:id="@+id/iso_progress"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="4dp" android:max="1000" android:visibility="gone" />
         </LinearLayout>
 
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
@@ -242,6 +257,116 @@
         </LinearLayout>
     </LinearLayout>
 
+    <!-- Controls › Controller setup (ControllerSetup.kt): each control a row
+         with the input the game gets for it; tap one, or Start setup. -->
+    <LinearLayout
+        android:id="@+id/section_setup"
+        style="@style/Section">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Body"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/setup_text" />
+            <TextView android:id="@+id/setup_pad" style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="8dp" />
+            <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:orientation="horizontal" android:layout_marginTop="8dp">
+                <Button android:id="@+id/setup_start" style="@style/Widget.Paper.Button"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="@string/setup_start" />
+                <Button android:id="@+id/setup_forget" style="@style/Widget.Paper.Toggle"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="@string/setup_forget" />
+                <Button android:id="@+id/setup_skip" style="@style/Widget.Paper.Button"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="@string/setup_skip" />
+                <Button android:id="@+id/setup_stop" style="@style/Widget.Paper.Toggle"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="@string/setup_stop" />
+            </LinearLayout>
+            <TextView android:id="@+id/setup_prompt" style="@style/Text.Paper.Heading"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="8dp" />
+            <TextView android:id="@+id/setup_message" style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content" />
+            <LinearLayout android:id="@+id/setup_rows"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="vertical" android:layout_marginTop="4dp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Controls › Touch layout: where each touch control sits and its size
+         (TouchLayoutActivity, launcher.cfg touch_layout). -->
+    <LinearLayout
+        android:id="@+id/section_touch_layout"
+        style="@style/Section">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Body"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/touch_layout_text" />
+            <TextView android:id="@+id/touch_layout_state" style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="8dp" />
+            <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:orientation="horizontal" android:layout_marginTop="8dp">
+                <Button android:id="@+id/touch_layout_edit" style="@style/Widget.Paper.Button"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="@string/touch_layout_edit" />
+                <Button android:id="@+id/touch_layout_default" style="@style/Widget.Paper.Toggle"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:text="@string/touch_layout_reset" />
+            </LinearLayout>
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Controls › Touch controls (Android): the on-screen pad over the game
+         (TouchControlsView.kt). -->
+    <LinearLayout
+        android:id="@+id/section_touch"
+        style="@style/Section">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/touch_show"
+                style="@style/Widget.Paper.Switch" android:text="@string/touch_show" />
+            <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/touch_hide_with_pad"
+                style="@style/Widget.Paper.Switch" android:text="@string/touch_hide_with_pad" />
+            <TextView android:id="@+id/touch_status" style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content" />
+        </LinearLayout>
+        <LinearLayout android:id="@+id/touch_options"
+            android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/touch_size" />
+            <TextView android:id="@+id/touch_size_value" style="@style/Text.Paper.Hint"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" />
+            <com.google.android.material.slider.Slider
+                android:id="@+id/touch_size"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:valueFrom="50" android:valueTo="200" android:stepSize="10"
+                app:labelBehavior="gone" app:tickVisible="false" />
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/touch_opacity" />
+            <TextView android:id="@+id/touch_opacity_value" style="@style/Text.Paper.Hint"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" />
+            <com.google.android.material.slider.Slider
+                android:id="@+id/touch_opacity"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:valueFrom="10" android:valueTo="100" android:stepSize="5"
+                app:labelBehavior="gone" app:tickVisible="false" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/touch_hint" />
+        </LinearLayout>
+    </LinearLayout>
+
     <!-- Controls › Controller: vibration, the stick deadzones. -->
     <LinearLayout
         android:id="@+id/section_controller"
@@ -307,9 +432,26 @@
                 android:layout_width="match_parent" android:layout_height="wrap_content"
                 android:text="@string/deadzone_hint" />
         </LinearLayout>
-        <TextView style="@style/Text.Paper.Hint"
-            android:layout_width="match_parent" android:layout_height="wrap_content"
-            android:text="@string/remap_hint" />
+        <!-- Button remap (launcher.cfg pad.*, ButtonRemap in ControllerSetup.kt). -->
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:text="@string/remap" />
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/remap_hint" />
+            <TextView android:id="@+id/remap_prompt" style="@style/Text.Paper.Heading"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="8dp" android:visibility="gone" />
+            <LinearLayout android:id="@+id/remap_rows"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:orientation="vertical" />
+            <Button android:id="@+id/remap_reset" style="@style/Widget.Paper.Toggle"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="@string/remap_reset" />
+        </LinearLayout>
     </LinearLayout>
 
     <!-- Settings › System: language, achievement pop-ups. -->
@@ -333,6 +475,11 @@
             <TextView style="@style/Text.Paper.Hint"
                 android:layout_width="match_parent" android:layout_height="wrap_content"
                 android:layout_marginTop="6dp" android:text="@string/language_hint" />
+            <!-- Português (Brasil): who made the translation (LauncherActivity.showLanguageCredit). -->
+            <TextView android:id="@+id/language_credit" style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="6dp" android:text="@string/language_credit_ptbr"
+                android:visibility="gone" />
         </LinearLayout>
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
             android:orientation="vertical">
@@ -515,6 +662,31 @@
         <!-- No V-Sync switch: Android always presents in step with the screen (ApplyLauncherDefaults). -->
     </LinearLayout>
 
+    <!-- Settings › GPU driver (Android only): a custom Vulkan driver for
+         Snapdragon phones (GpuDrivers.kt); listed only where one can load. -->
+    <LinearLayout
+        android:id="@+id/section_gpu"
+        style="@style/Section">
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <TextView android:id="@+id/gpu_driver_value" style="@style/Text.Paper.Heading"
+                android:layout_width="wrap_content" android:layout_height="wrap_content" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="4dp" android:orientation="horizontal">
+                <Button android:id="@+id/gpu_driver_choose" style="@style/Widget.Paper.Button"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:layout_marginEnd="8dp"
+                    android:text="@string/gpu_driver_choose" />
+                <Button android:id="@+id/gpu_driver_install" style="@style/Widget.Paper.Button"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:text="@string/gpu_driver_install" />
+            </LinearLayout>
+            <TextView style="@style/Text.Paper.Hint"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/gpu_driver_hint" />
+        </LinearLayout>
+    </LinearLayout>
+
     <!-- Settings › Enhancements: frame rate, intro. -->
     <LinearLayout
         android:id="@+id/section_enhancements"
@@ -552,8 +724,24 @@
                 android:layout_width="match_parent" android:layout_height="wrap_content"
                 android:layout_marginTop="6dp" android:text="@string/fps_cap_hint" />
         </LinearLayout>
-        <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/show_fps"
-            style="@style/Widget.Paper.Switch" android:text="@string/show_fps" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="vertical">
+            <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/show_fps"
+                style="@style/Widget.Paper.Switch" android:text="@string/show_fps" />
+            <!-- Its corner (launcher.cfg fps_corner: 0 top left .. 3 bottom right). -->
+            <com.google.android.material.chip.ChipGroup android:id="@+id/fps_corner"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                app:singleSelection="true" app:selectionRequired="true">
+                <com.google.android.material.chip.Chip android:id="@+id/fps_corner_0" style="@style/Widget.Paper.Chip"
+                    android:text="@string/toast_pos_0" />
+                <com.google.android.material.chip.Chip android:id="@+id/fps_corner_1" style="@style/Widget.Paper.Chip"
+                    android:text="@string/toast_pos_2" />
+                <com.google.android.material.chip.Chip android:id="@+id/fps_corner_2" style="@style/Widget.Paper.Chip"
+                    android:text="@string/toast_pos_5" />
+                <com.google.android.material.chip.Chip android:id="@+id/fps_corner_3" style="@style/Widget.Paper.Chip"
+                    android:text="@string/toast_pos_7" />
+            </com.google.android.material.chip.ChipGroup>
+        </LinearLayout>
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
             android:orientation="vertical">
             <com.google.android.material.materialswitch.MaterialSwitch android:id="@+id/skip_intro"

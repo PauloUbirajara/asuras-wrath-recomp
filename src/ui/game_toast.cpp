@@ -10,6 +10,8 @@
 #include <rex/ui/immediate_drawer.h>
 
 #include "game_font.h"
+#include "launcher_text.h"
+#include "translation.h"
 
 // stb_image, built into librexruntime (the SDK decodes achievement icons with it).
 extern "C" unsigned char* stbi_load_from_memory(const unsigned char* buffer, int len, int* x,
@@ -123,6 +125,13 @@ void GameToastDialog::Queue(const rex::system::AchievementEvent& event, bool pre
     // A new preview replaces one still showing (settings change between clicks).
     if (preview && !queue_.empty() && queue_.back().preview) queue_.pop_back();
     queue_.push_back({event, std::nullopt, preview});
+    // A translation's name (the runtime's is in the game's language).
+    const TranslatedAchievement t =
+        TranslatedAchievementText(LauncherLanguage(), event.achievement.id);
+    if (!t.name.empty()) {
+      queue_.back().event.achievement.label = t.name;
+      queue_.back().event.achievement.description = t.description;
+    }
     if (attached_ || attach_pending_ || !call_in_ui_thread_) return;
     attach_pending_ = true;
   }
@@ -240,7 +249,7 @@ void GameToastDialog::OnDraw(ImGuiIO& io) {
     const float avail = pos.x + size.x - pad - x;
     float font_size = 18.0f * scale;
     if (font_) ImGui::PushFont(font_, font_size);
-    const float wide = std::max(ImGui::CalcTextSize("Achievement Unlocked").x,
+    const float wide = std::max(ImGui::CalcTextSize(T("Achievement Unlocked")).x,
                                 ImGui::CalcTextSize((name + score).c_str()).x);
     if (wide > avail && avail > 0) {
       font_size = std::max(font_size * avail / wide, 11.0f * scale);
@@ -251,7 +260,7 @@ void GameToastDialog::OnDraw(ImGuiIO& io) {
     }
     const float line = ImGui::GetTextLineHeight();
     float y = pos.y + (size.y - 2 * line - 4.0f * scale) * 0.5f;
-    draw->AddText(ImVec2(x, y), Faded(kTitle, alpha), "Achievement Unlocked");
+    draw->AddText(ImVec2(x, y), Faded(kTitle, alpha), T("Achievement Unlocked"));
     y += line + 4.0f * scale;
     draw->AddText(ImVec2(x, y), Faded(kText, alpha), name.c_str());
     draw->AddText(ImVec2(x + ImGui::CalcTextSize(name.c_str()).x, y), Faded(kScore, alpha),

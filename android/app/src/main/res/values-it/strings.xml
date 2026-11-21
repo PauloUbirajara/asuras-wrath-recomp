@@ -36,13 +36,24 @@
     <string name="summary_enhancements">Limite di fotogrammi: %1$s</string>
     <string name="notice_game">Scegli la cartella del gioco: Dati di gioco › Cartelle</string>
     <string name="notice_shaders">Gli shader non sono ancora creati: Dati di gioco › Cache degli shader</string>
-    <string name="settings_more">Rimappatura dei tasti, obiettivi e altre impostazioni: in gioco, Indietro › Impostazioni › Menu di gioco.</string>
     <string name="game_folder">Cartella del gioco</string>
     <string name="game_not_chosen">Non ancora scelta</string>
     <string name="game_found">default.xex trovato</string>
     <string name="game_missing">Questa cartella non contiene default.xex. Scegli la cartella del gioco estratta (quella con default.xex).</string>
     <string name="game_missing_short">Nessun default.xex nella cartella del gioco</string>
-    <string name="game_hint">Il gioco estratto, copiato sul telefono (per esempio con extract-xiso su un computer).</string>
+    <string name="game_hint">Il gioco estratto, oppure estrai qui l\'immagine del disco (.iso); si può anche copiare una cartella da un computer (per esempio con extract-xiso).</string>
+    <string name="iso_extract">Estrai un .iso…</string>
+    <string name="iso_title">Estrazione dell\'immagine del disco</string>
+    <string name="iso_channel">Estrazione dell\'immagine del disco</string>
+    <string name="iso_reading">Lettura dell\'immagine del disco…</string>
+    <string name="iso_not_disc">Non è un\'immagine disco di un gioco Xbox 360</string>
+    <string name="iso_not_game">L\'immagine del disco non ha default.xex</string>
+    <string name="iso_no_space">Spazio libero insufficiente: servono %1$s, liberi %2$s</string>
+    <string name="iso_stop">Interrompi</string>
+    <string name="iso_progress">%1$d%% · %2$s</string>
+    <string name="iso_done">Immagine del disco estratta</string>
+    <string name="iso_stopped">Estrazione interrotta</string>
+    <string name="iso_failed">Estrazione non riuscita: %1$s</string>
     <string name="game_needed">Scegli prima la cartella del gioco.</string>
     <string name="section_files">Cartella dei file</string>
     <string name="files_hint">Tutto ciò che crea il gioco: salvataggi, cache degli shader, log. Cambiarla non sposta ciò che è già nella vecchia cartella.</string>
@@ -98,7 +109,6 @@
     <string name="deadzone_left">Zona morta levetta sinistra</string>
     <string name="deadzone_right">Zona morta levetta destra</string>
     <string name="deadzone_hint">Quanto si muove una levetta prima che il gioco la veda: alzala se la visuale o il personaggio si spostano da soli.</string>
-    <string name="remap_hint">I tasti si rimappano in gioco: Indietro › Comandi › Menu di gioco.</string>
     <string name="language">Lingua</string>
     <string name="language_hint">Menu e sottotitoli del gioco, gli obiettivi e questo launcher.</string>
     <string name="toasts">Notifiche degli obiettivi</string>
@@ -152,9 +162,7 @@
     <string name="restart">Riavvia</string>
     <string name="quit">Esci</string>
     <string name="later">Più tardi</string>
-    <string name="restart_needed">Riempi, gli effetti, la lingua e la cartella del gioco cambiano al prossimo avvio: riavvia ora o più tardi.</string>
-    <string name="game_menu">Menu di gioco</string>
-    <string name="game_menu_summary">Rimappatura dei tasti, tastiera, obiettivi e altre impostazioni</string>
+    <string name="restart_needed">Riempi, gli effetti, il driver GPU, la lingua e la cartella del gioco cambiano al prossimo avvio: riavvia ora o più tardi.</string>
     <string name="shaders_in_game">Non mentre il gioco è in esecuzione: prima esci.</string>
     <string name="access_title">Consenti l\'accesso ai file</string>
     <string name="access_text">Il gioco legge i file direttamente dalla cartella scelta. Android chiede di consentire «Accesso a tutti i file» per questo.</string>
@@ -245,4 +253,118 @@
     <string name="toast_pos_5">In basso a sinistra</string>
     <string name="toast_pos_6">In basso</string>
     <string name="toast_pos_7">In basso a destra</string>
+    <string name="gpu_driver">Driver GPU</string>
+    <string name="gpu_driver_system">Il driver del telefono</string>
+    <string name="gpu_driver_choose">Scegli…</string>
+    <string name="gpu_driver_install">Installa da .zip…</string>
+    <string name="gpu_driver_use">Usa</string>
+    <string name="gpu_driver_delete">Elimina</string>
+    <string name="gpu_driver_delete_title">Eliminare questo driver?</string>
+    <string name="gpu_driver_installed">%1$s installato: usato al prossimo avvio del gioco.</string>
+    <string name="gpu_driver_install_failed">Impossibile installare il driver: %1$s</string>
+    <string name="gpu_driver_hint">Per i telefoni Snapdragon (GPU Adreno): un driver Vulkan personalizzato come Mesa Turnip, da uno .zip di driver (come quelli usati da altri emulatori Android). Può essere più veloce o correggere l\'immagine, oppure il gioco può non avviarsi: in quel caso scegli di nuovo il driver del telefono. Vale dal prossimo avvio del gioco.</string>
+    <string name="section_touch">Comandi touch</string>
+    <string name="touch_show">Mostra comandi touch</string>
+    <string name="touch_auto">Visibili senza controller collegato</string>
+    <string name="touch_on">Sempre visibili</string>
+    <string name="touch_off">Disattivati</string>
+    <string name="touch_status_pad">Un controller è collegato.</string>
+    <string name="touch_status_none">Nessun controller collegato.</string>
+    <string name="touch_size">Dimensione</string>
+    <string name="touch_opacity">Opacità</string>
+    <string name="touch_hide_with_pad">Nascondili quando è collegato un controller</string>
+    <string name="section_setup">Configura il controller</string>
+    <string name="setup_none">Non configurato: mappatura di SDL</string>
+    <plurals name="setup_some">
+        <item quantity="one">%d controller configurato</item>
+        <item quantity="other">%d controller configurati</item>
+    </plurals>
+    <string name="setup_text">Per un controller che il gioco legge male (un grilletto muove la telecamera, uno stick non fa nulla). Tocca un comando qui sotto e premilo sul controller, oppure avvia la configurazione per farteli chiedere a turno. Ognuno attende 10 secondi e viene salvato subito; il gioco lo usa quando ci torni.</string>
+    <string name="setup_start">Avvia configurazione</string>
+    <string name="setup_forget">Dimentica la configurazione</string>
+    <string name="setup_skip">Salta</string>
+    <string name="setup_stop">Ferma</string>
+    <string name="setup_forgotten">Dimenticata: dal prossimo avvio vale la mappatura di SDL.</string>
+    <string name="setup_no_pad">Nessun controller trovato. Collegane uno per configurarlo.</string>
+    <string name="setup_uses_yours">%1$s: usa la tua configurazione.</string>
+    <string name="setup_uses_default">%1$s: usa la mappatura di SDL.</string>
+    <string name="setup_listening">%1$s (%2$d s)</string>
+    <string name="setup_let_go">Prima rilascia tutto.</string>
+    <string name="setup_timeout">Nessun tasto premuto in 10 secondi: interrotto.</string>
+    <string name="setup_done">Fatto: tutti i comandi sono impostati.</string>
+    <string name="setup_not_set">Non impostato</string>
+    <string name="setup_input_button">Tasto %1$s</string>
+    <string name="setup_input_axis">Asse %1$s</string>
+    <string name="remap">Rimappatura dei tasti</string>
+    <string name="remap_hint">Tocca una riga, poi premi il tasto del controller che deve fare da quello (10 secondi). Due tasti si scambiano di posto, così ognuno resta raggiungibile. Una pressione lunga ripristina una riga.</string>
+    <string name="remap_reset">Ripristina i tasti</string>
+    <string name="remap_listening">%1$s: premi il tasto del controller da usare (%2$d s)</string>
+    <string name="section_touch_layout">Disposizione touch</string>
+    <string name="touch_layout_text">Dove si trova ogni comando touch e quanto è grande: spostali col dito su uno schermo intero come quello del gioco e ridimensiona quello scelto.</string>
+    <string name="touch_layout_edit">Modifica disposizione</string>
+    <string name="touch_layout_reset">Ripristina</string>
+    <string name="touch_layout_done">Fatto</string>
+    <string name="touch_layout_pick">Tocca un comando per sceglierlo, trascinalo per spostarlo.</string>
+    <string name="touch_layout_size">%1$s: %2$d%%</string>
+    <string name="touch_layout_default">Predefinita</string>
+    <string name="touch_left_stick">Levetta sinistra</string>
+    <string name="touch_right_stick">Levetta destra</string>
+    <string name="touch_hide">Nascondi</string>
+    <string name="touch_hint">Due stick, A B X Y, dorsali e grilletti, Back e Start sopra il gioco; Nascondi, tra Back e Start, nasconde gli altri finché non lo tocchi di nuovo (per i filmati). Funzionano insieme a un controller, con la stessa rimappatura e lo stesso Turbo. Le modifiche valgono quando torni al gioco.</string>
+    <plurals name="touch_layout_changed">
+        <item quantity="one">%d comando modificato</item>
+        <item quantity="other">%d comandi modificati</item>
+    </plurals>
+    <string-array name="setup_labels">
+        <item>A</item>
+        <item>B</item>
+        <item>X</item>
+        <item>Y</item>
+        <item>Dorsale sinistro</item>
+        <item>Dorsale destro</item>
+        <item>Grilletto sinistro</item>
+        <item>Grilletto destro</item>
+        <item>Back</item>
+        <item>Start</item>
+        <item>Pressione levetta sinistra</item>
+        <item>Pressione levetta destra</item>
+        <item>Croce direzionale su</item>
+        <item>Croce direzionale giù</item>
+        <item>Croce direzionale sinistra</item>
+        <item>Croce direzionale destra</item>
+        <item>Levetta sinistra su</item>
+        <item>Levetta sinistra giù</item>
+        <item>Levetta sinistra sinistra</item>
+        <item>Levetta sinistra destra</item>
+        <item>Levetta destra su</item>
+        <item>Levetta destra giù</item>
+        <item>Levetta destra sinistra</item>
+        <item>Levetta destra destra</item>
+    </string-array>
+    <string-array name="setup_prompts">
+        <item>Premi A (il tasto in basso)</item>
+        <item>Premi B (il tasto a destra)</item>
+        <item>Premi X (il tasto a sinistra)</item>
+        <item>Premi Y (il tasto in alto)</item>
+        <item>Premi il dorsale sinistro (LB / L1)</item>
+        <item>Premi il dorsale destro (RB / R1)</item>
+        <item>Premi il grilletto sinistro (LT / L2)</item>
+        <item>Premi il grilletto destro (RT / R2)</item>
+        <item>Premi Back (Select, Visualizza, Share)</item>
+        <item>Premi Start (Menu, Options)</item>
+        <item>Premi lo stick sinistro (L3)</item>
+        <item>Premi lo stick destro (R3)</item>
+        <item>Premi su sulla croce</item>
+        <item>Premi giù sulla croce</item>
+        <item>Premi sinistra sulla croce</item>
+        <item>Premi destra sulla croce</item>
+        <item>Spingi lo stick sinistro in su</item>
+        <item>Spingi lo stick sinistro in giù</item>
+        <item>Spingi lo stick sinistro a sinistra</item>
+        <item>Spingi lo stick sinistro a destra</item>
+        <item>Spingi lo stick destro in su</item>
+        <item>Spingi lo stick destro in giù</item>
+        <item>Spingi lo stick destro a sinistra</item>
+        <item>Spingi lo stick destro a destra</item>
+    </string-array>
 </resources>

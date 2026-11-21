@@ -36,13 +36,24 @@
     <string name="summary_enhancements">Bildratenlimit: %1$s</string>
     <string name="notice_game">Wähle den Spielordner: Spieldaten › Ordner</string>
     <string name="notice_shaders">Die Shader sind noch nicht erstellt: Spieldaten › Shader-Cache</string>
-    <string name="settings_more">Tastenbelegung, Erfolge und die übrigen Einstellungen: im Spiel Zurück › Einstellungen › Spielmenü.</string>
     <string name="game_folder">Spielordner</string>
     <string name="game_not_chosen">Noch nicht gewählt</string>
     <string name="game_found">default.xex gefunden</string>
     <string name="game_missing">Dieser Ordner enthält keine default.xex. Wähle den entpackten Spielordner (den mit default.xex).</string>
     <string name="game_missing_short">Keine default.xex im Spielordner</string>
-    <string name="game_hint">Das entpackte Spiel, aufs Handy kopiert (zum Beispiel mit extract-xiso am Computer).</string>
+    <string name="game_hint">Das entpackte Spiel, oder hier das Disc-Image (.iso) entpacken; ein Ordner kann auch vom Computer kopiert werden (zum Beispiel mit extract-xiso).</string>
+    <string name="iso_extract">.iso entpacken…</string>
+    <string name="iso_title">Disc-Image wird entpackt</string>
+    <string name="iso_channel">Disc-Image entpacken</string>
+    <string name="iso_reading">Disc-Image wird gelesen…</string>
+    <string name="iso_not_disc">Kein Xbox-360-Spiel-Disc-Image</string>
+    <string name="iso_not_game">Das Disc-Image hat keine default.xex</string>
+    <string name="iso_no_space">Nicht genug freier Speicher: %1$s nötig, %2$s frei</string>
+    <string name="iso_stop">Stoppen</string>
+    <string name="iso_progress">%1$d %% · %2$s</string>
+    <string name="iso_done">Disc-Image entpackt</string>
+    <string name="iso_stopped">Entpacken gestoppt</string>
+    <string name="iso_failed">Entpacken fehlgeschlagen: %1$s</string>
     <string name="game_needed">Wähle zuerst den Spielordner.</string>
     <string name="section_files">Dateiordner</string>
     <string name="files_hint">Alles, was das Spiel anlegt: Spielstände, Shader-Cache, Protokolle. Ein Wechsel verschiebt nichts aus dem alten Ordner.</string>
@@ -98,7 +109,6 @@
     <string name="deadzone_left">Totzone linker Stick</string>
     <string name="deadzone_right">Totzone rechter Stick</string>
     <string name="deadzone_hint">Wie weit sich ein Stick bewegen muss, bevor das Spiel es merkt: erhöhen, wenn Kamera oder Figur driften.</string>
-    <string name="remap_hint">Die Tasten lassen sich im Spiel neu belegen: Zurück › Steuerung › Spielmenü.</string>
     <string name="language">Sprache</string>
     <string name="language_hint">Menüs und Untertitel des Spiels, die Erfolge und dieser Launcher.</string>
     <string name="toasts">Erfolgs-Einblendungen</string>
@@ -152,9 +162,7 @@
     <string name="restart">Neu starten</string>
     <string name="quit">Beenden</string>
     <string name="later">Später</string>
-    <string name="restart_needed">Füllen, die Effekte, die Sprache und der Spielordner ändern sich beim nächsten Spielstart: jetzt neu starten oder später.</string>
-    <string name="game_menu">Spielmenü</string>
-    <string name="game_menu_summary">Tastenbelegung, Tastatur, Erfolge und die übrigen Einstellungen</string>
+    <string name="restart_needed">Füllen, die Effekte, der GPU-Treiber, die Sprache und der Spielordner ändern sich beim nächsten Spielstart: jetzt neu starten oder später.</string>
     <string name="shaders_in_game">Nicht während das Spiel läuft: zuerst beenden.</string>
     <string name="access_title">Zugriff auf deine Dateien erlauben</string>
     <string name="access_text">Das Spiel liest seine Dateien direkt aus dem gewählten Ordner. Android verlangt dafür „Zugriff auf alle Dateien“.</string>
@@ -245,4 +253,118 @@
     <string name="toast_pos_5">Unten links</string>
     <string name="toast_pos_6">Unten</string>
     <string name="toast_pos_7">Unten rechts</string>
+    <string name="gpu_driver">GPU-Treiber</string>
+    <string name="gpu_driver_system">Der eigene Treiber des Telefons</string>
+    <string name="gpu_driver_choose">Auswählen…</string>
+    <string name="gpu_driver_install">Aus .zip installieren…</string>
+    <string name="gpu_driver_use">Verwenden</string>
+    <string name="gpu_driver_delete">Löschen</string>
+    <string name="gpu_driver_delete_title">Diesen Treiber löschen?</string>
+    <string name="gpu_driver_installed">%1$s installiert: wird beim nächsten Spielstart verwendet.</string>
+    <string name="gpu_driver_install_failed">Der Treiber konnte nicht installiert werden: %1$s</string>
+    <string name="gpu_driver_hint">Für Snapdragon-Telefone (Adreno-GPUs): ein eigener Vulkan-Treiber wie Mesa Turnip, aus einer Treiber-.zip (wie sie andere Android-Emulatoren nutzen). Er kann schneller sein oder Grafikfehler beheben, oder das Spiel startet damit nicht: dann wieder den eigenen Treiber des Telefons wählen. Gilt ab dem nächsten Spielstart.</string>
+    <string name="section_touch">Touch-Steuerung</string>
+    <string name="touch_show">Touch-Steuerung anzeigen</string>
+    <string name="touch_auto">Sichtbar, wenn kein Controller verbunden ist</string>
+    <string name="touch_on">Immer sichtbar</string>
+    <string name="touch_off">Aus</string>
+    <string name="touch_status_pad">Ein Controller ist verbunden.</string>
+    <string name="touch_status_none">Kein Controller verbunden.</string>
+    <string name="touch_size">Größe</string>
+    <string name="touch_opacity">Deckkraft</string>
+    <string name="touch_hide_with_pad">Ausblenden, solange ein Controller verbunden ist</string>
+    <string name="section_setup">Controller einrichten</string>
+    <string name="setup_none">Nicht eingerichtet: SDL-Standardbelegung</string>
+    <plurals name="setup_some">
+        <item quantity="one">%d Controller eingerichtet</item>
+        <item quantity="other">%d Controller eingerichtet</item>
+    </plurals>
+    <string name="setup_text">Für einen Controller, den das Spiel falsch liest (ein Trigger bewegt die Kamera, ein Stick tut nichts). Tippe unten auf eine Eingabe und drücke sie am Controller, oder starte die Einrichtung, um nacheinander gefragt zu werden. Jede wartet 10 Sekunden und wird sofort gespeichert; das Spiel nutzt sie, wenn du zurückkehrst.</string>
+    <string name="setup_start">Einrichtung starten</string>
+    <string name="setup_forget">Einrichtung vergessen</string>
+    <string name="setup_skip">Überspringen</string>
+    <string name="setup_stop">Stopp</string>
+    <string name="setup_forgotten">Vergessen: Ab dem nächsten Start gilt die Standardbelegung von SDL.</string>
+    <string name="setup_no_pad">Kein Controller gefunden. Schließe einen an, um ihn einzurichten.</string>
+    <string name="setup_uses_yours">%1$s: nutzt deine Einrichtung.</string>
+    <string name="setup_uses_default">%1$s: nutzt die Standardbelegung von SDL.</string>
+    <string name="setup_listening">%1$s (%2$d s)</string>
+    <string name="setup_let_go">Lass zuerst alles los.</string>
+    <string name="setup_timeout">10 Sekunden lang wurde nichts gedrückt: abgebrochen.</string>
+    <string name="setup_done">Fertig: Alle Eingaben sind eingerichtet.</string>
+    <string name="setup_not_set">Nicht gesetzt</string>
+    <string name="setup_input_button">Taste %1$s</string>
+    <string name="setup_input_axis">Achse %1$s</string>
+    <string name="remap">Tastenbelegung</string>
+    <string name="remap_hint">Tippe auf eine Zeile und drücke dann die Controllertaste, die so wirken soll (10 Sekunden). Zwei Tasten tauschen die Plätze, damit jede erreichbar bleibt. Langes Tippen setzt eine Zeile zurück.</string>
+    <string name="remap_reset">Belegung zurücksetzen</string>
+    <string name="remap_listening">%1$s: Drücke die Controllertaste dafür (%2$d s)</string>
+    <string name="section_touch_layout">Touch-Anordnung</string>
+    <string name="touch_layout_text">Wo jede Touch-Steuerung sitzt und wie groß sie ist: Verschiebe sie mit dem Finger auf einem Vollbild wie im Spiel und ändere die Größe der gewählten.</string>
+    <string name="touch_layout_edit">Anordnung bearbeiten</string>
+    <string name="touch_layout_reset">Zurücksetzen</string>
+    <string name="touch_layout_done">Fertig</string>
+    <string name="touch_layout_pick">Tippe auf eine Steuerung, um sie zu wählen, ziehe sie zum Verschieben.</string>
+    <string name="touch_layout_size">%1$s: %2$d %%</string>
+    <string name="touch_layout_default">Standard</string>
+    <string name="touch_left_stick">Linker Stick</string>
+    <string name="touch_right_stick">Rechter Stick</string>
+    <string name="touch_hide">Ausblenden</string>
+    <string name="touch_hint">Zwei Sticks, A B X Y, Schulter- und Triggertasten, Back und Start über dem Spiel; Ausblenden zwischen Back und Start blendet die anderen aus, bis du erneut tippst (für Zwischensequenzen). Sie funktionieren neben einem Controller, mit derselben Tastenbelegung und demselben Turbo. Änderungen gelten, wenn du zum Spiel zurückkehrst.</string>
+    <plurals name="touch_layout_changed">
+        <item quantity="one">%d Steuerung geändert</item>
+        <item quantity="other">%d Steuerungen geändert</item>
+    </plurals>
+    <string-array name="setup_labels">
+        <item>A</item>
+        <item>B</item>
+        <item>X</item>
+        <item>Y</item>
+        <item>Linke Schultertaste</item>
+        <item>Rechte Schultertaste</item>
+        <item>Linker Trigger</item>
+        <item>Rechter Trigger</item>
+        <item>Back</item>
+        <item>Start</item>
+        <item>Linken Stick drücken</item>
+        <item>Rechten Stick drücken</item>
+        <item>Steuerkreuz hoch</item>
+        <item>Steuerkreuz runter</item>
+        <item>Steuerkreuz links</item>
+        <item>Steuerkreuz rechts</item>
+        <item>Linker Stick hoch</item>
+        <item>Linker Stick runter</item>
+        <item>Linker Stick links</item>
+        <item>Linker Stick rechts</item>
+        <item>Rechter Stick hoch</item>
+        <item>Rechter Stick runter</item>
+        <item>Rechter Stick links</item>
+        <item>Rechter Stick rechts</item>
+    </string-array>
+    <string-array name="setup_prompts">
+        <item>Drücke A (die untere Taste)</item>
+        <item>Drücke B (die rechte Taste)</item>
+        <item>Drücke X (die linke Taste)</item>
+        <item>Drücke Y (die obere Taste)</item>
+        <item>Drücke die linke Schultertaste (LB / L1)</item>
+        <item>Drücke die rechte Schultertaste (RB / R1)</item>
+        <item>Drücke den linken Trigger (LT / L2)</item>
+        <item>Drücke den rechten Trigger (RT / R2)</item>
+        <item>Drücke Back (Select, Ansicht, Share)</item>
+        <item>Drücke Start (Menü, Options)</item>
+        <item>Drücke den linken Stick hinein (L3)</item>
+        <item>Drücke den rechten Stick hinein (R3)</item>
+        <item>Drücke das Steuerkreuz nach oben</item>
+        <item>Drücke das Steuerkreuz nach unten</item>
+        <item>Drücke das Steuerkreuz nach links</item>
+        <item>Drücke das Steuerkreuz nach rechts</item>
+        <item>Drücke den linken Stick nach oben</item>
+        <item>Drücke den linken Stick nach unten</item>
+        <item>Drücke den linken Stick nach links</item>
+        <item>Drücke den linken Stick nach rechts</item>
+        <item>Drücke den rechten Stick nach oben</item>
+        <item>Drücke den rechten Stick nach unten</item>
+        <item>Drücke den rechten Stick nach links</item>
+        <item>Drücke den rechten Stick nach rechts</item>
+    </string-array>
 </resources>

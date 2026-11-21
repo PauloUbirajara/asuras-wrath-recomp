@@ -37,6 +37,7 @@
 #include <rex/ui/window_listener.h>
 
 #include "../platform/platform.h"
+#include "controller_setup.h"
 #include "save_data.h"
 
 struct SDL_Gamepad;
@@ -70,6 +71,7 @@ struct LauncherSettings {
   bool achievements_grid = false;           // Achievements page: grid instead of list
   std::string game_data;                    // game_data_root, empty = flag / default
   std::string data_folder;                  // where the game's files go (platform::CacheDir), empty = default
+  std::string gpu_driver;                   // Android: a custom Vulkan driver (gpu_driver.h), empty = the system's
   std::map<std::string, std::string> binds;  // keybind_* flag -> keys
   std::map<std::string, std::string> pad;    // controller remap: target -> source (pad_remap.h)
   double deadzone_left = 0, deadzone_right = 0;  // stick deadzones, fraction of the range
@@ -324,6 +326,8 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   // Settings' "Show an example": the first achievement (its cached icon), or a placeholder.
   rex::system::AchievementEvent ToastSample();
   void UseDroppedPath(const std::filesystem::path& path);
+  // Copies a shared shader cache (.mshc) over the Files folder's one.
+  void ImportShaderCache(const std::filesystem::path& path);
   // In game: Quit the game (top right) and its confirmation.
   void DrawQuit(float scale);
   // In game: the confirmation before Restart.
@@ -356,7 +360,7 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   void SetFilesFolder(const std::filesystem::path& folder);
   // The system's folder or file dialog. SDL answers on its own thread; the
   // pick is applied on the next frame.
-  enum class PickFor { kGame, kDiscImage, kFiles, kExtractTo };
+  enum class PickFor { kGame, kDiscImage, kFiles, kExtractTo, kShaderCache };
   void Pick(PickFor what);
   void ApplyPicked();
   std::mutex picked_mutex_;
@@ -424,7 +428,8 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   std::string message_;             // shown above Play (validation errors)
   std::string capture_flag_;        // keybind being rebound
   int capture_slot_ = 0;            // 0 = primary key, 1 = alternate
-  int controls_tab_ = 0;            // 0 test, 1 controller, 2 keyboard
+  int controls_tab_ = 0;            // 0 test, 1 controller, 2 keyboard, 3 setup
+  std::unique_ptr<ControllerSetup> setup_;  // while Controls > Setup is shown
   enum { kSettingsSystem, kSettingsDisplay, kSettingsEnhancements };
   enum { kSavesInfo, kSavesProgress, kSavesFolders, kSavesShaders, kSavesLogs, kSavesTraces };
   int settings_tab_request_ = -1;   // Settings tab to open on the next frame

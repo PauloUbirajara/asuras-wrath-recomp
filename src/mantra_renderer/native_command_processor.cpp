@@ -197,6 +197,38 @@ bool NativeCommandProcessor::SetupContext() {
   }
 
   InitializeGpuProfiler();
+  if (const char* env = std::getenv("MANTRA_FENCE_WATCHDOG"); env && *env && *env != '0') {
+    fence_watchdog_ = asura::StopThread([this](asura::StopToken stop) {
+      const auto& wdfn = vulkan_device_->functions();
+      const VkDevice wdevice = vulkan_device_->device();
+      uint64_t stuck_submission[kFrameSlots] = {};
+      uint32_t stuck_seconds[kFrameSlots] = {};
+      while (!stop.stop_requested()) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        for (uint32_t i = 0; i < kFrameSlots; ++i) {
+          const FrameSlot& slot = frame_slots_[i];
+          const uint64_t submission = slot.submission;
+          const VkResult status =
+              slot.pending ? wdfn.vkGetFenceStatus(wdevice, slot.fence) : VK_SUCCESS;
+          if (status == VK_NOT_READY && submission == stuck_submission[i]) {
+            if (++stuck_seconds[i] == 2 || stuck_seconds[i] % 10 == 0) {
+              MANTRA_ERROR("fence watchdog: submission {} (slot {}) unfinished for {} s "
+                           "(recording {}, completed {})",
+                           submission, i, stuck_seconds[i], submission_current_,
+                           submission_completed_);
+            }
+          } else {
+            stuck_submission[i] = submission;
+            stuck_seconds[i] = 0;
+          }
+          if (status != VK_SUCCESS && status != VK_NOT_READY) {
+            MANTRA_ERROR("fence watchdog: submission {} fence status {}", submission,
+                         int32_t(status));
+          }
+        }
+      }
+    });
+  }
   rendering_backend_ = mantra::CreateRenderingBackend(vulkan_device_, kFrameSlots);
   if (!copy_pipelines_.Initialize(vulkan_device_, rendering_backend_.get()) ||
       !render_targets_.Initialize(vulkan_device_, rendering_backend_.get()) ||
@@ -771,6 +803,7 @@ void NativeCommandProcessor::DestroyFrameResources() {
   buffer_cache_.Shutdown();
   DestroyShaderModules();
   shader_interface_.Shutdown();
+  fence_watchdog_ = {};
   const auto& dfn = vulkan_device_->functions();
   const VkDevice device = vulkan_device_->device();
   for (FrameSlot& slot : frame_slots_) {

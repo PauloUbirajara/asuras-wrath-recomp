@@ -9,6 +9,8 @@
 #include <memory>
 #include <mutex>
 
+#include "translation.h"
+
 namespace asura::ui {
 
 namespace {
@@ -213,8 +215,12 @@ bool ParseCoalesced(const std::vector<uint8_t>& d, Coalesced* out) {
 const Coalesced* LoadCoalesced(const std::filesystem::path& game_root, uint32_t language) {
   static std::mutex mutex;
   static std::map<std::string, std::unique_ptr<Coalesced>> cache;
-  const std::filesystem::path dir = game_root / "BCGame" / "CookedXbox360";
-  const std::string path = (dir / (std::string("Coalesced_") + LanguageCode(language) + ".bin")).string();
+  // A translation's own copy when it has one (translation.h).
+  const std::string path =
+      GameFileFor(game_root, language,
+                  std::filesystem::path("BCGame") / "CookedXbox360" /
+                      (std::string("Coalesced_") + LanguageCode(GameLanguage(language)) + ".bin"))
+          .string();
   std::lock_guard lock(mutex);
   auto it = cache.find(path);
   if (it == cache.end()) {

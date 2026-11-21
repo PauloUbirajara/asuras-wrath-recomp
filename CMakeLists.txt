@@ -65,6 +65,9 @@ set(ASURAWRATH_SOURCES
     src/game/skip_intro.cpp
     src/game/game_files.cpp
     src/game/graphics_effects.cpp
+    src/game/translation.cpp
+    src/platform/gpu_driver.cpp
+    src/input/controller_mappings.cpp
     src/input/pad_remap.cpp
     ${ASURA_PLATFORM_SOURCES}
     src/ui/about_info.cpp
@@ -72,10 +75,12 @@ set(ASURAWRATH_SOURCES
     src/ui/game_font.cpp
     src/ui/fps_counter.cpp
     src/ui/game_toast.cpp
+    src/ui/controller_setup.cpp
     src/ui/launcher.cpp
     src/ui/launcher_text.cpp
     src/ui/notice_toast.cpp
     src/ui/save_data.cpp
+    src/ui/translation.cpp
     src/ui/window_icon.cpp
     $<$<PLATFORM_ID:Windows>:src/res/asura_wrath.rc>
 )
@@ -88,6 +93,25 @@ elseif(ANDROID)
     add_library(asura_wrath SHARED ${ASURAWRATH_SOURCES})
     # The NDK's libc++ keeps std::jthread behind its experimental flag.
     target_compile_options(asura_wrath PRIVATE -fexperimental-library)
+    # Custom Vulkan drivers (Turnip, newer Qualcomm ones) for Snapdragon
+    # phones: libadrenotools (BSD-2-Clause), arm64 only. Its hook libraries
+    # (libhook_impl.so, libmain_hook.so, ...) go in the APK next to ours; on
+    # other ABIs empty stand-ins of the same names keep gradle's target list
+    # the same (android/app/build.gradle.kts).
+    if(CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
+        include(FetchContent)
+        FetchContent_Declare(adrenotools
+            GIT_REPOSITORY https://github.com/bylaws/libadrenotools.git
+            GIT_TAG 8fae8ce254dfc1344527e05301e43f37dea2df80
+            GIT_SUBMODULES_RECURSE TRUE)
+        FetchContent_MakeAvailable(adrenotools)
+        target_link_libraries(asura_wrath PRIVATE adrenotools)
+        target_compile_definitions(asura_wrath PRIVATE ASURA_ADRENOTOOLS)
+    else()
+        foreach(_hook hook_impl main_hook file_redirect_hook gsl_alloc_hook)
+            add_library(${_hook} SHARED "${CMAKE_SOURCE_DIR}/src/platform/empty.cpp")
+        endforeach()
+    endif()
 else()
     add_executable(asura_wrath ${ASURAWRATH_SOURCES})
 endif()

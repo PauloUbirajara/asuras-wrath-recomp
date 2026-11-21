@@ -20,7 +20,8 @@ import kotlin.math.sqrt
 
 /**
  * Controls › Test: the controller as the launcher sees it through Android's
- * input events (the game sees it through SDL, with the same Xbox layout).
+ * input events (the game sees it through SDL, with the same Xbox layout); a
+ * controller set up in Controls › Controller setup, through that setup.
  * Controls are numbered as the game's PadControl (src/input/pad_remap.h).
  */
 class PadState {
@@ -36,8 +37,48 @@ class PadState {
         buttons = if (on) buttons or (1 shl control) else buttons and (1 shl control).inv()
     }
 
+    /** Controls › Controller setup's mappings: a controller set up there reads through its own. */
+    var setups: SdlPad.Setups? = null
+        set(value) { field = value; setupFor = -1 }
+    private val raw = SdlPad.Raw()
+    private var setupFor = -1
+    private var setup: Map<String, String>? = null
+
+    /** The setups changed (Controller setup saved one). */
+    fun reloadSetup() { setupFor = -1 }
+
+    private fun setupOf(d: InputDevice?): Map<String, String>? {
+        if (d == null) return null
+        if (d.id != setupFor) {
+            setupFor = d.id
+            setup = setups?.fields(d)
+        }
+        return setup
+    }
+
+    // The controls from the raw inputs, through the controller's setup (as the game reads it).
+    private fun applySetup(f: Map<String, String>) {
+        fun r(field: String) = raw.read(f[field])
+        for ((control, field) in SETUP_FIELDS.withIndex()) set(control, r(field) > 0.5f)
+        lt = r("lefttrigger")
+        rt = r("righttrigger")
+        set(LT, lt > TRIGGER_THRESHOLD)
+        set(RT, rt > TRIGGER_THRESHOLD)
+        lx = r("+leftx") - r("-leftx")
+        ly = r("-lefty") - r("+lefty")
+        rx = r("+rightx") - r("-rightx")
+        ry = r("-righty") - r("+righty")
+    }
+
     /** A gamepad key: true if it is one of the pad's controls. */
     fun onKey(event: KeyEvent): Boolean {
+        if (raw.onKey(event)) {
+            setupOf(event.device)?.let {
+                device = event.device
+                applySetup(it)
+                return true
+            }
+        }
         val control = KEYS[event.keyCode] ?: return false
         if (!isPad(event.device)) return false
         device = event.device
@@ -51,55 +92,8 @@ class PadState {
         return true
     }
 
-    /**
-     * The axis pairs (of Z/RZ and RX/RY) that are this pad's triggers, not its
-     * right stick. Android reports Z/RZ/RX/RY as centred axes (-1..1) whatever
-     * the pad uses them for, so a trigger there rests at -1, or (on pads that
-     * also report LTRIGGER/RTRIGGER) moves with them.
-     */
-    private val triggerPairs = mutableSetOf<Pair<Int, Int>>()
-    private val followCount = mutableMapOf<Pair<Int, Int>, Int>()
-    private var learnedFor = -1
-
-    private fun learnTriggerPairs(d: InputDevice, event: MotionEvent) {
-        if (d.id != learnedFor) {
-            learnedFor = d.id
-            triggerPairs.clear()
-            followCount.clear()
-            for (p in STICK_PAIRS) {
-                val a = d.getMotionRange(p.first, InputDevice.SOURCE_JOYSTICK) ?: continue
-                val b = d.getMotionRange(p.second, InputDevice.SOURCE_JOYSTICK) ?: continue
-                if (a.min >= 0f && b.min >= 0f) triggerPairs += p
-            }
-            // At rest (the first event, before any trigger is pulled), a
-            // trigger on a centred axis reads -1 and a stick 0.
-            for (p in STICK_PAIRS) {
-                if (!hasAxis(d, p.first) || !hasAxis(d, p.second)) continue
-                if (event.getAxisValue(p.first) < -0.9f && event.getAxisValue(p.second) < -0.9f) triggerPairs += p
-            }
-        }
-        // A pair that follows LTRIGGER/RTRIGGER (both pulled) is the triggers again.
-        val l = max(event.getAxisValue(MotionEvent.AXIS_LTRIGGER), event.getAxisValue(MotionEvent.AXIS_BRAKE))
-        val r = max(event.getAxisValue(MotionEvent.AXIS_RTRIGGER), event.getAxisValue(MotionEvent.AXIS_GAS))
-        if (l > 0.5f || r > 0.5f) {
-            for (p in STICK_PAIRS) {
-                if (p in triggerPairs || !hasAxis(d, p.first) || !hasAxis(d, p.second)) continue
-                fun follows(axis: Int, t: Float): Boolean {
-                    val v = event.getAxisValue(axis)
-                    return abs(v - t) < 0.15f || abs((v + 1f) / 2f - t) < 0.15f
-                }
-                // Over several events, so a right stick held in a corner while
-                // both triggers are pulled isn't taken for them.
-                if (follows(p.first, l) && follows(p.second, r)) {
-                    val n = (followCount[p] ?: 0) + 1
-                    followCount[p] = n
-                    if (n >= 8) triggerPairs += p
-                } else {
-                    followCount[p] = 0
-                }
-            }
-        }
-    }
+    /** Which of Z/RZ and RX/RY are the triggers (PadAxes, shared with the game's mapping fix). */
+    private val axes = PadAxes()
 
     private fun triggerValue(d: InputDevice?, event: MotionEvent, axis: Int): Float {
         val v = event.getAxisValue(axis)
@@ -109,26 +103,32 @@ class PadState {
 
     private fun hasAnalogTrigger(d: InputDevice?) =
         hasAxis(d, MotionEvent.AXIS_LTRIGGER, MotionEvent.AXIS_BRAKE, MotionEvent.AXIS_RTRIGGER, MotionEvent.AXIS_GAS) ||
-            (d != null && d.id == learnedFor && triggerPairs.isNotEmpty())
+            (d != null && d.id == axes.learnedFor && axes.triggerPairs.isNotEmpty())
 
     /** A joystick move: sticks, triggers, the d-pad hat. */
     fun onMotion(event: MotionEvent): Boolean {
         if (!event.isFromSource(InputDevice.SOURCE_JOYSTICK) || event.action != MotionEvent.ACTION_MOVE) return false
         val d = event.device
         device = d
+        if (raw.onMotion(event)) {
+            setupOf(d)?.let {
+                applySetup(it)
+                return true
+            }
+        }
         lx = event.getAxisValue(MotionEvent.AXIS_X)
         ly = -event.getAxisValue(MotionEvent.AXIS_Y)
-        if (d != null) learnTriggerPairs(d, event)
+        if (d != null) axes.learn(d, event)
         // The right stick: Z/RZ on most pads, RX/RY on the others (where
         // Z/RZ are the triggers).
-        val stick = STICK_PAIRS.firstOrNull { p -> hasAxis(d, p.first) && hasAxis(d, p.second) && p !in triggerPairs }
+        val stick = STICK_PAIRS.firstOrNull { p -> hasAxis(d, p.first) && hasAxis(d, p.second) && p !in axes.triggerPairs }
         if (stick != null) {
             rx = event.getAxisValue(stick.first)
             ry = -event.getAxisValue(stick.second)
         } else {
             rx = 0f; ry = 0f
         }
-        val pair = triggerPairs.firstOrNull()
+        val pair = axes.triggerPairs.firstOrNull()
         if (hasAxis(d, MotionEvent.AXIS_LTRIGGER) || hasAxis(d, MotionEvent.AXIS_BRAKE)) {
             lt = max(event.getAxisValue(MotionEvent.AXIS_LTRIGGER), event.getAxisValue(MotionEvent.AXIS_BRAKE))
         } else if (pair != null) {
@@ -174,11 +174,14 @@ class PadState {
         /** launcher.cfg's names (pad.<target>=<source>), as PadControlName. */
         val NAMES = arrayOf("a", "b", "x", "y", "lb", "rb", "lt", "rt", "back", "start", "ls", "rs", "up", "down", "left", "right")
         /** The right stick's candidate axes, in order of preference. */
-        private val STICK_PAIRS = listOf(
+        val STICK_PAIRS = listOf(
             MotionEvent.AXIS_Z to MotionEvent.AXIS_RZ,
             MotionEvent.AXIS_RX to MotionEvent.AXIS_RY,
         )
         private const val TRIGGER_THRESHOLD = 30f / 255f  // XINPUT_GAMEPAD_TRIGGER_THRESHOLD
+        /** SDL's mapping field for each control (PadControl order). */
+        private val SETUP_FIELDS = listOf("a", "b", "x", "y", "leftshoulder", "rightshoulder", "lefttrigger",
+            "righttrigger", "back", "start", "leftstick", "rightstick", "dpup", "dpdown", "dpleft", "dpright")
 
         private val KEYS = mapOf(
             KeyEvent.KEYCODE_BUTTON_A to A, KeyEvent.KEYCODE_BUTTON_B to B,
@@ -191,11 +194,30 @@ class PadState {
             KeyEvent.KEYCODE_DPAD_LEFT to LEFT, KeyEvent.KEYCODE_DPAD_RIGHT to RIGHT,
         )
 
-        private fun hasAxis(d: InputDevice?, vararg axes: Int) =
+        fun hasAxis(d: InputDevice?, vararg axes: Int) =
             d != null && axes.any { d.getMotionRange(it, InputDevice.SOURCE_JOYSTICK) != null }
 
-        fun isPad(d: InputDevice?): Boolean = d != null && !d.isVirtual &&
-            (d.supportsSource(InputDevice.SOURCE_GAMEPAD) || d.supportsSource(InputDevice.SOURCE_JOYSTICK))
+        /**
+         * A real controller. Phones list built-in inputs as gamepads or
+         * joysticks too (Xiaomi's fingerprint readers, uinput-fpc and
+         * uinput-goodix; gpio keys; shoulder triggers), which hid the touch
+         * controls as if a controller were connected: a controller here also
+         * has a stick, a hat or an A button, and isn't one of those by name.
+         */
+        fun isPad(d: InputDevice?): Boolean {
+            if (d == null || d.isVirtual) return false
+            if (!d.supportsSource(InputDevice.SOURCE_GAMEPAD) && !d.supportsSource(InputDevice.SOURCE_JOYSTICK)) return false
+            val name = d.name.lowercase()
+            if (BUILT_IN.any { it in name }) return false
+            val stick = (d.getMotionRange(MotionEvent.AXIS_X, InputDevice.SOURCE_JOYSTICK) != null &&
+                d.getMotionRange(MotionEvent.AXIS_Y, InputDevice.SOURCE_JOYSTICK) != null) ||
+                d.getMotionRange(MotionEvent.AXIS_HAT_X, InputDevice.SOURCE_JOYSTICK) != null
+            return stick || d.hasKeys(KeyEvent.KEYCODE_BUTTON_A)[0]
+        }
+
+        // Names of built-in inputs that claim to be gamepads.
+        private val BUILT_IN = listOf("uinput", "fpc", "goodix", "fingerprint", "gpio", "gf_input",
+            "silead", "egis", "qwerty", "virtual", "xiaomi-touch", "touchscreen", "pmic", "keypad")
 
         /** The first controller connected, or null. */
         fun connectedPad(): InputDevice? =

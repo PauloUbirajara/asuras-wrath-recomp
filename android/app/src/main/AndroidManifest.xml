@@ -93,6 +93,12 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- The disc image extraction (IsoExtractService). -->
+        <service
+            android:name=".IsoExtractService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
         <!-- Game data › Logs › Share. -->
         <provider
             android:name="androidx.core.content.FileProvider"

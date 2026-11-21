@@ -100,12 +100,26 @@ fi
 
 trap 'rm -rf "$WORK"' EXIT
 
+# check_fresh <build output> <rebuild hint> [more source paths]: fails when a
+# source file is newer than the output (a build made before the last changes
+# would be packaged under the new version's name).
+check_fresh() {
+  local newer
+  newer="$(cd "$REPO_ROOT" && find src assets CMakeLists.txt "${@:3}" -type f -newer "$1" \
+    -not -path '*/build/*' -not -path '*/.gradle/*' -print -quit 2>/dev/null)"
+  if [ -n "$newer" ]; then
+    echo "[!] $1 is older than $newer: rebuild first ($2)" >&2
+    exit 1
+  fi
+}
+
 # --- Android (.apk) ---------------------------------------------------------------
 # Gradle already packs and signs them: copied under the package names.
 if $ANDROID; then
   APK_DIR="$REPO_ROOT/android/app/build/outputs/apk/release"
   apks=("$APK_DIR"/app-*-release.apk)
   [ -e "${apks[0]}" ] || { echo "[!] No APKs in $APK_DIR (run ./build.sh --android)" >&2; exit 1; }
+  for apk in "${apks[@]}"; do check_fresh "$apk" "./build.sh --android" android/app/src android/app/build.gradle.kts; done
   names=()
   for apk in "${apks[@]}"; do
     abi=${apk##*/app-}; abi=${abi%-release.apk}
@@ -124,6 +138,7 @@ if $WINDOWS; then
   $BUILD_DIR_SET || BUILD_DIR="$REPO_ROOT/out/build/win-amd64-release-cross"
   BASE="$NAME-$VERSION-windows-x86_64"
   [ -f "$BUILD_DIR/asura_wrath.exe" ] || { echo "[!] No build in $BUILD_DIR (run ./build.sh --windows)" >&2; exit 1; }
+  check_fresh "$BUILD_DIR/asura_wrath.exe" "./build.sh --windows"
   if grep -q -- "-march=native" "$BUILD_DIR/CMakeCache.txt" 2>/dev/null; then
     echo "[!] $BUILD_DIR was built for your CPU (-march=native): the package may not"
     echo "    run on other CPUs. Use ./build.sh --windows --portable for a package to share."

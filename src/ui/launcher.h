@@ -326,6 +326,8 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   // Settings' "Show an example": the first achievement (its cached icon), or a placeholder.
   rex::system::AchievementEvent ToastSample();
   void UseDroppedPath(const std::filesystem::path& path);
+  // Copies a shared shader cache (.mshc) over the Files folder's one.
+  void ImportShaderCache(const std::filesystem::path& path);
   // In game: Quit the game (top right) and its confirmation.
   void DrawQuit(float scale);
   // In game: the confirmation before Restart.
@@ -358,7 +360,7 @@ class LauncherDialog : public rex::ui::ImGuiDialog,
   void SetFilesFolder(const std::filesystem::path& folder);
   // The system's folder or file dialog. SDL answers on its own thread; the
   // pick is applied on the next frame.
-  enum class PickFor { kGame, kDiscImage, kFiles, kExtractTo };
+  enum class PickFor { kGame, kDiscImage, kFiles, kExtractTo, kShaderCache };
   void Pick(PickFor what);
   void ApplyPicked();
   std::mutex picked_mutex_;

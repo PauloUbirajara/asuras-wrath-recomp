@@ -163,6 +163,8 @@ Everything at once (Linux tar.gz + AppImage, Windows zip, APKs), from the builds
 tools/package.sh --all --clean --version 0.1.0
 ```
 
+`tools/package.sh` refuses a Windows or Android build older than the sources, so a failed build isn't packaged under the new version.
+
 The Windows build links the Microsoft C++ runtime dynamically: players without it install the [Visual C++ Redistributable (x64)](https://aka.ms/vs/17/release/vc_redist.x64.exe) (the zip's README says so).
 
 For a GitHub release, attach the files in `out/package`. The default build is tuned for your CPU and may not run on others, so share only `--portable` builds. Players supply their own game: never attach game files or a shader cache built from them.
@@ -284,7 +286,7 @@ The render resolution is also `MANTRA_RENDER_SCALE` (a factor such as `1.5`, or 
 Runs on Android 10+ with an arm64 (or x86_64) CPU and Vulkan 1.1. On-screen touch controls show over the game; they hide while a controller (USB or Bluetooth) is connected (*Controls > Touch controls*). A Hide button between Back and Start hides the rest until tapped again (for cutscenes), and *Controls > Touch layout* moves and resizes each one. Snapdragon phones can also load a custom Vulkan driver such as Turnip (*Settings > GPU driver*).
 
 1. Install the APK (`…-android-arm64-v8a.apk` for phones, or the universal one).
-2. Copy the extracted game (the folder with `default.xex`) to the phone, then pick it in the launcher (**Game › Choose folder**, which asks for "All files access"). A copy in `Android/data/org.asurawrath.recompiled/files/extracted/` is found without asking. `.iso` extraction isn't available on the phone: extract it on a computer.
+2. Copy the extracted game (the folder with `default.xex`) to the phone, then pick it in the launcher (**Game › Choose folder**, which asks for "All files access"). A copy in `Android/data/org.asurawrath.recompiled/files/extracted/` is found without asking. Or extract the `.iso` on the phone with **Game › Extract an .iso…** (into that folder).
 3. **Shader cache**: build it on the phone (slow; keep it charging), or build it on a computer (**Game data > Shaders**) and **Import** the `.mshc` (the same file works on every platform).
 4. **Play**. In game, Back opens the in-game menu: the launcher's own pages (controls, button remap, controller setup, achievements, settings) with Resume, Restart and Quit. The desktop's in-game menu isn't used on Android.
 

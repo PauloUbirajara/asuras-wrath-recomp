@@ -38,6 +38,7 @@
 
 #include "platform/platform.h"
 #include "platform/gpu_driver.h"
+#include "platform/stop_thread.h"
 
 #include <rex/input/input_system.h>
 
@@ -681,7 +682,7 @@ class AsuraWrathApp : public rex::ReXApp {
     const std::filesystem::path done = asura::ui::TraceDoneFile();
     if (done.empty() || !imgui_drawer() || trace_watcher_.joinable()) return;
     asura::ui::SetLauncherLanguage(launcher_settings_.language);
-    trace_watcher_ = std::jthread([this, done](std::stop_token stop) {
+    trace_watcher_ = asura::StopThread([this, done](asura::StopToken stop) {
       // By the frame number in the file, not its time: on filesystems with
       // coarse timestamps two traces within a second kept the same time and
       // the second showed nothing.
@@ -720,7 +721,7 @@ class AsuraWrathApp : public rex::ReXApp {
     });
   }
   std::unique_ptr<asura::ui::NoticeDialog> notice_;
-  std::jthread trace_watcher_;
+  asura::StopThread trace_watcher_;
 
   // Saves live at <user_data>/<profile xuid>/43430817/00000001/SAVEDATA.DAT
   // (title id 43430817, content type 1 = saved game). Any profile counts.

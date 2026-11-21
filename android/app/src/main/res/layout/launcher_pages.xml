@@ -38,9 +38,24 @@
             <TextView style="@style/Text.Paper.Hint"
                 android:layout_width="match_parent" android:layout_height="wrap_content"
                 android:layout_marginTop="6dp" android:text="@string/game_hint" />
-            <Button android:id="@+id/game_choose" style="@style/Widget.Paper.Button"
-                android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:layout_marginTop="6dp" android:text="@string/choose_folder" />
+            <LinearLayout android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:orientation="horizontal">
+                <Button android:id="@+id/game_choose" style="@style/Widget.Paper.Button"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp" android:text="@string/choose_folder" />
+                <!-- The disc image, extracted to the app's extracted/ (IsoExtractService). -->
+                <Button android:id="@+id/game_extract_iso" style="@style/Widget.Paper.Button"
+                    android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp" android:layout_marginStart="8dp"
+                    android:text="@string/iso_extract" />
+            </LinearLayout>
+            <TextView android:id="@+id/iso_status"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="4dp" android:textSize="15sp" android:visibility="gone" />
+            <com.google.android.material.progressindicator.LinearProgressIndicator
+                android:id="@+id/iso_progress"
+                android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:layout_marginTop="4dp" android:max="1000" android:visibility="gone" />
         </LinearLayout>
 
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"

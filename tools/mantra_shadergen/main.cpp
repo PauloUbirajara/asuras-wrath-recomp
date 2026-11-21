@@ -16,11 +16,19 @@
 //
 // Some shaders make XenosRecomp/DXC use tens of GB; each child gets an
 // address-space cap (default 6 GB) and a CPU-time limit (default 120 s) so a
-// runaway translation fails alone instead of taking the machine down.
+// runaway translation fails alone instead of taking the machine down (on
+// Windows through a job object: a commit limit and a CPU-time limit).
+// The whole build runs at background priority and leaves a core free, so
+// the desktop stays responsive.
 
 #ifndef _WIN32
 #include <sys/resource.h>
 #include <unistd.h>
+#else
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #endif
 
 #include <algorithm>
@@ -217,8 +225,10 @@ struct ChildLimits {
   unsigned timeout_s = 120;
 };
 
-// In the worker. Windows has no address-space or CPU-time limit per process
-// here: the parent's wall-clock timeout (TranslateAll) is the only backstop.
+// In the worker. On Windows the worker puts itself in a job object of its
+// own (nested jobs: Windows 8+) with a commit limit and a CPU-time limit:
+// without them one runaway DXC (it can reach 20+ GB) pages the whole machine.
+// The parent's wall-clock timeout (TranslateAll) stays the last backstop.
 void ApplyChildLimits(const ChildLimits& limits) {
 #ifndef _WIN32
   if (limits.mem_mb) {
@@ -232,7 +242,26 @@ void ApplyChildLimits(const ChildLimits& limits) {
     alarm(limits.timeout_s * 2);  // wall-clock backstop
   }
 #else
-  (void)limits;
+  JOBOBJECT_EXTENDED_LIMIT_INFORMATION info{};
+  if (limits.mem_mb) {
+    info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+    info.ProcessMemoryLimit = SIZE_T(limits.mem_mb) << 20;
+  }
+  if (limits.timeout_s) {
+    info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_PROCESS_TIME;
+    info.BasicLimitInformation.PerProcessUserTimeLimit.QuadPart =
+        LONGLONG(limits.timeout_s) * 10'000'000;  // 100 ns units
+  }
+  // A crash ends the worker instead of showing the error dialog.
+  info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
+  SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+  if (HANDLE job = CreateJobObjectW(nullptr, nullptr)) {
+    if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info, sizeof(info)) ||
+        !AssignProcessToJobObject(job, GetCurrentProcess())) {
+      CloseHandle(job);
+    }
+    // Otherwise left open: the job lives as long as this worker.
+  }
 #endif
 }
 
@@ -700,7 +729,7 @@ int main(int argc, char** argv) {
   // --requested-only: translate only the shaders the game used (the --dumps
   // programs); the others are left out of the cache, for a later full build.
   bool requested_only = false;
-  // --background: while the game runs: lower priority, half the cores.
+  // --background: while the game runs: half the cores.
   bool background = false;
   // --fresh: start over, dropping a stopped build's progress (<out>.partial).
   bool fresh = false;
@@ -756,22 +785,26 @@ int main(int argc, char** argv) {
                  argv[0]);
     return 1;
   }
-  if (background) {
-    asura::platform::LowerProcessPriority();  // the workers inherit it
-  }
+  // Always background priority (the workers inherit it): a build uses every
+  // core it is given, and the launcher and the desktop must stay usable.
+  asura::platform::LowerProcessPriority();
   g_stop_file = out.string() + ".stop";
   {
     std::error_code ec;
     fs::remove(g_stop_file, ec);
   }
   if (!jobs) {
-    jobs = std::max(1u, std::thread::hardware_concurrency() / (background ? 2 : 1));
+    // One core left free (half of them with --background).
+    const unsigned cores = std::max(1u, std::thread::hardware_concurrency());
+    jobs = background ? std::max(1u, cores / 2) : std::max(1u, cores - 1);
     // MemAvailable (free memory plus reclaimable cache; _SC_AVPHYS_PAGES only
-    // counts free pages). The child limit is an address-space cap, far above
-    // what a translation actually uses, so budget ~1 GB per child.
-    const unsigned long long avail_kb = asura::platform::AvailableMemoryBytes() >> 10;
-    if (avail_kb) {
-      jobs = std::clamp<unsigned>(unsigned((avail_kb >> 10) / 1024), 1u, jobs);
+    // counts free pages). The child limit is a cap far above what a
+    // translation usually uses, so budget ~1.5 GB per child and keep 2 GB for
+    // the rest of the system.
+    const uint64_t avail_mb = asura::platform::AvailableMemoryBytes() >> 20;
+    if (avail_mb) {
+      const uint64_t spare = avail_mb > 2048 ? avail_mb - 2048 : 0;
+      jobs = std::clamp<unsigned>(unsigned(spare / 1536), 1u, jobs);
     }
   }
   const fs::path cooked = game / "BCGame" / "CookedXbox360";
@@ -869,7 +902,10 @@ int main(int argc, char** argv) {
       }
     };
     std::vector<std::thread> threads;
-    const unsigned count = std::max(1u, std::min<unsigned>(jobs, unsigned(package_paths.size())));
+    // At most 4 readers: each holds a whole package and its decompressed body
+    // (hundreds of MB), and the disk is the limit anyway.
+    const unsigned count =
+        std::max(1u, std::min<unsigned>(std::min(jobs, 4u), unsigned(package_paths.size())));
     for (unsigned t = 1; t < count; ++t) threads.emplace_back(work);
     work();
     for (auto& t : threads) t.join();

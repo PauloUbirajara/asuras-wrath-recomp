@@ -198,7 +198,7 @@ bool NativeCommandProcessor::SetupContext() {
 
   InitializeGpuProfiler();
   if (const char* env = std::getenv("MANTRA_FENCE_WATCHDOG"); env && *env && *env != '0') {
-    fence_watchdog_ = std::jthread([this](std::stop_token stop) {
+    fence_watchdog_ = asura::StopThread([this](asura::StopToken stop) {
       const auto& wdfn = vulkan_device_->functions();
       const VkDevice wdevice = vulkan_device_->device();
       uint64_t stuck_submission[kFrameSlots] = {};

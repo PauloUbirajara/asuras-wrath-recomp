@@ -305,6 +305,14 @@ bool IsDiscImage(const std::filesystem::path& path) {
   return ext == ".iso" || ext == ".xiso";
 }
 
+bool IsShaderCacheFile(const std::filesystem::path& path) {
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(path, ec)) return false;
+  std::string ext = path.extension().string();
+  std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return std::tolower(c); });
+  return ext == ".mshc";
+}
+
 }  // namespace
 
 // --- Settings ----------------------------------------------------------------
@@ -1422,6 +1430,11 @@ void LauncherDialog::UseDroppedPath(const std::filesystem::path& path) {
   saves_tab_request_ = kSavesFolders;
   if (path.filename() == "default.xex") {
     UseDroppedPath(path.parent_path());
+    return;
+  }
+  if (IsShaderCacheFile(path)) {
+    saves_tab_request_ = kSavesShaders;
+    ImportShaderCache(path);
     return;
   }
   if (std::filesystem::is_directory(path, ec)) {
@@ -3079,6 +3092,7 @@ void LauncherDialog::Pick(PickFor what) {
     case PickFor::kExtractTo:
       request->start = std::filesystem::path(iso_target_buffer_).parent_path().string();
       break;
+    case PickFor::kShaderCache: break;  // the dialog's own default
   }
   std::error_code ec;
   if (!request->start.empty() && !std::filesystem::is_directory(request->start, ec)) {
@@ -3096,6 +3110,9 @@ void LauncherDialog::Pick(PickFor what) {
   };
   if (what == PickFor::kDiscImage) {
     static const SDL_DialogFileFilter kFilters[] = {{"Disc image (.iso)", "iso"}};
+    SDL_ShowOpenFileDialog(done, request, nullptr, kFilters, 1, start, false);
+  } else if (what == PickFor::kShaderCache) {
+    static const SDL_DialogFileFilter kFilters[] = {{"Shader cache (.mshc)", "mshc"}};
     SDL_ShowOpenFileDialog(done, request, nullptr, kFilters, 1, start, false);
   } else {
     SDL_ShowOpenFolderDialog(done, request, nullptr, start, false);
@@ -3133,7 +3150,48 @@ void LauncherDialog::ApplyPicked() {
       std::snprintf(iso_target_buffer_, sizeof(iso_target_buffer_), "%s",
                     (path / iso_path_.stem()).string().c_str());
       break;
+    case PickFor::kShaderCache: ImportShaderCache(path); break;
   }
+}
+
+void LauncherDialog::ImportShaderCache(const std::filesystem::path& path) {
+  namespace fs = std::filesystem;
+  namespace sc = mantra::shader_cache;
+  // The game reads the cache, and a build writes it.
+  if (game_.Running() || OverGame() || shader_build_.state == ShaderBuild::kRunning) {
+    message_ = T("Close the game and wait for the shader build before importing a cache.");
+    return;
+  }
+  sc::CacheHeader header{};
+  {
+    std::ifstream in(path, std::ios::binary);
+    if (!in.read(reinterpret_cast<char*>(&header), sizeof(header)) ||
+        std::memcmp(header.magic, sc::kMagic, 4) != 0 || header.version < sc::kMinVersion ||
+        header.version > sc::kVersion) {
+      message_ = T("Not a shader cache this version can use: ") + path.filename().string();
+      return;
+    }
+  }
+  const fs::path cache = ShaderCachePath();
+  std::error_code ec;
+  if (cache.empty() || fs::equivalent(path, cache, ec)) return;
+  fs::create_directories(cache.parent_path(), ec);
+  // Through a temporary file, so a failed copy leaves the old cache.
+  const fs::path temp = cache.string() + ".import";
+  ec.clear();
+  if (fs::copy_file(path, temp, fs::copy_options::overwrite_existing, ec)) {
+    fs::rename(temp, cache, ec);
+  }
+  if (ec) {
+    fs::remove(temp, ec);
+    message_ = T("Could not import the shader cache: ") + ec.message();
+    return;
+  }
+  // A stopped build's progress was for the old cache.
+  fs::remove(cache.string() + ".partial", ec);
+  shaders_checked_at_ = -10.0;
+  play_without_shaders_ = false;
+  message_ = T("Imported the shader cache.");
 }
 
 // --- Files folder ----------------------------------------------------------------
@@ -4068,6 +4126,13 @@ void LauncherDialog::DrawShaders(float scale) {
     const std::string line = shader_build_.Line();
     HintText("%s%s", T("Failed: "), line.c_str());
   }
+  // A cache someone shared: the same file for every player of this version.
+  ImGui::SetCursorPosX(label_w);
+  ImGui::BeginDisabled(state == ShaderBuild::kRunning || game_.Running() || OverGame());
+  if (ImGui::Button(T("Import a cache..."))) Pick(PickFor::kShaderCache);
+  ImGui::EndDisabled();
+  hint(T("A shader cache (.mshc) from another player works too: import it, or drop it on "
+         "this window."));
   label(T("Location"));
   ImGui::PushTextWrapPos(0);
   ImGui::TextUnformatted(cache.parent_path().string().c_str());

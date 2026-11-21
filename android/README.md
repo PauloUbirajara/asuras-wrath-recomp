@@ -29,6 +29,8 @@ Gradle leaves the APKs in `android/app/build/outputs/apk/release/`, signed with 
 tools/package.sh --android
 ```
 
+It refuses APKs older than the sources (`src/`, `assets/`, `android/app/src/`): a failed build would otherwise leave the previous APKs to be packaged under the new version.
+
 | File | For |
 |---|---|
 | `…-android-universal.apk` | Any 64-bit device (both ABIs, larger) |
@@ -42,7 +44,7 @@ The first build also cross-builds DXC, the shader compiler `mantra_shadergen` us
 ## On the device
 
 - **Requirements:** Android 10 or newer, arm64 or x86_64, Vulkan 1.1.
-- **Game files:** copy the extracted game (the folder with `default.xex`) anywhere on the phone or SD card, then pick it with **Game › Choose folder**. The first pick asks for Android's "All files access", because the game reads its files by path. A game copied to `Android/data/org.asurawrath.recompiled/files/extracted/` is found without picking it and needs no permission.
+- **Game files:** **Game › Extract an .iso…** picks the disc image and extracts it to `Android/data/org.asurawrath.recompiled/files/extracted/` (in the background with a progress notification; Stop is there too; it checks the free space first). Or copy an extracted game (the folder with `default.xex`) anywhere on the phone or SD card, then pick it with **Game › Choose folder**. The first pick asks for Android's "All files access", because the game reads its files by path. A game copied to `Android/data/org.asurawrath.recompiled/files/extracted/` is found without picking it and needs no permission.
 - **Shader cache:** **Shader cache › Build the shader cache** runs `mantra_shadergen` on the phone, in the background with a progress notification (Stop is there too; the next build continues). It takes much longer than on a computer, so keep the phone charging. Or build it on any computer (Game data › Shaders) and use **Import**: the cache is SPIR-V, the same for every CPU.
 - **Files:** `launcher.cfg` is in `Android/data/org.asurawrath.recompiled/files/`. Saves, the shader cache and logs go in `asura_wrath_recomp/` next to it, or the folder picked under **Files folder**.
 - **In game:** Back opens the in-game menu: the launcher's pages over the paused game (InGameMenuActivity), with Resume, Restart and Quit. Settings, the button remap and the controller setup apply when you go back to the game. A Restart (for settings that need one) ends the game, and the launcher starts it again. The desktop's in-game menu (ImGui) isn't used on Android.
@@ -50,7 +52,7 @@ The first build also cross-builds DXC, the shader compiler `mantra_shadergen` us
 - **Button remap:** Controls › Controller: tap a button's row, then press the controller button that should act as it.
 - **Touch controls:** shown over the game, hidden while a controller is connected (Controls › Touch controls). Hide, between Back and Start at the top, hides the others until tapped again. Controls › Touch layout › Edit layout opens them full screen: drag one to move it, the slider sets its size.
 - **GPU driver:** Snapdragon phones can load a custom Vulkan driver .zip (Settings › GPU driver, through libadrenotools).
-- **Not here yet:** extracting an `.iso` (do it on a computer).
+- **Language:** Settings › System › Language sets the game's, the achievements' and the launcher's language, as on the desktop, including the *Português (Brasil) - joao13* fan translation. Its files come with the APK and are unpacked to `files/assets/translations/` on the first start after an install or update.
 
 ## Back button
 

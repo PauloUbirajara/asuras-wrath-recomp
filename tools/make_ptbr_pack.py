@@ -13,7 +13,7 @@ and these files take the place of the game's own (src/game/translation.cpp).
 defaults to the repository's assets/translations/pt-BR.
 
 What it adds to the patch:
-  - Coalesced_ESN.bin: the lines the patch left in Spanish, or as the
+  - Coalesced_ESN.bin: quotes the game's fonts have (' in the subtitles); the lines the patch left in Spanish, or as the
     developers' placeholder names (the Spanish release has those too: the
     tutorial hints, Ryu's missions, a few menu messages), in Portuguese;
     and a few gallery texts that were half Spanish.
@@ -39,6 +39,11 @@ FILES = [
     "BCGame/CookedXbox360/PlayEnd_SF.xxx",
 ]
 COALESCED = "BCGame/CookedXbox360/Coalesced_ESN.bin"
+# The game's fonts have no curly quotes (the patch has one pair, shown as
+# boxes). The subtitle font (TitleFont) has no " either, so the subtitles
+# (aw_*.esn, where the Spanish release has a few " that box too) get ' instead.
+STRAIGHT_QUOTES = str.maketrans({"\u201c": '"', "\u201d": '"', "\u2018": "'", "\u2019": "'"})
+SUBTITLE_QUOTES = str.maketrans({"\u201c": "'", "\u201d": "'", '"': "'", "\u2018": "'", "\u2019": "'"})
 
 # (localization file, section, key) -> text. Files by name, lower case,
 # without the extension (BCGame\Localization\ESN\<name>.esn).
@@ -336,6 +341,8 @@ def main():
                 fix = pending.pop((loc, section, kv[0]), None)
                 if fix is not None:
                     kv[1] = fix
+                if kv[1]:
+                    kv[1] = kv[1].translate(SUBTITLE_QUOTES if loc.startswith("aw_") else STRAIGHT_QUOTES)
                 if loc == "collection" and section == "PrizeMenu":
                     prizes[kv[0]] = kv[1]
     if pending:

@@ -142,6 +142,9 @@ open class LauncherActivity : AppCompatActivity() {
     private val pickShaders = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let(::importShaders)
     }
+    private val pickIso = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let(::extractIso)
+    }
     private val pickDriver = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let(::installDriver)
     }
@@ -168,6 +171,14 @@ open class LauncherActivity : AppCompatActivity() {
         setUpFiles()
         findViewById<ChipGroup>(R.id.achievements_filter).setOnCheckedStateChangeListener { _, _ -> refreshAchievements() }
         findViewById<Button>(R.id.game_choose).setOnClickListener { choose(pickGame) }
+        findViewById<Button>(R.id.game_extract_iso).setOnClickListener {
+            if (IsoExtractService.status.state == IsoExtractService.State.RUNNING) {
+                IsoExtractService.stop(this)
+            } else {
+                // Some providers don't type .iso files; the service checks the image itself.
+                pickIso.launch(arrayOf("application/x-iso9660-image", "application/octet-stream", "*/*"))
+            }
+        }
         findViewById<Button>(R.id.files_choose).setOnClickListener { choose(pickFiles) }
         findViewById<Button>(R.id.files_default).setOnClickListener {
             config["data_folder"] = ""
@@ -198,6 +209,17 @@ open class LauncherActivity : AppCompatActivity() {
             showShaderBuild(status)
             if (status.state != ShaderBuildService.State.RUNNING) refresh()
         }
+        IsoExtractService.listener = { status ->
+            showIsoExtract(status)
+            if (status.state == IsoExtractService.State.DONE && status.out.isNotEmpty()) {
+                // The new folder is the game (once: the status stays DONE).
+                if (config["game_data"] != status.out) {
+                    config["game_data"] = status.out
+                    save()
+                }
+            }
+            if (status.state != IsoExtractService.State.RUNNING) refresh()
+        }
         (getSystemService(Context.INPUT_SERVICE) as InputManager).registerInputDeviceListener(inputListener, null)
         // The game may have changed the settings (its in-game menu).
         config = LauncherConfig.load(folders.config)
@@ -213,6 +235,7 @@ open class LauncherActivity : AppCompatActivity() {
 
     override fun onPause() {
         ShaderBuildService.listener = null
+        IsoExtractService.listener = null
         (getSystemService(Context.INPUT_SERVICE) as InputManager).unregisterInputDeviceListener(inputListener)
         super.onPause()
     }
@@ -518,6 +541,10 @@ open class LauncherActivity : AppCompatActivity() {
 
     /** Starts the build (a stopped one continues unless `fresh`). */
     private fun buildShaders(fresh: Boolean) {
+        if (IsoExtractService.status.state == IsoExtractService.State.RUNNING) {
+            toast(IsoExtractService.statusText(this, IsoExtractService.status))
+            return
+        }
         val game = gameFolder()
         if (game == null || !gameFound()) {
             toast(getString(R.string.game_needed))
@@ -534,6 +561,45 @@ open class LauncherActivity : AppCompatActivity() {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
         ShaderBuildService.start(this, game, folders.shaderCache(config), fresh)
+    }
+
+    // --- Disc image ----------------------------------------------------------------
+
+    /** Extracts the picked .iso into the app's extracted/ folder (IsoExtractService). */
+    private fun extractIso(uri: Uri) {
+        if (ShaderBuildService.status.state == ShaderBuildService.State.RUNNING) {
+            toast(getString(R.string.shaders_building))
+            return
+        }
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+        }
+        IsoExtractService.start(this, uri, folders.defaultGame)
+        showIsoExtract(IsoExtractService.status)
+    }
+
+    private fun showIsoExtract(s: IsoExtractService.Status) {
+        val running = s.state == IsoExtractService.State.RUNNING
+        val progress = findViewById<LinearProgressIndicator>(R.id.iso_progress)
+        progress.isVisible = running
+        if (running && s.totalBytes > 0) {
+            progress.isIndeterminate = false
+            progress.max = 1000
+            progress.progress = (s.doneBytes * 1000 / s.totalBytes).toInt()
+        }
+        val text = IsoExtractService.statusText(this, s)
+        findViewById<TextView>(R.id.iso_status).apply {
+            isVisible = text.isNotEmpty()
+            this.text = text
+        }
+        findViewById<Button>(R.id.game_extract_iso).apply {
+            setText(if (running) R.string.iso_stop else R.string.iso_extract)
+            // The game reads the folder.
+            isEnabled = !inGame
+        }
+        findViewById<Button>(R.id.game_choose).isEnabled = !running
     }
 
     /** The build's progress line and buttons (as the desktop launcher's). */
@@ -1599,6 +1665,7 @@ open class LauncherActivity : AppCompatActivity() {
 
     private fun refreshShaders() {
         showShaderBuild(ShaderBuildService.status)
+        showIsoExtract(IsoExtractService.status)
         val cache = folders.shaderCache(config)
         val state = shaderState(cache)
         val status = findViewById<TextView>(R.id.shaders_status)
@@ -1744,6 +1811,10 @@ open class LauncherActivity : AppCompatActivity() {
     // --- Play ------------------------------------------------------------------
 
     private fun play() {
+        if (IsoExtractService.status.state == IsoExtractService.State.RUNNING) {
+            toast(IsoExtractService.statusText(this, IsoExtractService.status))
+            return
+        }
         // The game reads the cache at start; the build is still writing it.
         if (ShaderBuildService.status.state == ShaderBuildService.State.RUNNING) {
             toast(getString(R.string.shaders_building))

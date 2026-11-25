@@ -435,7 +435,9 @@ open class LauncherActivity : AppCompatActivity() {
         }
         Section.SYSTEM -> languageName()
         Section.DISPLAY -> getString(R.string.summary_display, config.int("render_scale", 100),
-            getString(aspectNames.getValue(config["aspect"] ?: "fit")))
+            // launcher.cfg is shared with the desktop launcher (and can be edited by hand):
+            // an unknown aspect value must not crash the launcher when Settings is opened.
+            getString(aspectNames[config["aspect"]] ?: R.string.aspect_fit_short))
         Section.GPU -> currentDriverLabel()
         Section.ENHANCEMENTS -> config.int("fps_cap", 30).let {
             getString(R.string.summary_enhancements, if (it == 0) getString(R.string.fps_unlimited) else it.toString())
